@@ -1,0 +1,11 @@
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\bin\Debug\net8.0\MeetingAssistant.Data.deps.json
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\bin\Debug\net8.0\MeetingAssistant.Data.dll
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\bin\Debug\net8.0\MeetingAssistant.Data.pdb
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\obj\Debug\net8.0\MeetingAssistant.Data.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\obj\Debug\net8.0\MeetingAssistant.Data.AssemblyInfoInputs.cache
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\obj\Debug\net8.0\MeetingAssistant.Data.AssemblyInfo.cs
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\obj\Debug\net8.0\MeetingAssistant.Data.csproj.CoreCompileInputs.cache
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\obj\Debug\net8.0\MeetingAssistant.Data.dll
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\obj\Debug\net8.0\refint\MeetingAssistant.Data.dll
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\obj\Debug\net8.0\MeetingAssistant.Data.pdb
+C:\Users\DEll\source\repos\MeetingAssistant\MeetingAssistant.Data\obj\Debug\net8.0\ref\MeetingAssistant.Data.dll
