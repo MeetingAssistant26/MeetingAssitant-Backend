@@ -1,0 +1,15 @@
+# Visual Studio / Rider
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output (all projects)
+**/bin/
+**/obj/
+
+# Temporary files
+*.log
+*.tmp

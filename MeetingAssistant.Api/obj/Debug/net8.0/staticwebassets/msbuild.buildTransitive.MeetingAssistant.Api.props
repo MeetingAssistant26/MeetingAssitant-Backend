@@ -1,3 +1,0 @@
-﻿<Project>
-  <Import Project="..\buildMultiTargeting\MeetingAssistant.Api.props" />
-</Project>
