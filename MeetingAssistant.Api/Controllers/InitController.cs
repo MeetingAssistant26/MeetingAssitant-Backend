@@ -1,5 +1,6 @@
-﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using MeetingAssistant.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace MeetingAssistant.Api.Controllers
 {
@@ -7,10 +8,36 @@ namespace MeetingAssistant.Api.Controllers
     [ApiController]
     public class InitController : ControllerBase
     {
-        [HttpGet]
-        public IActionResult GetHello()
+        private readonly AppDbContext _dbContext;
+
+        public InitController(AppDbContext dbContext)
         {
-            return Ok("t7yaty ya fandm");
+            _dbContext = dbContext;
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetHello(CancellationToken cancellationToken)
+        {
+            try
+            {
+                var canConnect = await _dbContext.Database.CanConnectAsync(cancellationToken);
+                var databaseStatus = canConnect ? "connected" : "disconnected";
+
+                return Ok(new
+                {
+                    Message = "t7yaty ya fandm",
+                    DatabaseStatus = databaseStatus
+                });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new
+                {
+                    Message = "t7yaty ya fandm",
+                    DatabaseStatus = "error",
+                    Error = ex.Message
+                });
+            }
         }
     }
 }
