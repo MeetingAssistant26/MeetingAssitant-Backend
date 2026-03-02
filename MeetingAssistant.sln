@@ -3,20 +3,14 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.11.35312.102
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MeetingAssistant.Api", "MeetingAssistant.Api\MeetingAssistant.Api.csproj", "{FFFA3B78-379F-48CD-82BB-3D9A4AC7BE5D}"
-EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MeetingAssistant.Core", "MeetingAssistant.Core\MeetingAssistant.Core.csproj", "{A26FBD0A-70A0-4A13-A312-C37DCED02DEB}"
-EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MeetingAssistant.Data", "MeetingAssistant.Data\MeetingAssistant.Data.csproj", "{AD14375C-5852-449D-AE4F-3B17D47023A7}"
-EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MeetingAssistant.Infrastructure", "MeetingAssistant.Infrastructure\MeetingAssistant.Infrastructure.csproj", "{5E6A053E-D4D2-4012-938B-E04946021A40}"
-EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "MeetingAssistant.Service", "MeetingAssistant.Service\MeetingAssistant.Service.csproj", "{7B280FAD-6B3D-4E4F-9A85-18847F51E805}"
-EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{63ADFD0F-7528-4FBE-B63A-E36EC24E619C}"
 	ProjectSection(SolutionItems) = preProject
+		.dockerignore = .dockerignore
 		.gitignore.txt = .gitignore.txt
+		docker-compose.yml = docker-compose.yml
 	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeetingAssistant", "MeetingAssistant\MeetingAssistant.csproj", "{96EB4414-2E8C-5C67-412D-5D6873088A5D}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -24,26 +18,10 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{FFFA3B78-379F-48CD-82BB-3D9A4AC7BE5D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{FFFA3B78-379F-48CD-82BB-3D9A4AC7BE5D}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{FFFA3B78-379F-48CD-82BB-3D9A4AC7BE5D}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{FFFA3B78-379F-48CD-82BB-3D9A4AC7BE5D}.Release|Any CPU.Build.0 = Release|Any CPU
-		{A26FBD0A-70A0-4A13-A312-C37DCED02DEB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{A26FBD0A-70A0-4A13-A312-C37DCED02DEB}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{A26FBD0A-70A0-4A13-A312-C37DCED02DEB}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{A26FBD0A-70A0-4A13-A312-C37DCED02DEB}.Release|Any CPU.Build.0 = Release|Any CPU
-		{AD14375C-5852-449D-AE4F-3B17D47023A7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{AD14375C-5852-449D-AE4F-3B17D47023A7}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{AD14375C-5852-449D-AE4F-3B17D47023A7}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{AD14375C-5852-449D-AE4F-3B17D47023A7}.Release|Any CPU.Build.0 = Release|Any CPU
-		{5E6A053E-D4D2-4012-938B-E04946021A40}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{5E6A053E-D4D2-4012-938B-E04946021A40}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{5E6A053E-D4D2-4012-938B-E04946021A40}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{5E6A053E-D4D2-4012-938B-E04946021A40}.Release|Any CPU.Build.0 = Release|Any CPU
-		{7B280FAD-6B3D-4E4F-9A85-18847F51E805}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{7B280FAD-6B3D-4E4F-9A85-18847F51E805}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{7B280FAD-6B3D-4E4F-9A85-18847F51E805}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{7B280FAD-6B3D-4E4F-9A85-18847F51E805}.Release|Any CPU.Build.0 = Release|Any CPU
+		{96EB4414-2E8C-5C67-412D-5D6873088A5D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{96EB4414-2E8C-5C67-412D-5D6873088A5D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{96EB4414-2E8C-5C67-412D-5D6873088A5D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{96EB4414-2E8C-5C67-412D-5D6873088A5D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
