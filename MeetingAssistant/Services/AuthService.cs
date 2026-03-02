@@ -273,8 +273,7 @@ namespace MeetingAssistant.Services
                 }
             );
 
-            BackgroundJob.Enqueue(() => _emailSender.SendEmailAsync(user.Email!, "Survey Basket :Email Confirmation", emailBody));
-
+            BackgroundJob.Enqueue<IEmailSender>(x=>x.SendEmailAsync(user.Email!, "Meeting Assistant :Email Confirmation", emailBody));
             await Task.CompletedTask;
 
         }

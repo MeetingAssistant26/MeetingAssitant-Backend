@@ -45,7 +45,7 @@ namespace MeetingAssistant.Api
 
             app.UseCors();
 
-            app.UseAuthorization();
+            app.UseAuthentication();
 
             app.UseAuthorization();
 
