@@ -1,6 +1,7 @@
-
-using MeetingAssistant.Data;
+using Hangfire;
+using HangfireBasicAuthenticationFilter;
 using Microsoft.EntityFrameworkCore;
+using MyMeetingAssistant;
 
 namespace MeetingAssistant.Api
 {
@@ -10,33 +11,13 @@ namespace MeetingAssistant.Api
         {
             var builder = WebApplication.CreateBuilder(args);
 
+
             // Add services to the container.
 
-            builder.Services.AddControllers();
-            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
-            builder.Services.AddEndpointsApiExplorer();
-            builder.Services.AddSwaggerGen();
-            builder.Services.AddDbContext<AppDbContext>(options =>
-                options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+            builder.Services.AddDependencies(builder.Configuration);
 
             var app = builder.Build();
-
-            using (var scope = app.Services.CreateScope())
-            {
-                var services = scope.ServiceProvider;
-                var logger = services.GetRequiredService<ILogger<Program>>();
-                var dbContext = services.GetRequiredService<AppDbContext>();
-
-                try
-                {
-                    dbContext.Database.Migrate();
-                    logger.LogInformation("Database migrations applied successfully.");
-                }
-                catch (Exception ex)
-                {
-                    logger.LogError(ex, "Database migration failed on startup.");
-                }
-            }
 
             // Configure the HTTP request pipeline.
             if (app.Environment.IsDevelopment())
@@ -47,10 +28,31 @@ namespace MeetingAssistant.Api
 
             app.UseHttpsRedirection();
 
+            app.UseHangfireDashboard("/jobs", new DashboardOptions
+            {
+                Authorization =
+                [
+                    new HangfireCustomBasicAuthenticationFilter
+                    {
+                        User = app.Configuration["HangfireSettings:DashboardUsername"],
+                        Pass = app.Configuration["HangfireSettings:DashboardPassword"]
+                    }
+                ]
+            });
+
+
+            app.UseExceptionHandler();
+
+            app.UseCors();
+
+            app.UseAuthentication();
+
             app.UseAuthorization();
 
 
+
             app.MapControllers();
+
 
             app.Run();
         }
