@@ -124,7 +124,7 @@ namespace MeetingAssistant.Services
                 return Result.Failure(UserErrors.UserNotFound);
             var userRefreshToken = user.RefreshTokens.FirstOrDefault(rt => rt.Token == refreshToken && rt.IsActive);
             if (userRefreshToken == null)
-                return Result.Failure<AuthResponse>(UserErrors.InvalidRefreshToken);
+                return Result.Failure(UserErrors.InvalidRefreshToken);
 
             userRefreshToken.RevokedOn = DateTime.UtcNow;
 
