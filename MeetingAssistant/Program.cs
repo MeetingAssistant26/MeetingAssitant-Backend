@@ -1,6 +1,7 @@
 using Hangfire;
 using HangfireBasicAuthenticationFilter;
 using Microsoft.EntityFrameworkCore;
+using MeetingAssistant.Persistence;
 using MyMeetingAssistant;
 
 namespace MeetingAssistant.Api
@@ -11,22 +12,21 @@ namespace MeetingAssistant.Api
         {
             var builder = WebApplication.CreateBuilder(args);
 
-
-            // Add services to the container.
-
-
             builder.Services.AddDependencies(builder.Configuration);
 
             var app = builder.Build();
 
-            // Configure the HTTP request pipeline.
+            using (var scope = app.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                dbContext.Database.Migrate();
+            }
+
             if (app.Environment.IsDevelopment())
             {
                 app.UseSwagger();
                 app.UseSwaggerUI();
             }
-
-            app.UseHttpsRedirection();
 
             app.UseHangfireDashboard("/jobs", new DashboardOptions
             {
@@ -40,19 +40,12 @@ namespace MeetingAssistant.Api
                 ]
             });
 
-
             app.UseExceptionHandler();
-
             app.UseCors();
-
             app.UseAuthentication();
-
             app.UseAuthorization();
 
-
-
             app.MapControllers();
-
 
             app.Run();
         }
