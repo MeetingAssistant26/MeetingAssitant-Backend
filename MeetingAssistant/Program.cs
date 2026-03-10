@@ -1,7 +1,6 @@
 using Hangfire;
 using HangfireBasicAuthenticationFilter;
-using Microsoft.EntityFrameworkCore;
-using MyMeetingAssistant;
+using MeetingAssistant.Infrastructure.DependencyInjection;
 
 namespace MeetingAssistant.Api
 {
@@ -11,15 +10,23 @@ namespace MeetingAssistant.Api
         {
             var builder = WebApplication.CreateBuilder(args);
 
+            builder.Services
+                .AddInfrastructure(builder.Configuration)
+                .AddDatabase(builder.Configuration)
+                .AddSwaggerServices()
+                .AddHangfireServices(builder.Configuration);
 
-            // Add services to the container.
-
-
-            builder.Services.AddDependencies(builder.Configuration);
+            builder.Services.AddHealthChecks()
+                .AddNpgSql(
+                    connectionString: builder.Configuration.GetConnectionString("DefaultConnection")!,
+                    name: "postgresql")
+                .AddRedis(
+                    redisConnectionString: builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379",
+                    name: "redis")
+                .AddCheck<HangfireHealthCheck>("hangfire");
 
             var app = builder.Build();
 
-            // Configure the HTTP request pipeline.
             if (app.Environment.IsDevelopment())
             {
                 app.UseSwagger();
@@ -42,16 +49,12 @@ namespace MeetingAssistant.Api
 
 
             app.UseExceptionHandler();
-
+            app.UseAuthentication();
+            app.UseAuthorization();
             app.UseCors();
 
-            app.UseAuthentication();
-
-            app.UseAuthorization();
-
-
-
             app.MapControllers();
+            app.MapHealthChecks("/healthz");
 
 
             app.Run();
