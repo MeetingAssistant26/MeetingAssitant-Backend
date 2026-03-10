@@ -4,10 +4,10 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace MeetingAssistant.Migrations
+namespace MeetingAssistant.Infrastructure.Persistence.Migrations
 {
     /// <inheritdoc />
-    public partial class addIdentityTablesandRefreshTokenTable : Migration
+    public partial class InitialCreate : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)

@@ -9,23 +9,23 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace MeetingAssistant.Migrations
+namespace MeetingAssistant.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ApplicationDbContext))]
-    [Migration("20260302191544_addIdentityTablesandRefreshTokenTable")]
-    partial class addIdentityTablesandRefreshTokenTable
+    [Migration("20260310021447_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.13")
+                .HasAnnotation("ProductVersion", "10.0.3")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("MeetingAssistant.Entities.ApplicationUser", b =>
+            modelBuilder.Entity("MeetingAssistant.Features.Identity.Entites.ApplicationUser", b =>
                 {
                     b.Property<string>("Id")
                         .HasColumnType("text");
@@ -235,9 +235,9 @@ namespace MeetingAssistant.Migrations
                     b.ToTable("AspNetUserTokens", (string)null);
                 });
 
-            modelBuilder.Entity("MeetingAssistant.Entities.ApplicationUser", b =>
+            modelBuilder.Entity("MeetingAssistant.Features.Identity.Entites.ApplicationUser", b =>
                 {
-                    b.OwnsMany("MeetingAssistant.Entities.RefreshToken", "RefreshTokens", b1 =>
+                    b.OwnsMany("MeetingAssistant.Features.Identity.Entites.RefreshToken", "RefreshTokens", b1 =>
                         {
                             b1.Property<string>("UserId")
                                 .HasColumnType("text");
@@ -283,7 +283,7 @@ namespace MeetingAssistant.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<string>", b =>
                 {
-                    b.HasOne("MeetingAssistant.Entities.ApplicationUser", null)
+                    b.HasOne("MeetingAssistant.Features.Identity.Entites.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -292,7 +292,7 @@ namespace MeetingAssistant.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<string>", b =>
                 {
-                    b.HasOne("MeetingAssistant.Entities.ApplicationUser", null)
+                    b.HasOne("MeetingAssistant.Features.Identity.Entites.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -307,7 +307,7 @@ namespace MeetingAssistant.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.HasOne("MeetingAssistant.Entities.ApplicationUser", null)
+                    b.HasOne("MeetingAssistant.Features.Identity.Entites.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
@@ -316,7 +316,7 @@ namespace MeetingAssistant.Migrations
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<string>", b =>
                 {
-                    b.HasOne("MeetingAssistant.Entities.ApplicationUser", null)
+                    b.HasOne("MeetingAssistant.Features.Identity.Entites.ApplicationUser", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)

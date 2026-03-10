@@ -14,7 +14,7 @@ using System.Security.Cryptography;
 using System.Text;
 using static Org.BouncyCastle.Crypto.Engines.SM2Engine;
 using MeetingAssistant.Entities;
-using MeetingAssistant.Persistence;
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Mapster;
 
 namespace MeetingAssistant.Services

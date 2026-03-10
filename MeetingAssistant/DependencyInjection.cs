@@ -6,7 +6,7 @@ using Mapster;
 using MeetingAssistant.Authentication;
 using MeetingAssistant.Entities;
 using MeetingAssistant.Errors;
-using MeetingAssistant.Persistence;
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Services;
 using MeetingAssistant.Settings;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
