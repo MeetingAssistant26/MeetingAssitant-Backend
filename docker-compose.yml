@@ -1,34 +1,83 @@
+version: "3.9"
+
 services:
-  meetingassistant-api:
-    container_name: meetingassistant-api
-    build:
-      context: .
-      dockerfile: MeetingAssistant.Api/Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=meetingassistant;Username=meetingassistant;Password=meetingassistant
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
 
   postgres:
-    image: postgres:18
+    image: pgvector/pgvector:pg17
     container_name: meetingassistant-postgres
     environment:
       POSTGRES_DB: meetingassistant
       POSTGRES_USER: meetingassistant
       POSTGRES_PASSWORD: meetingassistant
+    ports:
+      - "5433:5432"
     volumes:
-      - postgres18_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U meetingassistant -d meetingassistant"]
       interval: 5s
-      timeout: 3s
       retries: 10
-    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: meetingassistant-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@meetingassistant.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+
+  redis:
+    image: redis:7
+    container_name: meetingassistant-redis
+    ports:
+      - "6379:6379"
+
+  redisinsight:
+    image: redis/redisinsight
+    container_name: meetingassistant-redisinsight
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
+
+  minio:
+    image: minio/minio
+    container_name: meetingassistant-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: MeetingAssistant.Api/Dockerfile
+    container_name: meetingassistant-api
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=meetingassistant;Username=meetingassistant;Password=meetingassistant
+      Redis__ConnectionString: redis:6379
+      Minio__Endpoint: minio:9000
+      Minio__AccessKey: minio
+      Minio__SecretKey: minio123
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
 
 volumes:
-  postgres18_data:
+  postgres_data:
+  minio_data:
