@@ -1,6 +1,8 @@
 using Hangfire;
 using HangfireBasicAuthenticationFilter;
 using MeetingAssistant.Infrastructure.DependencyInjection;
+using MeetingAssistant.Infrastructure.Middleware;
+using Serilog;
 
 namespace MeetingAssistant.Api
 {
@@ -9,6 +11,11 @@ namespace MeetingAssistant.Api
         public static void Main(string[] args)
         {
             var builder = WebApplication.CreateBuilder(args);
+
+            builder.Host.UseSerilog((context, loggerConfiguration) => loggerConfiguration
+                .ReadFrom.Configuration(context.Configuration)
+                .Enrich.FromLogContext()
+                .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{CorrelationId}] {Message:lj}{NewLine}{Exception}"));
 
             builder.Services
                 .AddInfrastructure(builder.Configuration)
@@ -35,6 +42,16 @@ namespace MeetingAssistant.Api
 
             app.UseHttpsRedirection();
 
+            app.UseMiddleware<CorrelationIdMiddleware>();
+            app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+            app.UseAuthentication();
+            app.UseAuthorization();
+            app.UseCors();
+
+            app.MapControllers();
+            app.MapHealthChecks("/healthz");
+
             app.UseHangfireDashboard("/jobs", new DashboardOptions
             {
                 Authorization =
@@ -46,15 +63,6 @@ namespace MeetingAssistant.Api
                     }
                 ]
             });
-
-
-            app.UseExceptionHandler();
-            app.UseAuthentication();
-            app.UseAuthorization();
-            app.UseCors();
-
-            app.MapControllers();
-            app.MapHealthChecks("/healthz");
 
 
             app.Run();

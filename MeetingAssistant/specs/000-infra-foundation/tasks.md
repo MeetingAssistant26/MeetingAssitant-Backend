@@ -40,6 +40,7 @@
 - [ ] T005 [P] Create `IHasOrganizationId` marker interface with `OrganizationId` (Guid) property in `src/Shared/IHasOrganizationId.cs`
 - [ ] T006 [P] Create `EntityStatus` enum (Pending=0, Processing=1, Completed=2, Failed=3) in `src/Shared/EntityStatus.cs`
 - [ ] T007 [P] Create `StandardErrorResponse` DTO with `Type`, `Title`, `Status`, `Errors` (Dictionary<string, string[]>), `CorrelationId` in `src/Shared/StandardErrorResponse.cs`
+- [ ] T007.1 [P] Create `ResultExtensions` static class in `src/Shared/ResultExtensions.cs` with `ToProblem(this Result result)` extension method: throw `InvalidOperationException` if `result.IsSuccess`, map `Result.Error` fields to `StandardErrorResponse` (`Code` → `Type`, `Description` → `Title`, `StatusCode` → `Status`), return `ObjectResult` with `StatusCode` set from `result.Error.StatusCode`. This is the standard endpoint error response pattern — endpoints call `result.ToProblem()` instead of manually constructing `StandardErrorResponse`.
 - [ ] T008 [P] Create `IDomainEvent` marker interface extending MediatR `INotification` in `src/Shared/IDomainEvent.cs`
 - [ ] T009 [P] Create `JwtSettings` configuration POCO in `src/Infrastructure/Configuration/JwtSettings.cs`
 - [ ] T010 [P] Create `RedisSettings` configuration POCO in `src/Infrastructure/Configuration/RedisSettings.cs`
