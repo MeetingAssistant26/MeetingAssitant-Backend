@@ -40,7 +40,7 @@
 - [ ] T005 [P] Create `IHasOrganizationId` marker interface with `OrganizationId` (Guid) property in `src/Shared/IHasOrganizationId.cs`
 - [ ] T006 [P] Create `EntityStatus` enum (Pending=0, Processing=1, Completed=2, Failed=3) in `src/Shared/EntityStatus.cs`
 - [ ] T007 [P] Create `StandardErrorResponse` DTO with `Type`, `Title`, `Status`, `Errors` (Dictionary<string, string[]>), `CorrelationId` in `src/Shared/StandardErrorResponse.cs`
-- [ ] T007.1 [P] Create `ResultExtensions` static class in `src/Shared/ResultExtensions.cs` with `ToProblem(this Result result)` extension method: throw `InvalidOperationException` if `result.IsSuccess`, map `Result.Error` fields to `StandardErrorResponse` (`Code` → `Type`, `Description` → `Title`, `StatusCode` → `Status`), return `ObjectResult` with `StatusCode` set from `result.Error.StatusCode`. This is the standard endpoint error response pattern — endpoints call `result.ToProblem()` instead of manually constructing `StandardErrorResponse`.
+- [ ] T007.1 [P] Create `ResultExtensions` static class in `src/Shared/ResultExtensions.cs` with `ToProblem(this Result result, ICorrelationIdProvider correlationIdProvider)` extension method: throw `InvalidOperationException` if `result.IsSuccess`, map `Result.Error` fields to `StandardErrorResponse` (`Code` → `Type`, `Description` → `Title`, `StatusCode` → `Status`, `correlationIdProvider.CorrelationId` → `CorrelationId`), return `ObjectResult` with `StatusCode` set from `result.Error.StatusCode`. This is the standard endpoint error response pattern — endpoints call `result.ToProblem(correlationIdProvider)` instead of manually constructing `StandardErrorResponse`.
 - [ ] T008 [P] Create `IDomainEvent` marker interface extending MediatR `INotification` in `src/Shared/IDomainEvent.cs`
 - [ ] T009 [P] Create `JwtSettings` configuration POCO in `src/Infrastructure/Configuration/JwtSettings.cs`
 - [ ] T010 [P] Create `RedisSettings` configuration POCO in `src/Infrastructure/Configuration/RedisSettings.cs`
@@ -154,8 +154,8 @@
 
 ### Implementation for User Story 6
 
-- [ ] T040 [US6] Implement `NotificationHub` in `src/Infrastructure/SignalR/NotificationHub.cs`: override `OnConnectedAsync` — authenticate user via JWT (already handled by ASP.NET Core auth), query `UserOrganization` table via `AppDbContext` to resolve all org memberships, call `Groups.AddToGroupAsync(Context.ConnectionId, $"org:{orgId}")` for each org
-- [ ] T041 [US6] Map SignalR hub endpoint (`/hubs/notifications`) in `src/Program.cs` with JWT authentication enabled, register SignalR services (`AddSignalR()`)
+- [x] T040 [US6] Implement `NotificationHub` in `src/Infrastructure/SignalR/NotificationHub.cs`: override `OnConnectedAsync` — authenticate user via JWT (already handled by ASP.NET Core auth), read `organizationId` claim from JWT, call `Groups.AddToGroupAsync(Context.ConnectionId, $"org:{organizationId}")` to add the connection to exactly one tenant group
+- [x] T041 [US6] Map SignalR hub endpoint (`/hubs/notifications`) in `src/Program.cs` with JWT authentication enabled, register SignalR services (`AddSignalR()`)
 
 **Checkpoint**: SignalR clients are added to tenant-scoped groups on connection. `Clients.All` is never used. Disconnection automatically removes from all groups.
 
@@ -222,7 +222,7 @@
 - **US3 — Tenant Isolation (Phase 5)**: Depends on US1 (needs `AppDbContext` from T020)
 - **US4 — Domain Events (Phase 6)**: Depends on Foundational (needs `IDomainEvent`)
 - **US5 — AI Abstractions (Phase 7)**: Depends on Foundational (needs `AiSettings`)
-- **US6 — SignalR Hub (Phase 8)**: Depends on US1 (needs `AppDbContext` for `UserOrganization` query) + US2 (needs JWT auth configured)
+- **US6 — SignalR Hub (Phase 8)**: Depends on US2 (needs JWT auth configured) — reads `organizationId` from JWT claim (no DB query needed)
 - **US7 — Secrets (Phase 9)**: Depends on US1 (needs `docker-compose.yml`) + US2 (needs Hangfire configured)
 - **US8 — Hangfire Retry (Phase 10)**: Depends on US2 (needs Hangfire PostgreSql storage configured in T028)
 - **Polish (Phase 11)**: Depends on all user stories
