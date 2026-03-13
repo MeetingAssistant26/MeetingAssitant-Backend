@@ -1,8 +1,8 @@
 using Hangfire;
 using HangfireBasicAuthenticationFilter;
 using Microsoft.EntityFrameworkCore;
-using MeetingAssistant.Persistence;
-using MyMeetingAssistant;
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
+using MeetingAssistant.Infrastructure.DependencyInjection;
 
 namespace MeetingAssistant.Api
 {
