@@ -12,7 +12,7 @@ namespace MeetingAssistant.Features.Identity.Endpoints
             var result = await _authService.ConfirmEmailAsync(confirmEmailRequest, cancellationToken);
 
             return result.IsSuccess ? Ok()
-                            : result.ToProblem();
+                            : result.ToProblem(_correlationIdProvider);
         }
     }
 }

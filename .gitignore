@@ -1,15 +1,17 @@
-# Visual Studio / Rider
+# Visual Studio files
 .vs/
-.idea/
 *.suo
 *.user
 *.userosscache
 *.sln.docstates
 
-# Build output (all projects)
-**/bin/
-**/obj/
+# Build folders
+bin/
+obj/
 
-# Temporary files
+# Rider project files
+.idea/
+
+# Other temporary files
 *.log
 *.tmp

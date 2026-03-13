@@ -2,14 +2,13 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-COPY ["MeetingAssistant.sln", "./"]
-COPY ["MeetingAssistant.Api/MeetingAssistant.Api.csproj", "MeetingAssistant.Api/"]
+COPY ["MeetingAssistant.csproj", "./"]
 
 RUN dotnet restore
 
 COPY . .
 
-RUN dotnet publish "MeetingAssistant.Api/MeetingAssistant.Api.csproj" -c Release -o /app/publish
+RUN dotnet publish "MeetingAssistant.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
@@ -22,4 +21,4 @@ EXPOSE 8080
 
 COPY --from=build /app/publish .
 
-ENTRYPOINT ["dotnet", "MeetingAssistant.Api.dll"]
+ENTRYPOINT ["dotnet", "MeetingAssistant.dll"]

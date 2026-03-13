@@ -209,8 +209,10 @@ namespace MeetingAssistant.Features.Identity.Services
 
         }
 
-        public async Task<Result> SendResetPasswordCodeAsync(ForgetPasswordRequest request)
+        public async Task<Result> SendResetPasswordCodeAsync(ForgetPasswordRequest request, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var user = await _userManager.FindByEmailAsync(request.Email);
             if (user == null)
                 return Result.Success();
@@ -228,8 +230,10 @@ namespace MeetingAssistant.Features.Identity.Services
             return Result.Success();
         }
 
-        public async Task<Result> ResetPasswordAsync(ResetPasswordRequest request)
+        public async Task<Result> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var user = await _userManager.FindByEmailAsync(request.Email);
 
             if (user is null || !user.EmailConfirmed)

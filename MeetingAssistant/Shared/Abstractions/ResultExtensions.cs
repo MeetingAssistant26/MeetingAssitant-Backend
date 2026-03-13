@@ -1,29 +1,32 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using MeetingAssistant.Api.Infrastructure.Services;
+using MeetingAssistant.Api.Shared;
+using Microsoft.AspNetCore.Mvc;
+using System;
 
 namespace MeetingAssistant.Shared.Abstractions
 {
     public static class ResultExtensions
     {
-        public static ObjectResult ToProblem(this Result result)
+        public static ObjectResult ToProblem(this Result result,ICorrelationIdProvider correlationProvider)
         {
-            if(result.IsSuccess)
+            if (result.IsSuccess)
             {
                 throw new InvalidOperationException("Cannot convert a successful result to a problem.");
             }
-            var problem =Results.Problem(statusCode:result.Error.Statuscode);
-            var problemDetails = problem.GetType().GetProperty(nameof(ProblemDetails))!.GetValue(problem) as ProblemDetails;
 
-            problemDetails!.Extensions= new Dictionary<string,object?>
+            var response = new StandardErrorResponse
             {
-                { 
-                    "errors", new [] {
-                        result.Error.Code,
-                        result.Error.Description
+                Type = result.Error.Code,
+                Title = result.Error.Description,
+                Status = result.Error.Statuscode,
+                CorrelationId = correlationProvider.CorrelationId
 
-                    }
-                }
             };
-            return new ObjectResult(problemDetails);
+            
+            return new ObjectResult(response)
+            {
+                StatusCode = result.Error.Statuscode
+            };
         }
     }
 }

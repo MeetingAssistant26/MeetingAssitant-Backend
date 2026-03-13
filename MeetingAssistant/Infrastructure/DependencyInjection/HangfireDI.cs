@@ -1,3 +1,4 @@
+using System;
 using Hangfire;
 using Hangfire.PostgreSql;
 
@@ -18,7 +19,16 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                     {
                         options.UseNpgsqlConnection(
                             configuration.GetConnectionString("DefaultConnection"));
+                    }, new PostgreSqlStorageOptions
+                    {
+                        SchemaName = "hangfire",
+                        PrepareSchemaIfNecessary = true,
+                        QueuePollInterval = TimeSpan.FromSeconds(5)
                     });
+
+                // Disable built-in AutomaticRetryAttribute (Attempts = 0)
+                // We'll replace this with a custom retry filter in later states.
+                GlobalJobFilters.Filters.Add(new AutomaticRetryAttribute { Attempts = 0 });
             });
 
 

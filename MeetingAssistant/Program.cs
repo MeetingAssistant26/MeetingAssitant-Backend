@@ -1,8 +1,8 @@
 using Hangfire;
 using HangfireBasicAuthenticationFilter;
-using Microsoft.EntityFrameworkCore;
-using MeetingAssistant.Persistence;
-using MyMeetingAssistant;
+using MeetingAssistant.Infrastructure.DependencyInjection;
+using MeetingAssistant.Infrastructure.Middleware;
+using Serilog;
 
 namespace MeetingAssistant.Api
 {
@@ -12,21 +12,45 @@ namespace MeetingAssistant.Api
         {
             var builder = WebApplication.CreateBuilder(args);
 
-            builder.Services.AddDependencies(builder.Configuration);
+            builder.Host.UseSerilog((context, loggerConfiguration) => loggerConfiguration
+                .ReadFrom.Configuration(context.Configuration)
+                .Enrich.FromLogContext()
+                .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] [{CorrelationId}] {Message:lj}{NewLine}{Exception}"));
+
+            builder.Services
+                .AddInfrastructure(builder.Configuration)
+                .AddDatabase(builder.Configuration)
+                .AddSwaggerServices()
+                .AddHangfireServices(builder.Configuration);
+
+            builder.Services.AddHealthChecks()
+                .AddNpgSql(
+                    connectionString: builder.Configuration.GetConnectionString("DefaultConnection")!,
+                    name: "postgresql")
+                .AddRedis(
+                    redisConnectionString: builder.Configuration["Redis:ConnectionString"] ?? "localhost:6379",
+                    name: "redis")
+                .AddCheck<HangfireHealthCheck>("hangfire");
 
             var app = builder.Build();
-
-            using (var scope = app.Services.CreateScope())
-            {
-                var dbContext = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                dbContext.Database.Migrate();
-            }
 
             if (app.Environment.IsDevelopment())
             {
                 app.UseSwagger();
                 app.UseSwaggerUI();
             }
+
+            app.UseHttpsRedirection();
+
+            app.UseMiddleware<CorrelationIdMiddleware>();
+            app.UseMiddleware<ExceptionHandlingMiddleware>();
+
+            app.UseAuthentication();
+            app.UseAuthorization();
+            app.UseCors();
+
+            app.MapControllers();
+            app.MapHealthChecks("/healthz");
 
             app.UseHangfireDashboard("/jobs", new DashboardOptions
             {
@@ -40,12 +64,13 @@ namespace MeetingAssistant.Api
                 ]
             });
 
-            app.UseExceptionHandler();
-            app.UseCors();
-            app.UseAuthentication();
+
             app.UseAuthorization();
 
+
+
             app.MapControllers();
+
 
             app.Run();
         }

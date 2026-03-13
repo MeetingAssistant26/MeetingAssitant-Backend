@@ -6,8 +6,8 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{63ADFD0F-7528-4FBE-B63A-E36EC24E619C}"
 	ProjectSection(SolutionItems) = preProject
 		.dockerignore = .dockerignore
-		.gitignore.txt = .gitignore.txt
 		docker-compose.yml = docker-compose.yml
+		.gitignore = .gitignore
 	EndProjectSection
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeetingAssistant", "MeetingAssistant\MeetingAssistant.csproj", "{96EB4414-2E8C-5C67-412D-5D6873088A5D}"

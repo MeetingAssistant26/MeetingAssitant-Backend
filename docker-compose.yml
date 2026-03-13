@@ -1,7 +1,4 @@
-version: "3.9"
-
 services:
-
   postgres:
     image: pgvector/pgvector:pg17
     container_name: meetingassistant-postgres
@@ -15,38 +12,28 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U meetingassistant -d meetingassistant"]
       interval: 5s
-      retries: 10
-
-  pgadmin:
-    image: dpage/pgadmin4
-    container_name: meetingassistant-pgadmin
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@meetingassistant.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-    ports:
-      - "5050:80"
-    depends_on:
-      - postgres
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     container_name: meetingassistant-redis
     ports:
       - "6379:6379"
-
-  redisinsight:
-    image: redis/redisinsight
-    container_name: meetingassistant-redisinsight
-    ports:
-      - "5540:5540"
-    depends_on:
-      - redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   minio:
-    image: minio/minio
+    image: minio/minio:latest
     container_name: meetingassistant-minio
     command: server /data --console-address ":9001"
     environment:
@@ -57,28 +44,31 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   api:
     build:
-      context: .
-      dockerfile: MeetingAssistant.Api/Dockerfile
+      context: ./MeetingAssistant
+      dockerfile: Dockerfile
     container_name: meetingassistant-api
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=meetingassistant;Username=meetingassistant;Password=meetingassistant
       Redis__ConnectionString: redis:6379
-      Minio__Endpoint: minio:9000
-      Minio__AccessKey: minio
-      Minio__SecretKey: minio123
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
 
 volumes:
   postgres_data:
