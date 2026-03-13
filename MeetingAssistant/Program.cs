@@ -65,6 +65,13 @@ namespace MeetingAssistant.Api
             });
 
 
+            app.UseAuthorization();
+
+
+
+            app.MapControllers();
+
+
             app.Run();
         }
     }
