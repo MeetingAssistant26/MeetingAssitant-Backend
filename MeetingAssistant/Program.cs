@@ -2,6 +2,7 @@ using Hangfire;
 using HangfireBasicAuthenticationFilter;
 using MeetingAssistant.Infrastructure.DependencyInjection;
 using MeetingAssistant.Infrastructure.Middleware;
+using MeetingAssistant.Infrastructure.SignalR;
 using Serilog;
 
 namespace MeetingAssistant.Api
@@ -20,8 +21,11 @@ namespace MeetingAssistant.Api
             builder.Services
                 .AddInfrastructure(builder.Configuration)
                 .AddDatabase(builder.Configuration)
+                .AddAuth(builder.Configuration)
                 .AddSwaggerServices()
                 .AddHangfireServices(builder.Configuration);
+
+            builder.Services.AddSignalR();
 
             builder.Services.AddHealthChecks()
                 .AddNpgSql(
@@ -50,6 +54,7 @@ namespace MeetingAssistant.Api
             app.UseCors();
 
             app.MapControllers();
+            app.MapHub<NotificationHub>("/hubs/notifications").RequireAuthorization();
             app.MapHealthChecks("/healthz");
 
             app.UseHangfireDashboard("/jobs", new DashboardOptions
@@ -63,14 +68,6 @@ namespace MeetingAssistant.Api
                     }
                 ]
             });
-
-
-            app.UseAuthorization();
-
-
-
-            app.MapControllers();
-
 
             app.Run();
         }
