@@ -7,12 +7,12 @@ namespace MeetingAssistant.Features.Identity.Endpoints
     public partial class AuthController
     {
         [HttpPost("forget-password")]
-        public async Task<IActionResult> ForgetPassword([FromBody] ForgetPasswordRequest resetPasswordRequest)
+        public async Task<IActionResult> ForgetPassword([FromBody] ForgetPasswordRequest resetPasswordRequest, CancellationToken cancellationToken)
         {
-            var result = await _authService.SendResetPasswordCodeAsync(resetPasswordRequest);
+            var result = await _authService.SendResetPasswordCodeAsync(resetPasswordRequest, cancellationToken);
 
             return result.IsSuccess ? Ok()
-                            : result.ToProblem();
+                            : result.ToProblem(_correlationIdProvider);
         }
     }
 }

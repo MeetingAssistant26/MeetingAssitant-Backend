@@ -12,7 +12,7 @@ namespace MeetingAssistant.Features.Identity.Endpoints
             var IsRevoked = await _authService.RevokeRefreshTokenAsync(refreshTokenRequest.Token, refreshTokenRequest.RefreshToken, cancellationToken);
 
             return IsRevoked.IsSuccess ? Ok()
-                            : IsRevoked.ToProblem();
+                            : IsRevoked.ToProblem(_correlationIdProvider);
         }
     }
 }

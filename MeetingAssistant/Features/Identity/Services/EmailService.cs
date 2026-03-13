@@ -36,7 +36,7 @@ namespace MeetingAssistant.Features.Identity.Services
             await smtp.ConnectAsync(_mailSettings.Host, _mailSettings.Port, SecureSocketOptions.StartTls);
             await smtp.AuthenticateAsync(_mailSettings.Mail, _mailSettings.Password);
             await smtp.SendAsync(message);
-            smtp.Disconnect(true);
+            await smtp.DisconnectAsync(true);
         }
     }
 }

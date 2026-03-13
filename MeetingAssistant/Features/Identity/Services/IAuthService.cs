@@ -11,7 +11,7 @@ namespace MeetingAssistant.Features.Identity.Services
         Task<Result> RegisterAsync(RegisterRequest request, CancellationToken cancellationToken);
         Task<Result> ConfirmEmailAsync(ConfirmEmailRequest request, CancellationToken cancellationToken);
         Task<Result> ResendConfirmationEmailAsync(ResendConfirmationEmailRequest request, CancellationToken cancellationToken);
-        Task<Result> SendResetPasswordCodeAsync(ForgetPasswordRequest request);
-        Task<Result> ResetPasswordAsync(ResetPasswordRequest request);
+        Task<Result> SendResetPasswordCodeAsync(ForgetPasswordRequest request, CancellationToken cancellationToken);
+        Task<Result> ResetPasswordAsync(ResetPasswordRequest request, CancellationToken cancellationToken);
     }
 }

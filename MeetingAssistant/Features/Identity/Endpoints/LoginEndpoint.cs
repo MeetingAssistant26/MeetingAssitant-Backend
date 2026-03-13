@@ -12,7 +12,7 @@ namespace MeetingAssistant.Features.Identity.Endpoints
             var authresult = await _authService.GetTokenAsync(loginRequest.Email, loginRequest.Password, cancellationToken);
 
             return authresult.IsSuccess ? Ok(authresult.Value)
-                           : authresult.ToProblem();
+                           : authresult.ToProblem(_correlationIdProvider);
         }
     }
 }
