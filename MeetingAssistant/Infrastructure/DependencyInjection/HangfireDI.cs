@@ -29,6 +29,9 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                 // Disable built-in AutomaticRetryAttribute (Attempts = 0)
                 // We'll replace this with a custom retry filter in later states.
                 GlobalJobFilters.Filters.Add(new AutomaticRetryAttribute { Attempts = 0 });
+                
+                GlobalJobFilters.Filters.Add(new Api.Infrastructure.Hangfire.HangfireCorrelationFilter());
+                GlobalJobFilters.Filters.Add(new Api.Infrastructure.Hangfire.HangfireRetryFilter());
             });
 
 
@@ -36,6 +39,21 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
             services.AddHangfireServer();
 
             return services;
+        }
+
+        public static void UseSecureHangfireDashboard(this Microsoft.AspNetCore.Builder.WebApplication app)
+        {
+            app.UseHangfireDashboard("/jobs", new DashboardOptions
+            {
+                Authorization =
+                [
+                    new HangfireBasicAuthenticationFilter.HangfireCustomBasicAuthenticationFilter
+                    {
+                        User = app.Configuration["HangfireSettings:DashboardUsername"],
+                        Pass = app.Configuration["HangfireSettings:DashboardPassword"]
+                    }
+                ]
+            });
         }
     }
 }

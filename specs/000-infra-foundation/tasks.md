@@ -188,9 +188,9 @@
 
 ### Implementation for User Story 8
 
-- [ ] T048 [US8] Implement `HangfireRetryFilter` as custom attribute combining `IElectStateFilter` in `src/Infrastructure/Hangfire/HangfireRetryFilter.cs`: intercept `FailedState` transition, check retry count vs max (3), if retries remaining → redirect to `ScheduledState` with delay `TimeSpan.FromSeconds(Math.Pow(2, retryCount) * 15)`, if exhausted → allow `FailedState` + resolve `AppDbContext` from `ElectStateContext.ServiceProvider` → load entity by `EntityId`/`EntityType` job params → set `Status = Failed` → wrap in try-catch
-- [ ] T049 [US8] Implement `HangfireCorrelationFilter` as `IServerFilter` in `src/Infrastructure/Hangfire/HangfireCorrelationFilter.cs`: in `OnPerforming` → generate new correlation ID, set on `ICorrelationIdProvider` resolved from job scope, push into `LogContext.PushProperty("CorrelationId", ...)`, store as Hangfire job parameter for dashboard visibility
-- [ ] T050 [US8] Register `HangfireRetryFilter` and `HangfireCorrelationFilter` in `GlobalJobFilters` in `src/Program.cs`
+- [x] T048 [US8] Implement `HangfireRetryFilter` as custom attribute combining `IElectStateFilter` in `src/Infrastructure/Hangfire/HangfireRetryFilter.cs`: intercept `FailedState` transition, check retry count vs max (3), if retries remaining → redirect to `ScheduledState` with delay `TimeSpan.FromSeconds(Math.Pow(2, retryCount) * 15)`, if exhausted → allow `FailedState` + resolve `AppDbContext` from `ElectStateContext.ServiceProvider` → load entity by `EntityId`/`EntityType` job params → set `Status = Failed` → wrap in try-catch
+- [x] T049 [US8] Implement `HangfireCorrelationFilter` as `IServerFilter` in `src/Infrastructure/Hangfire/HangfireCorrelationFilter.cs`: in `OnPerforming` → generate new correlation ID, set on `ICorrelationIdProvider` resolved from job scope, push into `LogContext.PushProperty("CorrelationId", ...)`, store as Hangfire job parameter for dashboard visibility
+- [x] T050 [US8] Register `HangfireRetryFilter` and `HangfireCorrelationFilter` in `GlobalJobFilters` in `src/Program.cs`
 
 **Checkpoint**: Failed Hangfire jobs retry 3 times with 15s/30s/60s delays. Entity status marked `Failed` on exhaustion. Correlation IDs present in all job logs and Hangfire dashboard.
 
@@ -200,12 +200,12 @@
 
 **Purpose**: Final integration validation and cleanup
 
-- [ ] T051 Verify complete middleware pipeline order in `src/Program.cs` matches contracts/api.md: CorrelationIdMiddleware → ExceptionHandlingMiddleware → Authentication → Authorization → Routing (Controller endpoints) → SignalR → Hangfire → Health checks
-- [ ] T052 [P] Verify all async method signatures in `src/Infrastructure/` and `src/Shared/` include `CancellationToken` parameter (FR-018)
-- [ ] T052.1 [P] Verify Partial Controller Pattern conventions are scaffolded: Mapster configuration bootstrapped in `Program.cs`, namespace convention documented, controller definition and endpoint file structure conventions established (FR-018.1)
-- [ ] T053 [P] Verify `src/appsettings.json` contains non-secret configuration structure with placeholder sections for `Jwt`, `Redis`, `AI`, `LiveKit`, `ConnectionStrings` — no actual secret values
-- [ ] T054 Run `docker compose up` end-to-end validation: all services healthy, `GET /healthz` returns 200, pgvector queryable, Hangfire dashboard accessible, structured logs with correlation IDs visible
-- [ ] T055 Run quickstart.md validation: follow the 8-step getting started guide from `specs/000-infra-foundation/quickstart.md` and verify each step succeeds
+- [x] T051 Verify complete middleware pipeline order in `src/Program.cs` matches contracts/api.md: CorrelationIdMiddleware → ExceptionHandlingMiddleware → Authentication → Authorization → Routing (Controller endpoints) → SignalR → Hangfire → Health checks
+- [x] T052 [P] Verify all async method signatures in `src/Infrastructure/` and `src/Shared/` include `CancellationToken` parameter (FR-018)
+- [x] T052.1 [P] Verify Partial Controller Pattern conventions are scaffolded: Mapster configuration bootstrapped in `Program.cs`, namespace convention documented, controller definition and endpoint file structure conventions established (FR-018.1)
+- [x] T053 [P] Verify `src/appsettings.json` contains non-secret configuration structure with placeholder sections for `Jwt`, `Redis`, `AI`, `LiveKit`, `ConnectionStrings` — no actual secret values
+- [x] T054 Run `docker compose up` end-to-end validation: all services healthy, `GET /healthz` returns 200, pgvector queryable, Hangfire dashboard accessible, structured logs with correlation IDs visible
+- [x] T055 Run quickstart.md validation: follow the 8-step getting started guide from `specs/000-infra-foundation/quickstart.md` and verify each step succeeds
 
 **Checkpoint**: All 20 FRs and 10 SCs are met. Infrastructure is ready for downstream feature development.
 

@@ -79,5 +79,44 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                 .HandleTransientHttpError()
                 .CircuitBreakerAsync(5, TimeSpan.FromSeconds(30));
         }
+
+        public static IServiceCollection AddCachingAndHealthChecks(this IServiceCollection services, IConfiguration configuration)
+        {
+            var redisConnectionString = configuration["Redis:ConnectionString"] ?? "localhost:6379";
+
+            services.AddStackExchangeRedisCache(options =>
+            {
+                options.Configuration = redisConnectionString;
+            });
+
+            services.AddHealthChecks()
+                .AddNpgSql(
+                    connectionString: configuration.GetConnectionString("DefaultConnection")!,
+                    name: "postgresql")
+                .AddRedis(
+                    redisConnectionString: redisConnectionString,
+                    name: "redis")
+                .AddCheck<HangfireHealthCheck>("hangfire");
+
+            return services;
+        }
+
+        public static void CheckRedisConnection(this Microsoft.AspNetCore.Builder.WebApplication app)
+        {
+            var redisConnectionString = app.Configuration["Redis:ConnectionString"];
+            if (string.IsNullOrWhiteSpace(redisConnectionString)) return;
+
+            try
+            {
+                using var connection = StackExchange.Redis.ConnectionMultiplexer.Connect(redisConnectionString);
+            }
+            catch (Exception ex)
+            {
+                Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(
+                    app.Logger,
+                    ex, 
+                    "Redis is not running. Distributed caching and SignalR backplane may not work correctly.");
+            }
+        }
     }
 }
