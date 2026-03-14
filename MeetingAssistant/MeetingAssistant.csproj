@@ -15,11 +15,13 @@
     <PackageReference Include="Hangfire.Core" Version="1.8.23" />
     <PackageReference Include="Hangfire.Dashboard.Basic.Authentication" Version="8.0.0" />
     <PackageReference Include="Hangfire.PostgreSql" Version="1.21.1" />
+    <PackageReference Include="Livekit.Server.Sdk.Dotnet" Version="1.2.0" />
     <PackageReference Include="MailKit" Version="4.15.1" />
     <PackageReference Include="Mapster" Version="7.4.0" />
     <PackageReference Include="MediatR" Version="14.1.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.3" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.3" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.3">
       <PrivateAssets>all</PrivateAssets>
@@ -29,8 +31,14 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="SharpGrip.FluentValidation.AutoValidation.Mvc" Version="2.0.0" />
+    <PackageReference Include="StackExchange.Redis" Version="2.11.8" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="Templates\**\*.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 
 </Project>

@@ -145,7 +145,7 @@ namespace MeetingAssistant.Features.Identity.Services
             {
                 var code=await _userManager.GenerateEmailConfirmationTokenAsync(user);
                 code=WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
-                _logger.LogInformation("confirmation code:{code},UserId{user.Id}", code, user.Id);
+                _logger.LogInformation("confirmation code: {code}, UserId: {UserId}", code, user.Id);
                 await SendConfirmationEmail(user, code);
 
                 return Result.Success();
@@ -200,7 +200,7 @@ namespace MeetingAssistant.Features.Identity.Services
             var code = await _userManager.GenerateEmailConfirmationTokenAsync(user);
             code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
 
-            _logger.LogInformation("confirmation code:{code},UserId{user.Id}", code,user.Id);
+            _logger.LogInformation("confirmation code: {code}, UserId: {UserId}", code,user.Id);
 
            await  SendConfirmationEmail(user, code);
             return Result.Success();
@@ -224,7 +224,7 @@ namespace MeetingAssistant.Features.Identity.Services
             var code = await _userManager.GeneratePasswordResetTokenAsync(user);
             code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
 
-            _logger.LogInformation("Reset code:{code},UserId{user.Id}", code, user.Id);
+            _logger.LogInformation("Reset code: {code}, UserId: {UserId}", code, user.Id);
 
             await SendResetPasswordEmail(user, code);
             return Result.Success();

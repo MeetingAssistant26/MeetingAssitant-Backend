@@ -6,7 +6,7 @@ namespace MeetingAssistant.Features.Identity.Endpoints
 {
     public partial class AuthController
     {
-        [HttpPost]
+        [HttpPost("login")]
         public async Task<IActionResult> Login(LoginRequest loginRequest, CancellationToken cancellationToken)
         {
             var authresult = await _authService.GetTokenAsync(loginRequest.Email, loginRequest.Password, cancellationToken);

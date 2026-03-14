@@ -1,5 +1,6 @@
 using MeetingAssistant.Features.Authentication.Authentication;
 using MeetingAssistant.Features.Identity.Entites;
+using MeetingAssistant.Api.Infrastructure.Configuration;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
@@ -18,17 +19,21 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                     .AddEntityFrameworkStores<ApplicationDbContext>()
                     .AddDefaultTokenProviders();
 
-         
-            //DI for jwtoptions
-            services.AddOptions<JwtOptions>()
-                    .BindConfiguration(nameof(JwtOptions))
-                    .ValidateDataAnnotations()
-                    .ValidateOnStart();
-            
+            services.AddOptions<JwtSettings>()
+                .BindConfiguration("Jwt")
+                .Validate(settings =>
+                    !string.IsNullOrWhiteSpace(settings.SigningKey) &&
+                    !string.IsNullOrWhiteSpace(settings.Issuer) &&
+                    !string.IsNullOrWhiteSpace(settings.Audience) &&
+                    settings.TokenExpiryMinutes > 0,
+                    "Jwt settings must include SigningKey, Issuer, Audience, and TokenExpiryMinutes > 0.")
+                .ValidateOnStart();
 
-
-
-            var JwtSettings=configuration.GetSection(nameof(JwtOptions)).Get<JwtOptions>();
+            var jwtSettings = configuration.GetSection("Jwt").Get<JwtSettings>();
+            if (jwtSettings is null || string.IsNullOrWhiteSpace(jwtSettings.SigningKey))
+            {
+                throw new InvalidOperationException("Missing Jwt configuration. Set Jwt:SigningKey via user-secrets or environment variables.");
+            }
 
             services.AddAuthentication(options =>
             {
@@ -46,10 +51,10 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                         ValidateAudience = true,
                         ValidateIssuer = true,
                         ValidateLifetime = true,
-                        ValidIssuer = JwtSettings?.Issuer,
-                        ValidAudience= JwtSettings?.Audience,
-                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSettings!.Key))
-
+                        ValidIssuer = jwtSettings.Issuer,
+                        ValidAudience = jwtSettings.Audience,
+                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings.SigningKey!)),
+                        ClockSkew = TimeSpan.Zero
                  };
 
             });
