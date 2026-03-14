@@ -2,12 +2,10 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     container_name: meetingassistant-postgres
-    ports:
-      - "5432:5432"
     environment:
-      POSTGRES_DB: meetingassistant
-      POSTGRES_USER: meetingassistant
-      POSTGRES_PASSWORD: meetingassistant
+      POSTGRES_DB: ${POSTGRES_DB:-meetingassistant}
+      POSTGRES_USER: ${POSTGRES_USER:-meetingassistant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
@@ -37,8 +35,8 @@ services:
     container_name: meetingassistant-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: minio123
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -56,10 +54,17 @@ services:
       context: ./MeetingAssistant
       dockerfile: Dockerfile
     container_name: meetingassistant-api
+    env_file:
+      - .env
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=meetingassistant;Username=meetingassistant;Password=meetingassistant
-      Redis__ConnectionString: redis:6379
+      ConnectionStrings__DefaultConnection: ${ConnectionStrings__DefaultConnection}
+      Jwt__SigningKey: ${Jwt__SigningKey}
+      Redis__ConnectionString: ${Redis__ConnectionString}
+      AI__ApiKey: ${AI__ApiKey}
+      AI__BaseUrl: ${AI__BaseUrl}
+      LiveKit__ApiKey: ${LiveKit__ApiKey}
+      LiveKit__ApiSecret: ${LiveKit__ApiSecret}
     ports:
       - "8080:8080"
     depends_on:

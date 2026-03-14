@@ -169,12 +169,12 @@
 
 ### Implementation for User Story 7
 
-- [ ] T042 [US7] Initialize .NET user-secrets for the project (`dotnet user-secrets init`) and document required secrets in `src/appsettings.Development.json` with placeholder descriptions (no actual values)
-- [ ] T043 [US7] Configure `docker-compose.yml` environment variables for Backend service: `ConnectionStrings__DefaultConnection`, `Jwt__SigningKey`, `Redis__ConnectionString`, `AI__ApiKey`, `AI__BaseUrl`, `LiveKit__ApiKey`, `LiveKit__ApiSecret` — referencing `.env` file (add `.env` to `.gitignore`)
-- [ ] T044 [US7] Configure JWT authentication in `src/Program.cs`: `AddAuthentication(JwtBearerDefaults)` → `AddJwtBearer()` with `IssuerSigningKey` loaded from `JwtSettings` (bound from configuration), set `ClockSkew = TimeSpan.Zero`, configure `TokenValidationParameters` (validate issuer, audience, lifetime)
-- [ ] T045 [US7] Configure Redis connection in `src/Program.cs`: `AddStackExchangeRedisCache()` with connection string from `RedisSettings`, add Redis startup health validation — if Redis unreachable, throw clear exception with message indicating mandatory dependency (fail fast per FR-013)
-- [ ] T046 [P] [US7] Create `.gitignore` entry for `.env` file and `src/appsettings.*.local.json` to prevent secret leakage
-- [ ] T047 [P] [US7] Configure LiveKit settings binding from configuration in `src/Program.cs` — bind `LiveKitSettings` POCO from `LiveKit` config section, ready for token generation by downstream features
+- [x] T042 [US7] Initialize .NET user-secrets for the project (`dotnet user-secrets init`) and document required secrets in `src/appsettings.Development.json` with placeholder descriptions (no actual values)
+- [x] T043 [US7] Configure `docker-compose.yml` environment variables for Backend service: `ConnectionStrings__DefaultConnection`, `Jwt__SigningKey`, `Redis__ConnectionString`, `AI__ApiKey`, `AI__BaseUrl`, `LiveKit__ApiKey`, `LiveKit__ApiSecret` — referencing `.env` file (add `.env` to `.gitignore`)
+- [x] T044 [US7] Configure JWT authentication in `src/Program.cs`: `AddAuthentication(JwtBearerDefaults)` → `AddJwtBearer()` with `IssuerSigningKey` loaded from `JwtSettings` (bound from configuration), set `ClockSkew = TimeSpan.Zero`, configure `TokenValidationParameters` (validate issuer, audience, lifetime)
+- [x] T045 [US7] Configure Redis connection in `src/Program.cs`: `AddStackExchangeRedisCache()` with connection string from `RedisSettings`, add Redis startup health validation — if Redis unreachable, throw clear exception with message indicating mandatory dependency (fail fast per FR-013)
+- [x] T046 [P] [US7] Create `.gitignore` entry for `.env` file and `src/appsettings.*.local.json` to prevent secret leakage
+- [x] T047 [P] [US7] Configure LiveKit settings binding from configuration in `src/Program.cs` — bind `LiveKitSettings` POCO from `LiveKit` config section, ready for token generation by downstream features
 
 **Checkpoint**: All secrets loaded from user-secrets or environment variables. No hardcoded secrets in repository. Redis fails fast if unreachable. JWT auth infrastructure ready.
 

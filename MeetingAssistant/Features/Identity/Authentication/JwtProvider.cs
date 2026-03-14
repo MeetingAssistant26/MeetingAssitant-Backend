@@ -6,12 +6,13 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using MeetingAssistant.Features.Identity.Entites;
+using MeetingAssistant.Api.Infrastructure.Configuration;
 
 namespace MeetingAssistant.Features.Authentication.Authentication
 {
-    public class JwtProvider(IOptions<JwtOptions> jwtOptions) : IJwtProvider
+    public class JwtProvider(IOptions<JwtSettings> jwtSettingsOptions) : IJwtProvider
     {
-        private readonly JwtOptions _jwtOptions = jwtOptions.Value;
+        private readonly JwtSettings _jwtSettings = jwtSettingsOptions.Value;
 
         public (string token, int expiresIn) GenerateJwtToken(ApplicationUser User,IEnumerable<string>roles,IEnumerable<string>permissions)
         {
@@ -27,20 +28,20 @@ namespace MeetingAssistant.Features.Authentication.Authentication
 
                 };
 
-            var symmetricSecurityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtOptions.Key));
+            var symmetricSecurityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.SigningKey!));
 
             var signingCredentials=new SigningCredentials(symmetricSecurityKey,SecurityAlgorithms.HmacSha256);
 
             var token=new JwtSecurityToken(
-                issuer: _jwtOptions.Issuer,
-                audience: _jwtOptions.Audience,
+                issuer: _jwtSettings.Issuer,
+                audience: _jwtSettings.Audience,
                 claims: claims,
-                expires: DateTime.UtcNow.AddMinutes(_jwtOptions.expiresIn),
+                expires: DateTime.UtcNow.AddMinutes(_jwtSettings.TokenExpiryMinutes),
                 signingCredentials: signingCredentials
                 );
 
 
-            return(token:new JwtSecurityTokenHandler().WriteToken(token),_jwtOptions.expiresIn);
+            return(token:new JwtSecurityTokenHandler().WriteToken(token),_jwtSettings.TokenExpiryMinutes);
 
 
         }
@@ -49,7 +50,7 @@ namespace MeetingAssistant.Features.Authentication.Authentication
         {
             var tokenHandler = new JwtSecurityTokenHandler();
 
-            var symmetricSecurityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtOptions.Key));
+            var symmetricSecurityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.SigningKey!));
             try
             {
                 tokenHandler.ValidateToken(token, new TokenValidationParameters
@@ -58,6 +59,7 @@ namespace MeetingAssistant.Features.Authentication.Authentication
                     IssuerSigningKey = symmetricSecurityKey,
                     ValidateIssuer = false,
                     ValidateAudience = false,
+                    ValidateLifetime = false,
                     ClockSkew = TimeSpan.Zero
                 }, out SecurityToken validatedToken);
 

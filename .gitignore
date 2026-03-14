@@ -15,3 +15,7 @@ obj/
 # Other temporary files
 *.log
 *.tmp
+
+# Local secrets
+.env
+MeetingAssistant/appsettings.*.local.json
