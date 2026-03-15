@@ -15,7 +15,7 @@ namespace MeetingAssistant.Features.Identity.Endpoints
             }
             var result = await _authService.RegisterAsync(registerRequest, cancellationToken);
 
-            return result.IsSuccess ? Ok()
+            return result.IsSuccess ? Ok(result.Value)
                             : result.ToProblem(_correlationIdProvider);
         }
     }

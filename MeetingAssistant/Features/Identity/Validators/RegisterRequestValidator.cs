@@ -17,11 +17,7 @@ namespace MeetingAssistant.Features.Identity.DTOs
                 .Matches(RegexPatterns.Password)
                 .WithMessage("password should be at least 8 digits and contains LowerCase,NonAlpanumeric and UpperCase");
 
-            RuleFor(x => x.FirstName)
-                .NotEmpty()
-                .Length(3, 100);
-
-            RuleFor(x => x.LastName)
+            RuleFor(x => x.DisplayName)
                 .NotEmpty()
                 .Length(3, 100);
         }

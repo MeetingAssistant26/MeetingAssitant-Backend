@@ -587,7 +587,7 @@ Deliverable:
   - `Id`, `OrganizationId`, `InvitedByUserId`
   - `EmailWhitelist` (JSONB — array of allowed emails)
   - `Token` (unique invite link token)
-  - `ExpiresAtUtc`, `CreatedAtUtc`
+  - `ExpiresAtUtc`, `CreatedAtUtc`, `RevokedAtUtc` (timestampz, nullable)
 
 > **Terminology note**: `UserOrgMembership.Context` stores **Member Context** (people knowledge).
 > This is distinct from **Meeting Memory** (vectorized past meeting content in Phase 6).
@@ -612,7 +612,8 @@ Features/
     │   └── Invitation/
     │       ├── InvitationController.cs
     │       ├── CreateInvitationEndpoint.cs
-    │       └── JoinOrganizationEndpoint.cs
+    │       ├── JoinOrganizationEndpoint.cs
+    │       └── RevokeInvitationEndpoint.cs
     │
     ├── Models/
     │   ├── Requests/
@@ -714,6 +715,7 @@ public partial class InvitationController : ControllerBase
 **Endpoints:**
 - `POST /api/organizations/{orgId}/invitations` → `CreateInvitationEndpoint.cs`
 - `POST /api/organizations/join` → `JoinOrganizationEndpoint.cs`
+- `POST /api/organizations/{orgId}/invitations/{invitationId}/revoke` → `RevokeInvitationEndpoint.cs`
 
 ## Invitation Flow (v3.4 — simplified membership)
 
@@ -728,6 +730,8 @@ When a user accepts an invitation:
 - `MemberJoinedEvent`
 - `RoleChangedEvent`
 - `MemberContextUpdatedEvent`
+- `MemberLeftEvent`
+- `InvitationRevokedEvent`
 
 ## Tests (Phase 2)
 
@@ -739,7 +743,7 @@ Deliverable:
 - Org-scoped queries enforced
 - Member context stored and retrievable
 - Leave organization flow functional
-- 3 controllers, 7 endpoint files
+- 3 controllers, 8 endpoint files
 
 ---
 
@@ -2177,7 +2181,7 @@ Tests/
 | 84 | JWT includes `organizationId` | Access tokens now include `userId` + `organizationId` claims. `organizationId` resolved from active `UserOrgMembership` during login. |
 | 85 | SignalR hub simplified | Hub reads `organizationId` from JWT on connect, adds to exactly one group. No DB query for multiple memberships. |
 | 86 | `RegisterWithInviteEndpoint` added | New endpoint: `POST /api/auth/register/invite` for Scenario B registration. Phase 1 now has 8 endpoint files. |
-| 87 | `LeaveOrganizationEndpoint` added | New endpoint: `POST /api/organizations/{orgId}/members/leave`. Deactivates `UserOrgMembership`. Phase 2 now has 7 endpoint files. |
+| 87 | `LeaveOrganizationEndpoint` added | New endpoint: `POST /api/organizations/{orgId}/members/leave`. Deactivates `UserOrgMembership`. Phase 2 now has 8 endpoint files. |
 | 88 | Invitation flow: membership check | Invitations now block users who already have an active membership. Error: "You already belong to an organization." |
 | 89 | `ITenantProvider` resolved from JWT | Tenant resolution reads `organizationId` directly from JWT claim. No request-time DB query needed. |
 | 90 | Constitution bumped to v1.4.0 | Added simplified membership model, registration model, JWT `organizationId` requirement, and JWT-based SignalR resolution. |

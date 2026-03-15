@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 using System.Security.Claims;
@@ -14,14 +15,17 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         DbContextOptions<ApplicationDbContext> options,
         IHttpContextAccessor httpContextAccessor,
         ITenantProvider tenantProvider) :
-        IdentityDbContext<ApplicationUser>(options)
+        IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>(options)
     {
         private readonly IHttpContextAccessor _httpContextAccessor = httpContextAccessor;
         private readonly Guid? _currentTenantId = tenantProvider.CurrentOrganizationId;
 
+        public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            base.OnModelCreating(modelBuilder);
+
             modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
 
             var applyTenantFilterMethod = typeof(ApplicationDbContext)

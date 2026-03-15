@@ -250,11 +250,17 @@ if ($branchName.Length -gt $maxBranchLength) {
 if ($hasGit) {
     $branchCreated = $false
     try {
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = 'SilentlyContinue'
         git checkout -b $branchName 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
+        $ErrorActionPreference = $oldEap
+        
+        $currentBranch = (git branch --show-current).Trim()
+        if ($currentBranch -eq $branchName) {
             $branchCreated = $true
         }
     } catch {
+        $ErrorActionPreference = $oldEap
         # Exception during git command
     }
 
