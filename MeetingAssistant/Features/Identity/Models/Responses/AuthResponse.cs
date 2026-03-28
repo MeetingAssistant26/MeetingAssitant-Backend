@@ -1,10 +1,9 @@
-﻿namespace MeetingAssistant.Features.Identity.DTOs
+﻿namespace MeetingAssistant.Features.Identity.Models.Responses
 {
     public record AuthResponse
     (
         string Id,
-        string? FirstName,
-        string? LastName,
+        string? DisplayName,
         string? Email,
         string? AvatarUrl,
         string? Token,
@@ -12,5 +11,4 @@
         string RefreshToken,
         DateTime RefreshTokenExpiresOn
     );
-  
 }

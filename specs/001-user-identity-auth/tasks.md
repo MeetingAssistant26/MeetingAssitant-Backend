@@ -17,9 +17,9 @@
 
 **Purpose**: Identity feature project structure and dependency registration
 
-- [ ] T001 Create Identity feature folder structure per plan: `src/Features/Identity/Endpoints/Auth/`, `Endpoints/Token/`, `Endpoints/Profile/`, `Services/`, `Models/Requests/`, `Models/Responses/`, `Validators/`, `Events/`
-- [ ] T002 [P] Create unit test project structure: `tests/Unit/Identity/`
-- [ ] T003 [P] Create integration test project structure: `tests/Integration/Identity/`
+- [x] T001 Create Identity feature folder structure per plan: `src/Features/Identity/Endpoints/Auth/`, `Endpoints/Token/`, `Endpoints/Profile/`, `Services/`, `Models/Requests/`, `Models/Responses/`, `Validators/`, `Events/`
+- [x] T002 [P] Create unit test project structure: `tests/Unit/Identity/`
+- [x] T003 [P] Create integration test project structure: `tests/Integration/Identity/`
 
 ---
 
@@ -29,23 +29,23 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Create `ApplicationUser` entity extending `IdentityUser<Guid>` with `DisplayName`, `CreatedAtUtc`, `UpdatedAtUtc` in `src/Features/Identity/ApplicationUser.cs`
-- [ ] T005 Create `RefreshToken` entity with `TokenHash`, `UserId`, `FamilyId`, `ExpiresAtUtc`, `CreatedAtUtc`, `RevokedAtUtc`, `ReplacedByTokenHash`, `GracePeriodExpiresAtUtc`, `IsRevoked` in `src/Features/Identity/RefreshToken.cs`
-- [ ] T006 Add `DbSet<ApplicationUser>` and `DbSet<RefreshToken>` to `AppDbContext` with Identity configuration and `RefreshToken` indexes (`TokenHash` unique, `UserId`, `FamilyId`) in `src/Infrastructure/Persistence/AppDbContext.cs`
-- [ ] T007 Configure ASP.NET Identity in `Program.cs`: `AddIdentity<ApplicationUser, IdentityRole<Guid>>()`, password policy (min 8 chars, require uppercase/lowercase/digit/special), `AddEntityFrameworkStores<AppDbContext>()` in `src/Program.cs`
-- [ ] T008 Configure JWT Bearer authentication in `Program.cs`: `AddAuthentication(JwtBearerDefaults)`, `AddJwtBearer()` with single `IssuerSigningKey`, `ClockSkew = TimeSpan.Zero` in `src/Program.cs` (dual-key rotation upgrade deferred to T057)
-- [ ] T009 Create `ITokenService` interface with `GenerateAccessToken`, `GenerateRefreshToken`, `HashToken` methods in `src/Features/Identity/Services/ITokenService.cs`
-- [ ] T010 Implement `TokenService`: JWT generation with claims (`sub`, `email`, `name`, `jti`, `iat`, `exp`, `iss`, `aud`), cryptographic refresh token generation (32-byte `RandomNumberGenerator`), SHA-256 hashing in `src/Features/Identity/Services/TokenService.cs`
-- [ ] T011 Create `IAuthService` interface with `RegisterAsync`, `LoginAsync`, `RefreshAsync`, `LogoutAsync` methods in `src/Features/Identity/Services/IAuthService.cs`
-- [ ] T011.1 Create `IProfileService` interface with `GetProfileAsync`, `UpdateProfileAsync`, `ChangePasswordAsync` methods in `src/Features/Identity/Services/IProfileService.cs`
-- [ ] T012 [P] Create all domain event classes: `UserRegisteredEvent`, `UserLoggedInEvent`, `TokenRefreshedEvent`, `UserLoggedOutEvent`, `PasswordChangedEvent`, `RefreshTokenCompromiseDetectedEvent` in `src/Features/Identity/Events/`
-- [ ] T013 [P] Create shared response model: `AuthTokenResponse` (accessToken, refreshToken, expiresAtUtc) in `src/Features/Identity/Models/Responses/AuthTokenResponse.cs`
-- [ ] T014 Register Identity DI services (`ITokenService`/`TokenService`, `IAuthService`/`AuthService`, `IProfileService`/`ProfileService`) in `src/Program.cs`. Controllers are auto-discovered via `AddControllers()` — no manual endpoint mapping needed.
-- [ ] T014.1 [P] Create `AuthController.cs` controller definition (partial class, `[ApiController]`, `[Route("api/auth")]`, ctor with `IAuthService`, `ITokenService`) in `src/Features/Identity/Endpoints/Auth/AuthController.cs`
-- [ ] T014.2 [P] Create `TokenController.cs` controller definition (partial class, `[ApiController]`, `[Route("api/auth/tokens")]`, ctor with `ITokenService`) in `src/Features/Identity/Endpoints/Token/TokenController.cs`
-- [ ] T014.3 [P] Create `ProfileController.cs` controller definition (partial class, `[ApiController]`, `[Route("api/auth/profile")]`, ctor with `IProfileService`) in `src/Features/Identity/Endpoints/Profile/ProfileController.cs`
-- [ ] T060 Set up MediatR logging pipeline behavior to automatically log all published domain events with correlation IDs in `src/Shared/Behaviors/DomainEventLoggingBehavior.cs`
-- [ ] T015 Generate EF Core migration for Identity tables and `RefreshToken` entity
+- [x] T004 Create `ApplicationUser` entity extending `IdentityUser<Guid>` with `DisplayName`, `CreatedAtUtc`, `UpdatedAtUtc` in `src/Features/Identity/ApplicationUser.cs`
+- [x] T005 Create `RefreshToken` entity with `TokenHash`, `UserId`, `FamilyId`, `ExpiresAtUtc`, `CreatedAtUtc`, `RevokedAtUtc`, `ReplacedByTokenHash`, `GracePeriodExpiresAtUtc`, `IsRevoked` in `src/Features/Identity/RefreshToken.cs`
+- [x] T006 Add `DbSet<ApplicationUser>` and `DbSet<RefreshToken>` to `AppDbContext` with Identity configuration and `RefreshToken` indexes (`TokenHash` unique, `UserId`, `FamilyId`) in `src/Infrastructure/Persistence/AppDbContext.cs`
+- [x] T007 Configure ASP.NET Identity in `Program.cs`: `AddIdentity<ApplicationUser, IdentityRole<Guid>>()`, password policy (min 8 chars, require uppercase/lowercase/digit/special), `AddEntityFrameworkStores<AppDbContext>()` in `src/Program.cs`
+- [x] T008 Configure JWT Bearer authentication in `Program.cs`: `AddAuthentication(JwtBearerDefaults)`, `AddJwtBearer()` with single `IssuerSigningKey`, `ClockSkew = TimeSpan.Zero` in `src/Program.cs` (dual-key rotation upgrade deferred to T057)
+- [x] T009 Create `ITokenService` interface with `GenerateAccessToken`, `GenerateRefreshToken`, `HashToken` methods in `src/Features/Identity/Services/ITokenService.cs`
+- [x] T010 Implement `TokenService`: JWT generation with claims (`sub`, `email`, `name`, `jti`, `iat`, `exp`, `iss`, `aud`), cryptographic refresh token generation (32-byte `RandomNumberGenerator`), SHA-256 hashing in `src/Features/Identity/Services/TokenService.cs`
+- [x] T011 Create `IAuthService` interface with `RegisterAsync`, `LoginAsync`, `RefreshAsync`, `LogoutAsync` methods in `src/Features/Identity/Services/IAuthService.cs`
+- [x] T011.1 Create `IProfileService` interface with `GetProfileAsync`, `UpdateProfileAsync`, `ChangePasswordAsync` methods in `src/Features/Identity/Services/IProfileService.cs`
+- [x] T012 [P] Create all domain event classes: `UserRegisteredEvent`, `UserLoggedInEvent`, `TokenRefreshedEvent`, `UserLoggedOutEvent`, `PasswordChangedEvent`, `RefreshTokenCompromiseDetectedEvent` in `src/Features/Identity/Events/`
+- [x] T013 [P] Create shared response model: `AuthTokenResponse` (accessToken, refreshToken, expiresAtUtc) in `src/Features/Identity/Models/Responses/AuthTokenResponse.cs`
+- [x] T014 Register Identity DI services (`ITokenService`/`TokenService`, `IAuthService`/`AuthService`, `IProfileService`/`ProfileService`) in `src/Program.cs`. Controllers are auto-discovered via `AddControllers()` — no manual endpoint mapping needed.
+- [x] T014.1 [P] Create `AuthController.cs` controller definition (partial class, `[ApiController]`, `[Route("api/auth")]`, ctor with `IAuthService`, `ITokenService`) in `src/Features/Identity/Endpoints/Auth/AuthController.cs`
+- [x] T014.2 [P] Create `TokenController.cs` controller definition (partial class, `[ApiController]`, `[Route("api/auth/tokens")]`, ctor with `ITokenService`) in `src/Features/Identity/Endpoints/Token/TokenController.cs`
+- [x] T014.3 [P] Create `ProfileController.cs` controller definition (partial class, `[ApiController]`, `[Route("api/auth/profile")]`, ctor with `IProfileService`) in `src/Features/Identity/Endpoints/Profile/ProfileController.cs`
+- [x] T060 Set up MediatR logging pipeline behavior to automatically log all published domain events with correlation IDs in `src/Shared/Behaviors/DomainEventLoggingBehavior.cs`
+- [x] T015 Generate EF Core migration for Identity tables and `RefreshToken` entity (Ready but deferred executing physical DB apply as requested).
 
 **Checkpoint**: Foundation ready — Identity entities, token service, auth service interface, and JWT configuration in place. User story implementation can now begin.
 

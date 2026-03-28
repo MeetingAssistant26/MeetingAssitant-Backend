@@ -2,15 +2,18 @@
 
 namespace MeetingAssistant.Features.Identity.Entites
 {
-    public sealed class ApplicationUser:IdentityUser
+    public sealed class ApplicationUser : IdentityUser<Guid>
     {
         public string? FirstName { get; set; }
         public string? LastName { get; set; }
+        public string? DisplayName { get; set; }
 
-        public string? ProfileAvatarUrl { get; set; }=string.Empty;
+        public string? ProfileAvatarUrl { get; set; } = string.Empty;
 
-        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+        public DateTime UpdatedAtUtc { get; set; }
 
-        public List<RefreshToken> RefreshTokens { get; set; } = [];
+        // Navigation property
+        public ICollection<RefreshToken> RefreshTokens { get; set; } = new List<RefreshToken>();
     }
 }

@@ -1,4 +1,3 @@
-using MeetingAssistant.Features.Authentication.Authentication;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Api.Infrastructure.Configuration;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
@@ -14,8 +13,7 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
         public static IServiceCollection AddAuth(this IServiceCollection services, IConfiguration configuration)
         {
             //add Auth configration
-            services.AddSingleton<IJwtProvider, JwtProvider>();
-            services.AddIdentity<ApplicationUser,IdentityRole>()
+            services.AddIdentity<ApplicationUser, IdentityRole<Guid>>()
                     .AddEntityFrameworkStores<ApplicationDbContext>()
                     .AddDefaultTokenProviders();
 
@@ -61,11 +59,16 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
 
             services.Configure<IdentityOptions>(options =>
             {
+                // Password rules are enforced by FluentValidation via RegexPatterns.Password at the endpoint level
+                options.Password.RequireLowercase = false;
+                options.Password.RequireUppercase = false;
+                options.Password.RequireDigit = false;
+                options.Password.RequireNonAlphanumeric = false;
                 options.Password.RequiredLength = 8;
+                
                 options.SignIn.RequireConfirmedEmail = true;
                 options.User.RequireUniqueEmail = true;
-
-            } );
+            });
 
             return services;
         }
