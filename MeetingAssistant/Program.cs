@@ -1,6 +1,7 @@
-using MeetingAssistant.Infrastructure.DependencyInjection;
+﻿using MeetingAssistant.Infrastructure.DependencyInjection;
 using MeetingAssistant.Infrastructure.Middleware;
 using MeetingAssistant.Infrastructure.SignalR;
+using MeetingAssistant.Features.Identity;
 using Serilog;
 
 namespace MeetingAssistant.Api
@@ -18,9 +19,11 @@ namespace MeetingAssistant.Api
 
             builder.Services
                 .AddInfrastructure(builder.Configuration)
+                .AddValidation()
                 .AddCachingAndHealthChecks(builder.Configuration)
                 .AddDatabase(builder.Configuration)
                 .AddAuth(builder.Configuration)
+                .AddIdentityFeature()
                 .AddMapping()
                 .AddSwaggerServices()
                 .AddHangfireServices(builder.Configuration);
@@ -51,8 +54,11 @@ namespace MeetingAssistant.Api
             app.MapHealthChecks("/healthz");
 
             app.UseSecureHangfireDashboard();
+            app.RegisterRecurringJobs();
 
             app.Run();
         }
     }
 }
+
+

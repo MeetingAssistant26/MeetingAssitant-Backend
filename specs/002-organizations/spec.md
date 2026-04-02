@@ -186,26 +186,51 @@ A member voluntarily leaves their organization. The system deactivates their `Us
 - **SC-007**: Leave organization flow correctly deactivates membership and causes subsequent token refresh to fail — confirmed by integration test.
 - **SC-008**: All domain events (`OrganizationCreatedEvent`, `MemberJoinedEvent`, `RoleChangedEvent`, `MemberContextUpdatedEvent`, `MemberLeftEvent`, `InvitationRevokedEvent`) are emitted and logged with correlation IDs.
 - **SC-009**: All endpoint error responses include `CorrelationId` and use `StandardErrorResponse` format via `result.ToProblem(correlationIdProvider)`.
-- **SC-010**: All 3 controllers and 7 endpoint files follow the Partial Controller Pattern — verified by code review (no constructor/attributes/fields in endpoint files).
+- **SC-010**: All 3 controllers and 8 endpoint files follow the Partial Controller Pattern — verified by code review (no constructor/attributes/fields in endpoint files).
 
 ## Clarifications
 
 ### Session 2026-03-15
 - Q: Should organization administrators be able to explicitly revoke or cancel an active invitation before it naturally expires? → A: Yes, allow admins to explicitly revoke/cancel an active invitation before it expires.
+- Q: Are revoked/expired invitation tokens physically deleted from the database? → A: No. They remain in the database and are rejected via on-the-fly validation. No background cleanup job is required for this phase.
+
+### Session 2026-03-14
+
+- Q: Can a Member-role user view the organization's member list, or is it restricted to Admins? → A: All organization members can view the member list (read access). Only role changes and invitation creation are admin-restricted.
+- Q: When a member leaves an organization, should their historical data (meeting participations, task assignments, context) be deleted? → A: No. The `UserOrgMembership` record is preserved with `is_enabled = false` for audit purposes. Historical references remain intact.
+- Q: Should the `Organization.Slug` be editable after creation? → A: No. Slugs are immutable once created. If needed, the admin creates a new organization.
+- Q: What authorization is required for the `JoinOrganization` endpoint? → A: The user must be authenticated (valid JWT) but does NOT need to belong to any organization. The endpoint validates the invitation token and email whitelist.
 
 ## Assumptions
 
 - Organization names must be non-empty and have a maximum length of 200 characters.
 - Slug generation uses standard URL-safe rules: lowercase, hyphens for separators, no special characters, max 100 characters.
 - The `OrganizationRole` enum has three values: `Admin` (0), `Member` (1), `Guest` (2). Guest role has read-only access.
+- Invitation tokens are generated using a cryptographically secure random generator (e.g., `RandomNumberGenerator`) and are 32 characters long.
+- The email whitelist comparison is case-insensitive (per RFC 5321 — local parts are technically case-sensitive, but practically treated as case-insensitive).
+- Member Context (`UserOrgMembership.Context`) is plain text, not structured data. It is intended for human-readable descriptions like "Backend engineer" or "Responsible for UI/UX design."
+- `ContextStatus` field is reserved for future use (e.g., tracking AI processing state of context). Not actively used in this phase.
+- When a user leaves an organization and their JWT has not yet expired, org-scoped endpoints MUST still reject requests because the `AppDbContext` global query filter will no longer match (the membership is deactivated).
+- `MemberLeftEvent` and `InvitationRevokedEvent` are additions to the implementation plan's domain event list — the plan lists `OrganizationCreatedEvent`, `MemberJoinedEvent`, `RoleChangedEvent`, `MemberContextUpdatedEvent` only. These two new events are required by the leave and revocation flows added in this spec.
+- `RevokedAtUtc` on the `Invitation` entity is an addition to the implementation plan's entity definition. The plan defines `Id`, `OrganizationId`, `InvitedByUserId`, `EmailWhitelist`, `Token`, `ExpiresAtUtc`, `CreatedAtUtc` only. This field is required by the invitation revocation flow (FR-016b).
 
 ## Dependencies
 
-- **000-infra-foundation**: Database, Entity Framework Core setup, problem details format.
-- **001-user-identity-auth**: Authentication (JWT) is required for all endpoints.
+- **Phase 0 (Infrastructure & Foundation)**: Requires the completed foundation — `AppDbContext` with global query filter for `OrganizationId`, `BaseEntity`, `IHasOrganizationId`, domain event dispatcher (MediatR), correlation ID middleware, global error handling, `ResultExtensions.ToProblem()`, Hangfire configuration, JWT configuration, Mapster configuration, and Partial Controller Pattern conventions. **Validation architecture**: FluentValidation is the single source of truth (ASP.NET built-in model validation is disabled via `DisableBuiltInModelValidation`). SharpGrip auto-validation intercepts requests before controller actions. Validation errors are returned as `StandardErrorResponse` via a custom `ValidationResultFactory`. All validators must use `Cascade(CascadeMode.Stop)` to prevent redundant error messages per field. No reliance on ModelState.
+- **Phase 1 (User Identity & Authentication)**: Requires `ApplicationUser` entity, JWT access/refresh tokens with `userId` and `organizationId` claims, authentication middleware, and the two registration flows (Scenario A creates org + membership in Phase 1; Scenario B creates membership via invitation which depends on this phase's invitation flow).
+- **Constitution v1.4.0**: All multi-tenancy rules (§II) must be followed — `OrganizationId` on all org-scoped entities, global query filters, simplified membership model (one active org per user), DB unique constraint on `user_id WHERE is_enabled = true`. Endpoint architecture must follow the Partial Controller Pattern (§I). Error responses must use `result.ToProblem(correlationIdProvider)` (§I).
 
 ## Out of Scope
 
-- Billing, subscription, and tier management are deferred to a later phase.
-- Deep analytics on member behavior or meeting metrics.
-- Fine-grained permission systems (custom roles beyond Admin/Member/Guest).
+- Organization settings or configuration management (display preferences, feature flags)
+- Organization deletion or archival
+- Bulk member import
+- Member removal by admin (deferred — only self-service leave is implemented)
+- Organization transfer (transferring ownership to another user)
+- Multi-organization membership (explicitly prohibited by architecture — single active membership constraint)
+- Meeting-role authorization policies (handled in Phase 3/4)
+- Email notifications for invitations (no email service in scope — invitations are token-based, shared out-of-band)
+- Member profile pictures or avatars
+- Organization billing, subscription, or tier management
+- Deep analytics on member behavior or meeting metrics
+- Fine-grained permission systems (custom roles beyond Admin/Member/Guest)

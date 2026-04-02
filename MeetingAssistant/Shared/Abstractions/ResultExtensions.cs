@@ -19,8 +19,8 @@ namespace MeetingAssistant.Shared.Abstractions
                 Type = result.Error.Code,
                 Title = result.Error.Description,
                 Status = result.Error.Statuscode,
+                Errors = result.Error.Errors,
                 CorrelationId = correlationProvider.CorrelationId
-
             };
             
             return new ObjectResult(response)

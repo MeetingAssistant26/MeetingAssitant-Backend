@@ -1,4 +1,4 @@
-﻿namespace MeetingAssistant.Features.Identity.DTOs
+namespace MeetingAssistant.Features.Identity.Models.Requests
 {
     public record LoginRequest(
         string Email,
@@ -6,3 +6,4 @@
         );
     
 }
+

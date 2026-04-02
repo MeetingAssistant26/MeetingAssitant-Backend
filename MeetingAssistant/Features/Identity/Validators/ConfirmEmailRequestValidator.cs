@@ -7,7 +7,10 @@ namespace MeetingAssistant.Features.Identity.DTOs
         public ConfirmEmailRequestValidator()
         {
             RuleFor(x => x.UserId)
-                .NotEmpty();
+                .Cascade(CascadeMode.Stop)
+                .NotEmpty()
+                .Must(id => Guid.TryParse(id, out _))
+                .WithMessage("Invalid ID format");
            
 
             RuleFor(x => x.Code)

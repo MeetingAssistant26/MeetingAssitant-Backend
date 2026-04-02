@@ -7,6 +7,5 @@ namespace MeetingAssistant.Features.Identity.Services
         (string Token, int ExpiresIn) GenerateAccessToken(ApplicationUser user, IEnumerable<string> roles, IEnumerable<string> permissions);
         string GenerateRefreshToken();
         string HashToken(string token);
-        string? ValidateToken(string token); // mapped from old validateJwtToken
     }
 }

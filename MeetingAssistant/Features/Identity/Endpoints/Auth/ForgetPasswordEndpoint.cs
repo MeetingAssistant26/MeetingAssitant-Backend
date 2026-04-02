@@ -1,4 +1,5 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Features.Identity.DTOs;
 
@@ -6,6 +7,7 @@ namespace MeetingAssistant.Features.Identity.Endpoints
 {
     public partial class AuthController
     {
+        [AllowAnonymous]
         [HttpPost("forget-password")]
         public async Task<IActionResult> ForgetPassword([FromBody] ForgetPasswordRequest resetPasswordRequest, CancellationToken cancellationToken)
         {

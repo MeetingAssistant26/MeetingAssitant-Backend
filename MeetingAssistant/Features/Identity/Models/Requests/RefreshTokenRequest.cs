@@ -1,8 +1,8 @@
-﻿namespace MeetingAssistant.Features.Identity.DTOs
+namespace MeetingAssistant.Features.Identity.Models.Requests
 {
     public record RefreshTokenRequest
     (
-        string Token,
         string RefreshToken
     );
 }
+

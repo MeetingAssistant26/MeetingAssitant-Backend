@@ -90,8 +90,8 @@
 
 - [ ] T026 [P] [US2] Create `LoginRequest` model (email, password) in `src/Features/Identity/Models/Requests/LoginRequest.cs`
 - [ ] T027 [US2] Create `LoginRequestValidator` with FluentValidation: email required, password required in `src/Features/Identity/Validators/LoginRequestValidator.cs`
-- [ ] T028 [US2] Implement `LoginAsync` in `AuthService`: validate credentials via `UserManager.CheckPasswordAsync`, generate access token + refresh token via `TokenService`, store hashed refresh token with `FamilyId`, publish `UserLoggedInEvent`, return `AuthTokenResponse` in `src/Features/Identity/Services/AuthService.cs`
-- [ ] T029 [US2] Create `LoginEndpoint.cs` (partial class `AuthController`, POST `login`): validate request, call `AuthService.LoginAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Auth/LoginEndpoint.cs`
+- [x] T028 [US2] Implement `LoginAsync` in `AuthService`: validate credentials via `UserManager.CheckPasswordAsync`, generate access token + refresh token via `TokenService`, store hashed refresh token with `FamilyId`, publish `UserLoggedInEvent`, return `AuthTokenResponse` in `src/Features/Identity/Services/AuthService.cs`
+- [x] T029 [US2] Create `LoginEndpoint.cs` (partial class `AuthController`, POST `login`): validate request, call `AuthService.LoginAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Auth/LoginEndpoint.cs`
 
 **Checkpoint**: User Story 2 complete — users can register and login. Verify by registering, logging in, and confirming valid tokens are returned.
 
@@ -110,10 +110,10 @@
 
 ### Implementation for User Story 3
 
-- [ ] T032 [P] [US3] Create `RefreshTokenRequest` model (refreshToken) in `src/Features/Identity/Models/Requests/RefreshTokenRequest.cs`
-- [ ] T061 [US3] Create `RefreshRequestValidator` with FluentValidation: refreshToken required, non-empty in `src/Features/Identity/Validators/RefreshRequestValidator.cs`
-- [ ] T033 [US3] Implement `RefreshAsync` in `AuthService`: hash incoming token, lookup by `TokenHash`, check expiry, check revocation status, handle grace period logic (`GracePeriodExpiresAtUtc`), detect reuse after grace → revoke all tokens with same `FamilyId`, on success: mark old token as revoked with `GracePeriodExpiresAtUtc = UtcNow + 30s`, generate new token pair with same `FamilyId`, set `ReplacedByTokenHash`, publish `TokenRefreshedEvent` or `RefreshTokenCompromiseDetectedEvent`, return `AuthTokenResponse` in `src/Features/Identity/Services/AuthService.cs`
-- [ ] T034 [US3] Create `RefreshTokenEndpoint.cs` (partial class `TokenController`, POST `refresh`): call `AuthService.RefreshAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Token/RefreshTokenEndpoint.cs`
+- [x] T032 [P] [US3] Create `RefreshTokenRequest` model (refreshToken) in `src/Features/Identity/Models/Requests/RefreshTokenRequest.cs`
+- [x] T061 [US3] Create `RefreshRequestValidator` with FluentValidation: refreshToken required, non-empty in `src/Features/Identity/Validators/RefreshRequestValidator.cs`
+- [x] T033 [US3] Implement `RefreshAsync` in `AuthService`: hash incoming token, lookup by `TokenHash`, check expiry, check revocation status, handle grace period logic (`GracePeriodExpiresAtUtc`), detect reuse after grace → revoke all tokens with same `FamilyId`, on success: mark old token as revoked with `GracePeriodExpiresAtUtc = UtcNow + 30s`, generate new token pair with same `FamilyId`, set `ReplacedByTokenHash`, publish `TokenRefreshedEvent` or `RefreshTokenCompromiseDetectedEvent`, return `AuthTokenResponse` in `src/Features/Identity/Services/AuthService.cs`
+- [x] T034 [US3] Create `RefreshTokenEndpoint.cs` (partial class `TokenController`, POST `refresh`): call `AuthService.RefreshAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Token/RefreshTokenEndpoint.cs`
 
 **Checkpoint**: User Story 3 complete — full token lifecycle works. Verify by logging in, refreshing tokens, and testing compromise detection.
 
@@ -131,10 +131,10 @@
 
 ### Implementation for User Story 4
 
-- [ ] T036 [P] [US4] Create `LogoutRequest` model (refreshToken) in `src/Features/Identity/Models/Requests/LogoutRequest.cs`
-- [ ] T062 [US4] Create `LogoutRequestValidator` with FluentValidation: refreshToken required, non-empty in `src/Features/Identity/Validators/LogoutRequestValidator.cs`
-- [ ] T037 [US4] Implement `LogoutAsync` in `AuthService`: hash incoming token, lookup by `TokenHash`, mark as revoked (`IsRevoked = true`, `RevokedAtUtc = UtcNow`), publish `UserLoggedOutEvent` in `src/Features/Identity/Services/AuthService.cs`
-- [ ] T038 [US4] Create `LogoutEndpoint.cs` (partial class `AuthController`, POST `logout`, requires Bearer auth): validate request, call `AuthService.LogoutAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Auth/LogoutEndpoint.cs`
+- [x] T036 [P] [US4] Create `LogoutRequest` model (refreshToken) in `src/Features/Identity/Models/Requests/LogoutRequest.cs`
+- [x] T062 [US4] Create `LogoutRequestValidator` with FluentValidation: refreshToken required, non-empty in `src/Features/Identity/Validators/LogoutRequestValidator.cs`
+- [x] T037 [US4] Implement `LogoutAsync` in `AuthService`: hash incoming token, lookup by `TokenHash`, mark as revoked (`IsRevoked = true`, `RevokedAtUtc = UtcNow`), publish `UserLoggedOutEvent` in `src/Features/Identity/Services/AuthService.cs`
+- [x] T038 [US4] Create `LogoutEndpoint.cs` (partial class `AuthController`, POST `logout`, requires Bearer auth): validate request, call `AuthService.LogoutAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Auth/LogoutEndpoint.cs`
 
 **Checkpoint**: User Story 4 complete — users can explicitly end sessions. Verify by logging in, logging out, and confirming the refresh token is invalid.
 
@@ -152,9 +152,9 @@
 
 ### Implementation for User Story 5
 
-- [ ] T040 [P] [US5] Create `UserProfileResponse` model (userId, email, displayName, createdAtUtc) in `src/Features/Identity/Models/Responses/UserProfileResponse.cs`
-- [ ] T041 [US5] Implement `GetProfileAsync` in `ProfileService`: extract user ID from claims, load user via `UserManager`, map to `UserProfileResponse` via Mapster in `src/Features/Identity/Services/ProfileService.cs`
-- [ ] T042 [US5] Create `GetCurrentUserEndpoint.cs` (partial class `ProfileController`, GET, requires Bearer auth): extract authenticated user, call `ProfileService.GetProfileAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Profile/GetCurrentUserEndpoint.cs`
+- [x] T040 [P] [US5] Create `UserProfileResponse` model (userId, email, displayName, createdAtUtc) in `src/Features/Identity/Models/Responses/UserProfileResponse.cs`
+- [x] T041 [US5] Implement `GetProfileAsync` in `ProfileService`: extract user ID from claims, load user via `UserManager`, map to `UserProfileResponse` via Mapster in `src/Features/Identity/Services/ProfileService.cs`
+- [x] T042 [US5] Create `GetCurrentUserEndpoint.cs` (partial class `ProfileController`, GET, requires Bearer auth): extract authenticated user, call `ProfileService.GetProfileAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Profile/GetCurrentUserEndpoint.cs`
 
 **Checkpoint**: User Story 5 complete — authenticated users can view their profile.
 
@@ -173,10 +173,10 @@
 
 ### Implementation for User Story 6
 
-- [ ] T045 [P] [US6] Create `UpdateProfileRequest` model (displayName) in `src/Features/Identity/Models/Requests/UpdateProfileRequest.cs`
-- [ ] T046 [US6] Create `UpdateProfileRequestValidator` with FluentValidation: displayName required, max 100 chars, trimmed in `src/Features/Identity/Validators/UpdateProfileRequestValidator.cs`
-- [ ] T047 [US6] Implement `UpdateProfileAsync` in `ProfileService`: extract user ID from claims, load user, update `DisplayName` and `UpdatedAtUtc`, save, map to `UserProfileResponse` via Mapster in `src/Features/Identity/Services/ProfileService.cs`
-- [ ] T048 [US6] Create `UpdateProfileEndpoint.cs` (partial class `ProfileController`, PUT, requires Bearer auth): validate request, call `ProfileService.UpdateProfileAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Profile/UpdateProfileEndpoint.cs`
+- [x] T045 [P] [US6] Create `UpdateProfileRequest` model (displayName) in `src/Features/Identity/Models/Requests/UpdateProfileRequest.cs`
+- [x] T046 [US6] Create `UpdateProfileRequestValidator` with FluentValidation: displayName required, max 100 chars, trimmed in `src/Features/Identity/Validators/UpdateProfileRequestValidator.cs`
+- [x] T047 [US6] Implement `UpdateProfileAsync` in `ProfileService`: extract user ID from claims, load user, update `DisplayName` and `UpdatedAtUtc`, save, map to `UserProfileResponse` via Mapster in `src/Features/Identity/Services/ProfileService.cs`
+- [x] T048 [US6] Create `UpdateProfileEndpoint.cs` (partial class `ProfileController`, PUT, requires Bearer auth): validate request, call `ProfileService.UpdateProfileAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Profile/UpdateProfileEndpoint.cs`
 
 **Checkpoint**: User Story 6 complete — authenticated users can update their display name.
 
@@ -195,10 +195,10 @@
 
 ### Implementation for User Story 7
 
-- [ ] T051 [P] [US7] Create `ChangePasswordRequest` model (currentPassword, newPassword) in `src/Features/Identity/Models/Requests/ChangePasswordRequest.cs`
-- [ ] T052 [US7] Create `ChangePasswordRequestValidator` with FluentValidation: currentPassword required, newPassword strength policy (min 8, uppercase, lowercase, digit, special) in `src/Features/Identity/Validators/ChangePasswordRequestValidator.cs`
-- [ ] T053 [US7] Implement `ChangePasswordAsync` in `ProfileService`: verify current password via `UserManager.CheckPasswordAsync`, change password via `UserManager.ChangePasswordAsync`, revoke ALL refresh tokens for user (`UPDATE WHERE UserId = @userId`), publish `PasswordChangedEvent`, return success in `src/Features/Identity/Services/ProfileService.cs`
-- [ ] T054 [US7] Create `ChangePasswordEndpoint.cs` (partial class `ProfileController`, POST `change-password`, requires Bearer auth): validate request, call `ProfileService.ChangePasswordAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Profile/ChangePasswordEndpoint.cs`
+- [x] T051 [P] [US7] Create `ChangePasswordRequest` model (currentPassword, newPassword) in `src/Features/Identity/Models/Requests/ChangePasswordRequest.cs`
+- [x] T052 [US7] Create `ChangePasswordRequestValidator` with FluentValidation: currentPassword required, newPassword strength policy (min 8, uppercase, lowercase, digit, special) in `src/Features/Identity/Validators/ChangePasswordRequestValidator.cs`
+- [x] T053 [US7] Implement `ChangePasswordAsync` in `ProfileService`: verify current password via `UserManager.CheckPasswordAsync`, change password via `UserManager.ChangePasswordAsync`, revoke ALL refresh tokens for user (`UPDATE WHERE UserId = @userId`), publish `PasswordChangedEvent`, return success in `src/Features/Identity/Services/ProfileService.cs`
+- [x] T054 [US7] Create `ChangePasswordEndpoint.cs` (partial class `ProfileController`, POST `change-password`, requires Bearer auth): validate request, call `ProfileService.ChangePasswordAsync`, return `Ok(result.Value)` on success or `result.ToProblem(correlationIdProvider)` on failure in `src/Features/Identity/Endpoints/Profile/ChangePasswordEndpoint.cs`
 
 **Checkpoint**: User Story 7 complete — users can change passwords and all other sessions are forcibly invalidated.
 
@@ -208,11 +208,11 @@
 
 **Purpose**: Audit logging, authorization scaffolding, dual-key rotation support, and end-to-end validation
 
-- [ ] T055 Audit structured logging completeness: verify all authentication events (register, login, logout, refresh, password change, compromise detection) are logged with correlation IDs via domain event logging pipeline (T060) in `src/Features/Identity/Services/AuthService.cs`
-- [ ] T056 [P] Implement policy-based authorization scaffolding for downstream features (FR-016) in `src/Program.cs`
-- [ ] T057 [P] Implement JWT dual-key rotation support: load multiple signing keys from configuration, include `kid` header in generated tokens, validate against all active keys, support 15-minute overlap window in `src/Features/Identity/Services/TokenService.cs` and upgrade `Program.cs` JWT config from single key (T008) to `IssuerSigningKeys` (plural)
+- [x] T055 Audit structured logging completeness: verify all authentication events (register, login, logout, refresh, password change, compromise detection) are logged with correlation IDs via domain event logging pipeline (T060) in `src/Features/Identity/Services/AuthService.cs`
+- [x] T056 [P] Implement policy-based authorization scaffolding for downstream features (FR-016) in `src/Program.cs`
+- [x] T057 [P] Implement JWT dual-key rotation support: load multiple signing keys from configuration, include `kid` header in generated tokens, validate against all active keys, support 15-minute overlap window in `src/Features/Identity/Services/TokenService.cs` and upgrade `Program.cs` JWT config from single key (T008) to `IssuerSigningKeys` (plural)
 - [ ] T063 [P] Load test: verify 100 concurrent authentication requests complete with p95 < 300 ms and 0% error rate (SC-007)
-- [ ] T064 [P] Audit all async method signatures across Identity feature for `CancellationToken` parameter presence (constitution compliance)
+- [x] T064 [P] Audit all async method signatures across Identity feature for `CancellationToken` parameter presence (constitution compliance)
 - [ ] T058 Run full end-to-end flow: register → login → refresh → access profile → update profile → change password → verify old sessions revoked → re-login with new password
 - [ ] T059 Run quickstart.md validation: verify all steps in `specs/001-user-identity-auth/quickstart.md` are accurate and reproducible
 

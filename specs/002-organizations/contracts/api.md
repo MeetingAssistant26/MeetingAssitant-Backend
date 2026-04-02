@@ -34,8 +34,7 @@
   {
     "userId": "guid",
     "email": "string",
-    "firstName": "string",
-    "lastName": "string",
+    "displayName": "string",
     "orgRole": "Admin|Member|Guest",
     "jobRole": "string?",
     "context": "string?",

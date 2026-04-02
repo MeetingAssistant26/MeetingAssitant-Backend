@@ -14,7 +14,8 @@
 **Language/Version**: C# / .NET 10
 **Primary Dependencies**: ASP.NET Core EF Core (Npgsql), MediatR, Mapster
 **Storage**: PostgreSQL (pgvector not directly used for this phase, but standard JSONB mapping needed)
-**Testing**: xUnit, NSubstitute, FluentValidation
+**Validation**: FluentValidation (single source of truth, SharpGrip auto-validation, custom `ValidationResultFactory`)
+**Testing**: xUnit, NSubstitute
 **Target Platform**: Linux server (Docker)
 **Project Type**: web-service
 **Performance Goals**: < 300ms p95 for API requests
