@@ -54,31 +54,5 @@ namespace MeetingAssistant.Features.Identity.Services
             return Convert.ToBase64String(hashBytes);
         }
 
-        public string? ValidateToken(string token)
-        {
-            var tokenHandler = new JwtSecurityTokenHandler();
-            var symmetricSecurityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.SigningKey!));
-            
-            try
-            {
-                tokenHandler.ValidateToken(token, new TokenValidationParameters 
-                {
-                    ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = symmetricSecurityKey,
-                    ValidateIssuer = false, // Matching your previous config, ideally should be true
-                    ValidateAudience = false,
-                    ValidateLifetime = false,
-                    ClockSkew = TimeSpan.Zero
-                }, out SecurityToken validatedToken);
-
-                var jwtToken = (JwtSecurityToken)validatedToken;
-                var userId = jwtToken.Claims.First(x => x.Type == JwtRegisteredClaimNames.Sub).Value;
-                return userId;
-            }
-            catch
-            {
-                return null;
-            }
-        }
     }
 }

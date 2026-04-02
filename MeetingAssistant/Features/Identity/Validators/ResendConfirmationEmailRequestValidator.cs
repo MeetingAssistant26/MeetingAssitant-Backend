@@ -7,6 +7,7 @@ namespace MeetingAssistant.Features.Identity.DTOs
         public ResendConfirmationEmailRequestValidator()
         {
             RuleFor(x => x.Email)
+                .Cascade(CascadeMode.Stop)
                 .NotEmpty()
                 .EmailAddress();
 

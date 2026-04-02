@@ -10,7 +10,7 @@ namespace MeetingAssistant.Infrastructure.Persistence.EntitiesConfigrations.Iden
         {
             builder.HasKey(rt => rt.Id);
             builder.HasIndex(rt => rt.TokenHash).IsUnique();
-            builder.HasIndex(rt => rt.UserId);
+            builder.HasIndex(rt => new { rt.UserId, rt.RevokedAtUtc });
             builder.HasIndex(rt => rt.FamilyId);
 
             builder.HasOne(rt => rt.User)

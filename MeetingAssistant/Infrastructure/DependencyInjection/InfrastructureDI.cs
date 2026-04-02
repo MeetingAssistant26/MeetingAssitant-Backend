@@ -14,7 +14,8 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
     {
         public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
         {
-            services.AddControllers();
+            services.AddControllers(options =>
+                options.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes = true);
 
             services.AddCors(options =>
                 options.AddDefaultPolicy(builder =>

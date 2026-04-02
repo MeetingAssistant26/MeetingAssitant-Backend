@@ -8,17 +8,21 @@ namespace MeetingAssistant.Features.Identity.DTOs
         public RegisterRequestValidator()
         {
             RuleFor(x => x.Email)
+                .Cascade(CascadeMode.Stop)
                 .NotEmpty()
                 .Must(BeValidEmail)
                 .WithMessage("Invalid Email Format");
 
             RuleFor(x => x.Password)
+                .Cascade(CascadeMode.Stop)
                 .NotEmpty()
                 .Matches(RegexPatterns.Password)
                 .WithMessage("password should be at least 8 digits and contains LowerCase,NonAlpanumeric and UpperCase");
 
             RuleFor(x => x.DisplayName)
+                .Cascade(CascadeMode.Stop)
                 .NotEmpty()
+                .Matches(@"^[a-zA-Z0-9\s\.\-_]+$")
                 .Length(3, 100);
         }
 

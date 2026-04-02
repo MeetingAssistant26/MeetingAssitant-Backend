@@ -4,8 +4,6 @@ namespace MeetingAssistant.Features.Identity.Entites
 {
     public sealed class ApplicationUser : IdentityUser<Guid>
     {
-        public string? FirstName { get; set; }
-        public string? LastName { get; set; }
         public string? DisplayName { get; set; }
 
         public string? ProfileAvatarUrl { get; set; } = string.Empty;

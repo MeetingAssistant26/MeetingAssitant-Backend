@@ -9,6 +9,7 @@ public class ResetPasswordRequestValidator : AbstractValidator<ResetPasswordRequ
     public ResetPasswordRequestValidator()
     {
         RuleFor(x => x.Email)
+            .Cascade(CascadeMode.Stop)
             .NotEmpty()
             .EmailAddress();
 
@@ -16,6 +17,7 @@ public class ResetPasswordRequestValidator : AbstractValidator<ResetPasswordRequ
            .NotEmpty();
 
         RuleFor(x => x.NewPassword)
+            .Cascade(CascadeMode.Stop)
             .NotEmpty()
             .Matches(RegexPatterns.Password)
             .WithMessage("Password should be at least 8 digits and should contains Lowercase, NonAlphanumeric and Uppercase");

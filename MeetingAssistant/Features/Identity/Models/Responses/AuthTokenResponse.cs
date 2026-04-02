@@ -2,10 +2,11 @@
 
 namespace MeetingAssistant.Features.Identity.Models.Responses
 {
-    public class AuthTokenResponse
-    {
-        public string AccessToken { get; set; } = string.Empty;
-        public string RefreshToken { get; set; } = string.Empty;
-        public DateTime ExpiresAtUtc { get; set; }
-    }
+    public record AuthTokenResponse
+    (
+        string AccessToken,
+        string RefreshToken,
+        DateTime ExpiresAtUtc,
+        int ExpiresIn
+    );
 }

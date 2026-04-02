@@ -1,14 +1,13 @@
-﻿using FluentValidation;
+using FluentValidation;
+using MeetingAssistant.Features.Identity.Models.Requests;
 
-namespace MeetingAssistant.Features.Identity.DTOs
+namespace MeetingAssistant.Features.Identity.Validators
 {
     public class RefreshTokenRequestValidator: AbstractValidator<RefreshTokenRequest>
     {
         public RefreshTokenRequestValidator()
         {
-           RuleFor(x => x.Token).NotEmpty();
            RuleFor(x => x.RefreshToken).NotEmpty();
         }
-    
     }
 }

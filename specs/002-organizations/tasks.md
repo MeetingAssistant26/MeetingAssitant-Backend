@@ -3,6 +3,8 @@
 **Input**: Design documents from `/specs/002-organizations/`
 **Prerequisites**: plan.md, spec.md, data-model.md, contracts/api.md
 
+**Validation Convention**: FluentValidation is the single source of truth. ASP.NET built-in model validation is disabled. Every request model MUST have a corresponding validator with `Cascade(CascadeMode.Stop)` on multi-rule fields. Endpoints MUST NOT check `ModelState.IsValid` — SharpGrip auto-validation handles this before the action runs. All errors use `StandardErrorResponse` via `result.ToProblem(correlationIdProvider)` for business errors and `ValidationResultFactory` for validation errors. Reference existing Identity endpoints for the correct pattern.
+
 ## Phase 1: Setup (Shared Infrastructure)
 
 **Purpose**: Project initialization and basic structure
@@ -36,6 +38,7 @@
 ### Implementation for User Story 1
 
 - [ ] T009 [P] [US1] Create API request/response contracts for Create Organization in `src/Features/Organizations/Contracts/OrganizationContracts.cs`.
+- [ ] T009a [P] [US1] Create `CreateOrganizationRequestValidator` with `Cascade(CascadeMode.Stop)` — Name: NotEmpty, Length(1, 200) — in `src/Features/Organizations/Validators/CreateOrganizationRequestValidator.cs`.
 - [ ] T010 [P] [US1] Implement `OrganizationController.cs` base partial controller class in `src/Features/Organizations/Endpoints/Organization/OrganizationController.cs`.
 - [ ] T011 [P] [US1] Implement slug generation component logic (URL-safe, lowercase, collision retry) in `src/Features/Organizations/Services/SlugGenerator.cs`.
 - [ ] T012 [US1] Implement `CreateOrganizationCommand` and handler in `src/Features/Organizations/Services/CreateOrganizationHandler.cs`.
@@ -69,6 +72,7 @@
 ### Implementation for User Story 3
 
 - [ ] T018 [P] [US3] Create `UpdateMemberRoleRequest` contract in `src/Features/Organizations/Contracts/MemberContracts.cs`.
+- [ ] T018a [P] [US3] Create `UpdateMemberRoleRequestValidator` with `Cascade(CascadeMode.Stop)` — OrgRole: NotEmpty, IsInEnum — in `src/Features/Organizations/Validators/UpdateMemberRoleRequestValidator.cs`.
 - [ ] T019 [US3] Implement `UpdateMemberRoleCommand` and handler with "last admin" transaction invariant check in `src/Features/Organizations/Services/UpdateMemberRoleHandler.cs`.
 - [ ] T020 [US3] Implement `UpdateMemberRoleEndpoint.cs` (Requires RequireOrgAdmin) in `src/Features/Organizations/Endpoints/Member/UpdateMemberRoleEndpoint.cs`.
 - [ ] T020a [P] [US3] Implement integration tests attempting to remove/demote the last admin to verify 100% enforcement of the invariant (SC-006) in `tests/Features.IntegrationTests/Organizations/UpdateMemberRoleTests.cs`.
@@ -84,6 +88,7 @@
 ### Implementation for User Story 5
 
 - [ ] T021 [P] [US5] Create `CreateInvitationRequest` and `CreateInvitationResponse` contracts in `src/Features/Organizations/Contracts/InvitationContracts.cs`.
+- [ ] T021a [P] [US5] Create `CreateInvitationRequestValidator` with `Cascade(CascadeMode.Stop)` — EmailWhitelist: NotEmpty, ForEach(email: NotEmpty, EmailAddress) — in `src/Features/Organizations/Validators/CreateInvitationRequestValidator.cs`.
 - [ ] T022 [P] [US5] Implement `InvitationController.cs` base partial controller class in `src/Features/Organizations/Endpoints/Invitation/InvitationController.cs`.
 - [ ] T023 [US5] Implement `CreateInvitationCommand` and handler (generates random URL-safe token, JSONB whitelist mapping) in `src/Features/Organizations/Services/CreateInvitationHandler.cs`.
 - [ ] T024 [US5] Implement `CreateInvitationEndpoint.cs` in `src/Features/Organizations/Endpoints/Invitation/CreateInvitationEndpoint.cs`.
@@ -117,6 +122,7 @@
 ### Implementation for User Story 4
 
 - [ ] T030 [P] [US4] Create `UpdateMemberContextRequest` contract in `src/Features/Organizations/Contracts/MemberContracts.cs`.
+- [ ] T030a [P] [US4] Create `UpdateMemberContextRequestValidator` with `Cascade(CascadeMode.Stop)` — Context: MaximumLength(2000), JobRole: MaximumLength(100) — in `src/Features/Organizations/Validators/UpdateMemberContextRequestValidator.cs`.
 - [ ] T031 [US4] Implement `UpdateMemberContextCommand` and handler with specific self-or-admin authorization check in `src/Features/Organizations/Services/UpdateMemberContextHandler.cs`.
 - [ ] T032 [US4] Implement `UpdateMemberContextEndpoint.cs` in `src/Features/Organizations/Endpoints/Member/UpdateMemberContextEndpoint.cs`.
 - [ ] T032a [P] [US4] Implement integration tests for Member Context updates evaluating both Admin and Member authorization rules in `tests/Features.IntegrationTests/Organizations/UpdateMemberContextTests.cs`.
@@ -142,7 +148,7 @@
 **Purpose**: Improvements that affect multiple user stories and system cleanliness
 
 - [ ] T035 Review all endpoints to ensure they use `result.ToProblem(correlationIdProvider)` for explicit ProblemDetails formatting.
-- [ ] T036 Review MediatR pipeline behaviors to ensure validation occurs cleanly across all 7 command types.
+- [ ] T036 Verify all request models have a corresponding FluentValidation validator with `Cascade(CascadeMode.Stop)`, and that SharpGrip auto-validation returns `StandardErrorResponse` via `ValidationResultFactory` for all endpoints.
 - [ ] T037 Ensure the EF Core DbContext explicitly cascades or restricts deletes to avoid orphan `UserOrgMembership` issues if an admin were hypothetically removed from system in a manual data patch.
 
 ---
