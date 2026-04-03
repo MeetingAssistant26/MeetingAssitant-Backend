@@ -9,7 +9,7 @@
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Create feature directory structure in `src/Features/Organizations/` (Endpoints, Models, Services, Validators).
+- [x] T001 Create feature directory structure in `src/Features/Organizations/` (Endpoints, Models, Services, Validators).
 
 ---
 
@@ -17,15 +17,15 @@
 
 **Purpose**: Core infrastructure that MUST be complete before ANY user story can be implemented
 
-- [ ] T002 [P] Create `OrganizationRole` enum (Admin=0, Member=1, Guest=2) in `src/Features/Organizations/Models/OrganizationRole.cs`.
-- [ ] T003 Create `Organization` entity (Id, Name, Slug, CreatedAtUtc) in `src/Features/Organizations/Models/Organization.cs`.
-- [ ] T004 Create `UserOrgMembership` entity with EF partial unique index `UNIQUE(UserId) WHERE IsEnabled = true` in `src/Features/Organizations/Models/UserOrgMembership.cs`.
-- [ ] T005 Create `Invitation` entity with `EmailWhitelist` (JSONB) and `RevokedAtUtc` in `src/Features/Organizations/Models/Invitation.cs`.
-- [ ] T006 [P] Create domain events (`OrganizationCreatedEvent`, `MemberJoinedEvent`, `RoleChangedEvent`, `MemberContextUpdatedEvent`, `MemberLeftEvent`, `InvitationRevokedEvent`) in `src/Features/Organizations/Models/Events/`.
-- [ ] T007 Register EF Core DB Context changes and run migration for Organizations, Memberships, and Invitations in `src/Infrastructure/Data/AppDbContext.cs`.
-- [ ] T008 [P] Implement organization-scoped authorization policies (`RequireOrgAdmin`, `RequireOrgMember`, `RequireOrgAccess`) in `src/Infrastructure/Security/AuthorizationSetup.cs`.
-- [ ] T008a [P] Implement Domain Event Dispatcher (e.g., MediatR publishing overriding `SaveChangesAsync`) in `src/Infrastructure/Data/AppDbContext.cs`.
-- [ ] T008b [P] Register `ICorrelationIdProvider` service and middleware in DI container for standard problem details.
+- [x] T002 [P] Create `OrganizationRole` enum (Admin=0, Member=1, Guest=2) in `src/Features/Organizations/Models/OrganizationRole.cs`.
+- [x] T003 Create `Organization` entity (Id, Name, Slug, CreatedAtUtc) in `src/Features/Organizations/Models/Organization.cs`.
+- [x] T004 Create `UserOrgMembership` entity with EF partial unique index `UNIQUE(UserId) WHERE IsEnabled = true` in `src/Features/Organizations/Models/UserOrgMembership.cs`.
+- [x] T005 Create `Invitation` entity with `EmailWhitelist` (JSONB) and `RevokedAtUtc` in `src/Features/Organizations/Models/Invitation.cs`.
+- [x] T006 [P] Create domain events (`OrganizationCreatedEvent`, `MemberJoinedEvent`, `RoleChangedEvent`, `MemberContextUpdatedEvent`, `MemberLeftEvent`, `InvitationRevokedEvent`) in `src/Features/Organizations/Models/Events/`.
+- [x] T007 Register EF Core DB Context changes and run migration for Organizations, Memberships, and Invitations in `src/Infrastructure/Data/AppDbContext.cs`.
+- [x] T008 [P] Implement organization-scoped authorization policies (`RequireOrgAdmin`, `RequireOrgMember`, `RequireOrgAccess`) in `src/Infrastructure/Security/AuthorizationSetup.cs`.
+- [x] T008a [P] Implement Domain Event Dispatcher (e.g., MediatR publishing overriding `SaveChangesAsync`) in `src/Infrastructure/Data/AppDbContext.cs`.
+- [x] T008b [P] Register `ICorrelationIdProvider` service and middleware in DI container for standard problem details.
 
 ---
 
@@ -37,12 +37,12 @@
 
 ### Implementation for User Story 1
 
-- [ ] T009 [P] [US1] Create API request/response contracts for Create Organization in `src/Features/Organizations/Contracts/OrganizationContracts.cs`.
-- [ ] T009a [P] [US1] Create `CreateOrganizationRequestValidator` with `Cascade(CascadeMode.Stop)` — Name: NotEmpty, Length(1, 200) — in `src/Features/Organizations/Validators/CreateOrganizationRequestValidator.cs`.
-- [ ] T010 [P] [US1] Implement `OrganizationController.cs` base partial controller class in `src/Features/Organizations/Endpoints/Organization/OrganizationController.cs`.
-- [ ] T011 [P] [US1] Implement slug generation component logic (URL-safe, lowercase, collision retry) in `src/Features/Organizations/Services/SlugGenerator.cs`.
-- [ ] T012 [US1] Implement `CreateOrganizationCommand` and handler in `src/Features/Organizations/Services/CreateOrganizationHandler.cs`.
-- [ ] T013 [US1] Implement `CreateOrganizationEndpoint.cs` in `src/Features/Organizations/Endpoints/Organization/CreateOrganizationEndpoint.cs`.
+- [x] T009 [P] [US1] Create API request/response contracts for Create Organization in `src/Features/Organizations/Contracts/OrganizationContracts.cs`.
+- [x] T009a [P] [US1] Create `CreateOrganizationRequestValidator` with `Cascade(CascadeMode.Stop)` — Name: NotEmpty, Length(1, 200) — in `src/Features/Organizations/Validators/CreateOrganizationRequestValidator.cs`.
+- [x] T010 [P] [US1] Implement `OrganizationController.cs` base partial controller class in `src/Features/Organizations/Endpoints/Organization/OrganizationController.cs`.
+- [x] T011 [P] [US1] Implement slug generation component logic (URL-safe, lowercase, collision retry) in `src/Features/Organizations/Services/SlugGenerator.cs`.
+- [x] T012 [US1] Implement `CreateOrganizationCommand` and handler in `src/Features/Organizations/Services/CreateOrganizationHandler.cs`.
+- [x] T013 [US1] Implement `CreateOrganizationEndpoint.cs` in `src/Features/Organizations/Endpoints/Organization/CreateOrganizationEndpoint.cs`.
 - [ ] T013a [P] [US1] Implement integration tests verifying organization creation and tenant isolation constraint (SC-001) in `tests/Features.IntegrationTests/Organizations/CreateOrganizationTests.cs`.
 
 ---
@@ -55,10 +55,10 @@
 
 ### Implementation for User Story 2
 
-- [ ] T014 [P] [US2] Create API response contracts for List Members (`MemberResponse`) in `src/Features/Organizations/Contracts/MemberContracts.cs`.
-- [ ] T015 [P] [US2] Implement `MemberController.cs` base partial controller class in `src/Features/Organizations/Endpoints/Member/MemberController.cs`.
-- [ ] T016 [US2] Implement `ListMembersQuery` and handler to return isolated tenant members in `src/Features/Organizations/Services/ListMembersHandler.cs`.
-- [ ] T017 [US2] Implement `ListMembersEndpoint.cs` in `src/Features/Organizations/Endpoints/Member/ListMembersEndpoint.cs`.
+- [x] T014 [P] [US2] Create API response contracts for List Members (`MemberResponse`) in `src/Features/Organizations/Contracts/MemberContracts.cs`.
+- [x] T015 [P] [US2] Implement `MemberController.cs` base partial controller class in `src/Features/Organizations/Endpoints/Member/MemberController.cs`.
+- [x] T016 [US2] Implement `ListMembersQuery` and handler to return isolated tenant members in `src/Features/Organizations/Services/ListMembersHandler.cs`.
+- [x] T017 [US2] Implement `ListMembersEndpoint.cs` in `src/Features/Organizations/Endpoints/Member/ListMembersEndpoint.cs`.
 - [ ] T017a [P] [US2] Implement integration tests verifying cross-tenant isolation where Org A query returns zero results from Org B (SC-001) in `tests/Features.IntegrationTests/Organizations/ListMembersTests.cs`.
 
 ---
@@ -71,10 +71,10 @@
 
 ### Implementation for User Story 3
 
-- [ ] T018 [P] [US3] Create `UpdateMemberRoleRequest` contract in `src/Features/Organizations/Contracts/MemberContracts.cs`.
-- [ ] T018a [P] [US3] Create `UpdateMemberRoleRequestValidator` with `Cascade(CascadeMode.Stop)` — OrgRole: NotEmpty, IsInEnum — in `src/Features/Organizations/Validators/UpdateMemberRoleRequestValidator.cs`.
-- [ ] T019 [US3] Implement `UpdateMemberRoleCommand` and handler with "last admin" transaction invariant check in `src/Features/Organizations/Services/UpdateMemberRoleHandler.cs`.
-- [ ] T020 [US3] Implement `UpdateMemberRoleEndpoint.cs` (Requires RequireOrgAdmin) in `src/Features/Organizations/Endpoints/Member/UpdateMemberRoleEndpoint.cs`.
+- [x] T018 [P] [US3] Create `UpdateMemberRoleRequest` contract in `src/Features/Organizations/Contracts/MemberContracts.cs`.
+- [x] T018a [P] [US3] Create `UpdateMemberRoleRequestValidator` with `Cascade(CascadeMode.Stop)` — OrgRole: NotEmpty, IsInEnum — in `src/Features/Organizations/Validators/UpdateMemberRoleRequestValidator.cs`.
+- [x] T019 [US3] Implement `UpdateMemberRoleCommand` and handler with "last admin" transaction invariant check in `src/Features/Organizations/Services/UpdateMemberRoleHandler.cs`.
+- [x] T020 [US3] Implement `UpdateMemberRoleEndpoint.cs` (Requires RequireOrgAdmin) in `src/Features/Organizations/Endpoints/Member/UpdateMemberRoleEndpoint.cs`.
 - [ ] T020a [P] [US3] Implement integration tests attempting to remove/demote the last admin to verify 100% enforcement of the invariant (SC-006) in `tests/Features.IntegrationTests/Organizations/UpdateMemberRoleTests.cs`.
 
 ---
@@ -87,13 +87,13 @@
 
 ### Implementation for User Story 5
 
-- [ ] T021 [P] [US5] Create `CreateInvitationRequest` and `CreateInvitationResponse` contracts in `src/Features/Organizations/Contracts/InvitationContracts.cs`.
-- [ ] T021a [P] [US5] Create `CreateInvitationRequestValidator` with `Cascade(CascadeMode.Stop)` — EmailWhitelist: NotEmpty, ForEach(email: NotEmpty, EmailAddress) — in `src/Features/Organizations/Validators/CreateInvitationRequestValidator.cs`.
-- [ ] T022 [P] [US5] Implement `InvitationController.cs` base partial controller class in `src/Features/Organizations/Endpoints/Invitation/InvitationController.cs`.
-- [ ] T023 [US5] Implement `CreateInvitationCommand` and handler (generates random URL-safe token, JSONB whitelist mapping) in `src/Features/Organizations/Services/CreateInvitationHandler.cs`.
-- [ ] T024 [US5] Implement `CreateInvitationEndpoint.cs` in `src/Features/Organizations/Endpoints/Invitation/CreateInvitationEndpoint.cs`.
-- [ ] T025 [US5] Implement `RevokeInvitationCommand` and handler (sets `RevokedAtUtc`) in `src/Features/Organizations/Services/RevokeInvitationHandler.cs`.
-- [ ] T026 [US5] Implement `RevokeInvitationEndpoint.cs` in `src/Features/Organizations/Endpoints/Invitation/RevokeInvitationEndpoint.cs`.
+- [x] T021 [P] [US5] Create `CreateInvitationRequest` and `CreateInvitationResponse` contracts in `src/Features/Organizations/Contracts/InvitationContracts.cs`.
+- [x] T021a [P] [US5] Create `CreateInvitationRequestValidator` with `Cascade(CascadeMode.Stop)` — EmailWhitelist: NotEmpty, ForEach(email: NotEmpty, EmailAddress) — in `src/Features/Organizations/Validators/CreateInvitationRequestValidator.cs`.
+- [x] T022 [P] [US5] Implement `InvitationController.cs` base partial controller class in `src/Features/Organizations/Endpoints/Invitation/InvitationController.cs`.
+- [x] T023 [US5] Implement `CreateInvitationCommand` and handler (generates random URL-safe token, JSONB whitelist mapping) in `src/Features/Organizations/Services/CreateInvitationHandler.cs`.
+- [x] T024 [US5] Implement `CreateInvitationEndpoint.cs` in `src/Features/Organizations/Endpoints/Invitation/CreateInvitationEndpoint.cs`.
+- [x] T025 [US5] Implement `RevokeInvitationCommand` and handler (sets `RevokedAtUtc`) in `src/Features/Organizations/Services/RevokeInvitationHandler.cs`.
+- [x] T026 [US5] Implement `RevokeInvitationEndpoint.cs` in `src/Features/Organizations/Endpoints/Invitation/RevokeInvitationEndpoint.cs`.
 - [ ] T026a [P] [US5] Implement contract and integration tests for Invitation creation and revocation checking token constraints (SC-005) in `tests/Features.IntegrationTests/Organizations/InvitationTests.cs`.
 
 ---

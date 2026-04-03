@@ -1,5 +1,27 @@
 # API Contracts: Organizations
 
+## Standard Error Response
+
+All endpoints return errors using `StandardErrorResponse` via `result.ToProblem(correlationIdProvider)` for business errors and `ValidationResultFactory` for validation errors.
+
+```json
+{
+  "type": "string",
+  "title": "string",
+  "status": 0,
+  "errors": { "fieldName": ["error message"] },
+  "correlationId": "string"
+}
+```
+
+- `type`: Error code (e.g., `"Organization.AlreadyHasMembership"`, `"ValidationError"`)
+- `title`: Human-readable description
+- `status`: HTTP status code
+- `errors`: Field-level validation errors (present only for 400 validation responses)
+- `correlationId`: Request correlation ID for tracing
+
+---
+
 ## 1. Organization Endpoints (OrganizationController)
 
 ### Create Organization
@@ -38,6 +60,7 @@
     "orgRole": "Admin|Member|Guest",
     "jobRole": "string?",
     "context": "string?",
+    "contextStatus": "Pending|Processing|Processed|Outdated|null",
     "isEnabled": boolean
   }
 ]

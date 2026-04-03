@@ -2,6 +2,7 @@
 using MeetingAssistant.Infrastructure.Middleware;
 using MeetingAssistant.Infrastructure.SignalR;
 using MeetingAssistant.Features.Identity;
+using MeetingAssistant.Features.Organizations;
 using Serilog;
 
 namespace MeetingAssistant.Api
@@ -24,6 +25,7 @@ namespace MeetingAssistant.Api
                 .AddDatabase(builder.Configuration)
                 .AddAuth(builder.Configuration)
                 .AddIdentityFeature()
+                .AddOrganizationsFeature()
                 .AddMapping()
                 .AddSwaggerServices()
                 .AddHangfireServices(builder.Configuration);
