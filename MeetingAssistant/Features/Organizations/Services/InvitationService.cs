@@ -76,5 +76,66 @@ namespace MeetingAssistant.Features.Organizations.Services
 
             return Result.Success();
         }
+
+        public async Task<Result<MemberResponse>> JoinInvitationAsync(
+            string token,
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var invitation = await _dbContext.Invitations
+                .IgnoreQueryFilters()
+                .Include(i => i.Organization)
+                .FirstOrDefaultAsync(i => i.Token == token, cancellationToken);
+
+            if (invitation is null)
+                return Result.Failure<MemberResponse>(OrganizationErrors.InvitationNotFound);
+
+            if (invitation.RevokedAtUtc.HasValue)
+                return Result.Failure<MemberResponse>(OrganizationErrors.InvitationRevoked);
+
+            if (invitation.ExpiresAtUtc < DateTime.UtcNow)
+                return Result.Failure<MemberResponse>(OrganizationErrors.InvitationExpired);
+
+            var user = await _dbContext.Users.FindAsync(new object[] { userId }, cancellationToken);
+            if (user is null)
+                return Result.Failure<MemberResponse>(OrganizationErrors.Unauthorized);
+
+            if (invitation.EmailWhitelist.Count != 0 && !invitation.EmailWhitelist.Contains(user.Email!, StringComparer.OrdinalIgnoreCase))
+                return Result.Failure<MemberResponse>(OrganizationErrors.EmailNotWhitelisted);
+
+            // Verify no active org membership
+            var hasActiveMembership = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .AnyAsync(m => m.UserId == userId && m.IsEnabled, cancellationToken);
+
+            if (hasActiveMembership)
+                return Result.Failure<MemberResponse>(OrganizationErrors.AlreadyHasMembership);
+
+            var membership = new UserOrgMembership
+            {
+                UserId = userId,
+                OrganizationId = invitation.OrganizationId,
+                OrgRole = OrganizationRole.Member,
+                IsEnabled = true
+            };
+
+            membership.RaiseDomainEvent(new MemberJoinedEvent(invitation.OrganizationId, userId, OrganizationRole.Member));
+
+            _dbContext.UserOrgMemberships.Add(membership);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            var response = new MemberResponse(
+                userId,
+                user.Email!,
+                user.DisplayName ?? string.Empty,
+                OrganizationRole.Member.ToString(),
+                null,
+                null,
+                null,
+                true
+            );
+
+            return Result.Success(response);
+        }
     }
 }

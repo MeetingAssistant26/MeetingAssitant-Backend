@@ -10,6 +10,7 @@ using MeetingAssistant.Features.Identity.Models.Requests;
 using MeetingAssistant.Features.Identity.DTOs;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.Identity.Models.Responses;
+using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Shared.Errors;
 using MeetingAssistant.Shared.Helpers;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
@@ -60,9 +61,10 @@ namespace MeetingAssistant.Features.Identity.Services
                 return Result.Failure<AuthTokenResponse>(UserErrors.InvalidCredentials);
             }
 
-            var (userRoles, userPermissions) = await GetUserRolesAndPermissions(user, cancellationToken);
+            var membership = await GetActiveMembership(user.Id, cancellationToken);
 
-            var (token, expiresIn) = _tokenService.GenerateAccessToken(user,userRoles, userPermissions);
+            var (token, expiresIn) = _tokenService.GenerateAccessToken(user,
+                membership?.OrganizationId, membership?.OrgRole.ToString());
 
             var refreshToken = _tokenService.GenerateRefreshToken();
             var refreshTokenHash = _tokenService.HashToken(refreshToken);
@@ -116,8 +118,9 @@ namespace MeetingAssistant.Features.Identity.Services
                         if (graceUser == null)
                             return Result.Failure<AuthTokenResponse>(UserErrors.InvalidRefreshToken);
 
-                        var (graceRoles, gracePermissions) = await GetUserRolesAndPermissions(graceUser, cancellationToken);
-                        var (graceAccessToken, graceExpiresIn) = _tokenService.GenerateAccessToken(graceUser, graceRoles, gracePermissions);
+                        var graceMembership = await GetActiveMembership(graceUser.Id, cancellationToken);
+                        var (graceAccessToken, graceExpiresIn) = _tokenService.GenerateAccessToken(graceUser,
+                            graceMembership?.OrganizationId, graceMembership?.OrgRole.ToString());
 
                         // Return the existing replacement refresh token (raw token can't be recovered — client should use the one from the first response)
                         // We return a new access token but signal the same refresh token expiry
@@ -167,8 +170,9 @@ namespace MeetingAssistant.Features.Identity.Services
             if (user.LockoutEnd > DateTime.UtcNow)
                 return Result.Failure<AuthTokenResponse>(UserErrors.AccountLocked);
 
-            var (userRoles, userPermissions) = await GetUserRolesAndPermissions(user, cancellationToken);
-            var (newtoken, expiresIn) = _tokenService.GenerateAccessToken(user, userRoles, userPermissions);
+            var membership = await GetActiveMembership(user.Id, cancellationToken);
+            var (newtoken, expiresIn) = _tokenService.GenerateAccessToken(user,
+                membership?.OrganizationId, membership?.OrgRole.ToString());
 
             _logger.LogInformation("User token refreshed. UserId: {UserId}, FamilyId: {FamilyId}", user.Id, userRefreshToken.FamilyId);
             await _publisher.Publish(new Events.TokenRefreshedEvent(user.Id, userRefreshToken.FamilyId), cancellationToken);
@@ -386,22 +390,13 @@ namespace MeetingAssistant.Features.Identity.Services
             BackgroundJob.Enqueue<IEmailSender>(x => x.SendEmailAsync(user.Email!, "Meeting Assistant: Reset Password", emailBody));
         }
 
-        private async Task<(IEnumerable<string> roles, IEnumerable<string> permissions)> GetUserRolesAndPermissions(ApplicationUser user, CancellationToken cancellationToken)
+        private async Task<UserOrgMembership?> GetActiveMembership(Guid userId, CancellationToken cancellationToken)
         {
-            var userRoles = await _userManager.GetRolesAsync(user);
-
-          
-            var userPermissions = await (from r in _context.Roles.AsNoTracking()
-                                         join p in _context.RoleClaims.AsNoTracking()
-                                         on r.Id equals p.RoleId
-                                         where userRoles.Contains(r.Name!)
-                                         select p.ClaimValue!)
-                                         .Distinct()
-                                         .ToListAsync(cancellationToken);
-
-            return (userRoles, userPermissions);
+            return await _context.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m => m.UserId == userId && m.IsEnabled, cancellationToken);
         }
-
 
     }
     

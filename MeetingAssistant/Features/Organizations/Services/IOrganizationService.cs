@@ -10,5 +10,10 @@ namespace MeetingAssistant.Features.Organizations.Services
             CreateOrganizationRequest request,
             Guid userId,
             CancellationToken cancellationToken = default);
+
+        Task<Result> LeaveOrganizationAsync(
+            Guid organizationId,
+            Guid userId,
+            CancellationToken cancellationToken = default);
     }
 }

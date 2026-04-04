@@ -15,5 +15,12 @@ namespace MeetingAssistant.Features.Organizations.Services
             Guid userId,
             UpdateMemberRoleRequest request,
             CancellationToken cancellationToken = default);
+
+        Task<Result> UpdateMemberContextAsync(
+            Guid organizationId,
+            Guid memberUserId,
+            UpdateMemberContextRequest request,
+            Guid currentUserId,
+            CancellationToken cancellationToken = default);
     }
 }

@@ -106,10 +106,10 @@
 
 ### Implementation for User Story 6
 
-- [ ] T027 [P] [US6] Create response contracts for Join Invitation in `src/Features/Organizations/Contracts/InvitationContracts.cs`.
-- [ ] T028 [US6] Implement `JoinInvitationCommand` and handler (validates token, 7-day expiry/revocation, whitelist email, verify no active org) in `src/Features/Organizations/Services/JoinInvitationHandler.cs`.
-- [ ] T029 [US6] Implement `JoinInvitationEndpoint.cs` in `src/Features/Organizations/Endpoints/Invitation/JoinInvitationEndpoint.cs`.
-- [ ] T029a [P] [US6] Implement integration tests proving single-membership DB constraint (SC-002) correctly blocks multiple active memberships during join in `tests/Features.IntegrationTests/Organizations/JoinInvitationTests.cs`.
+- [x] T027 [P] [US6] Create response contracts for Join Invitation in `src/Features/Organizations/Contracts/InvitationContracts.cs`.
+- [x] T028 [US6] Implement `JoinInvitationCommand` and handler (validates token, 7-day expiry/revocation, whitelist email, verify no active org) in `src/Features/Organizations/Services/JoinInvitationHandler.cs`.
+- [x] T029 [US6] Implement `JoinInvitationEndpoint.cs` in `src/Features/Organizations/Endpoints/Invitation/JoinInvitationEndpoint.cs`.
+- [x] T029a [P] [US6] Implement integration tests proving single-membership DB constraint (SC-002) correctly blocks multiple active memberships during join in `tests/Features.IntegrationTests/Organizations/JoinInvitationTests.cs`.
 
 ---
 
@@ -121,11 +121,11 @@
 
 ### Implementation for User Story 4
 
-- [ ] T030 [P] [US4] Create `UpdateMemberContextRequest` contract in `src/Features/Organizations/Contracts/MemberContracts.cs`.
-- [ ] T030a [P] [US4] Create `UpdateMemberContextRequestValidator` with `Cascade(CascadeMode.Stop)` — Context: MaximumLength(2000), JobRole: MaximumLength(100) — in `src/Features/Organizations/Validators/UpdateMemberContextRequestValidator.cs`.
-- [ ] T031 [US4] Implement `UpdateMemberContextCommand` and handler with specific self-or-admin authorization check in `src/Features/Organizations/Services/UpdateMemberContextHandler.cs`.
-- [ ] T032 [US4] Implement `UpdateMemberContextEndpoint.cs` in `src/Features/Organizations/Endpoints/Member/UpdateMemberContextEndpoint.cs`.
-- [ ] T032a [P] [US4] Implement integration tests for Member Context updates evaluating both Admin and Member authorization rules in `tests/Features.IntegrationTests/Organizations/UpdateMemberContextTests.cs`.
+- [x] T030 [P] [US4] Create `UpdateMemberContextRequest` contract in `src/Features/Organizations/Contracts/MemberContracts.cs`.
+- [x] T030a [P] [US4] Create `UpdateMemberContextRequestValidator` with `Cascade(CascadeMode.Stop)` — Context: MaximumLength(2000), JobRole: MaximumLength(100) — in `src/Features/Organizations/Validators/UpdateMemberContextRequestValidator.cs`.
+- [x] T031 [US4] Implement `UpdateMemberContextCommand` and handler with specific self-or-admin authorization check in `src/Features/Organizations/Services/UpdateMemberContextHandler.cs`.
+- [x] T032 [US4] Implement `UpdateMemberContextEndpoint.cs` in `src/Features/Organizations/Endpoints/Member/UpdateMemberContextEndpoint.cs`.
+- [x] T032a [P] [US4] Implement integration tests for Member Context updates evaluating both Admin and Member authorization rules in `tests/Features.IntegrationTests/Organizations/UpdateMemberContextTests.cs`.
 
 ---
 
@@ -137,9 +137,9 @@
 
 ### Implementation for User Story 7
 
-- [ ] T033 [US7] Implement `LeaveOrganizationCommand` and handler (checks not last admin, sets `is_enabled = false`, emits `MemberLeftEvent`) in `src/Features/Organizations/Services/LeaveOrganizationHandler.cs`.
-- [ ] T034 [US7] Implement `LeaveOrganizationEndpoint.cs` in `src/Features/Organizations/Endpoints/Organization/LeaveOrganizationEndpoint.cs`.
-- [ ] T034a [P] [US7] Implement integration tests validating leave deactivation and resulting access failures (SC-007) in `tests/Features.IntegrationTests/Organizations/LeaveOrganizationTests.cs`.
+- [x] T033 [US7] Implement `LeaveOrganizationCommand` and handler (checks not last admin, sets `is_enabled = false`, emits `MemberLeftEvent`) in `src/Features/Organizations/Services/LeaveOrganizationHandler.cs`.
+- [x] T034 [US7] Implement `LeaveOrganizationEndpoint.cs` in `src/Features/Organizations/Endpoints/Organization/LeaveOrganizationEndpoint.cs`.
+- [x] T034a [P] [US7] Implement integration tests validating leave deactivation and resulting access failures (SC-007) in `tests/Features.IntegrationTests/Organizations/LeaveOrganizationTests.cs`.
 
 ---
 
@@ -147,9 +147,9 @@
 
 **Purpose**: Improvements that affect multiple user stories and system cleanliness
 
-- [ ] T035 Review all endpoints to ensure they use `result.ToProblem(correlationIdProvider)` for explicit ProblemDetails formatting.
-- [ ] T036 Verify all request models have a corresponding FluentValidation validator with `Cascade(CascadeMode.Stop)`, and that SharpGrip auto-validation returns `StandardErrorResponse` via `ValidationResultFactory` for all endpoints.
-- [ ] T037 Ensure the EF Core DbContext explicitly cascades or restricts deletes to avoid orphan `UserOrgMembership` issues if an admin were hypothetically removed from system in a manual data patch.
+- [x] T035 Review all endpoints to ensure they use `result.ToProblem(correlationIdProvider)` for explicit ProblemDetails formatting.
+- [x] T036 Verify all request models have a corresponding FluentValidation validator with `Cascade(CascadeMode.Stop)`, and that SharpGrip auto-validation returns `StandardErrorResponse` via `ValidationResultFactory` for all endpoints.
+- [x] T037 Ensure the EF Core DbContext explicitly cascades or restricts deletes to avoid orphan `UserOrgMembership` issues if an admin were hypothetically removed from system in a manual data patch.
 
 ---
 

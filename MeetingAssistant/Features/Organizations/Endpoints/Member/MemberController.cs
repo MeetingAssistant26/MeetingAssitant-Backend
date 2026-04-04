@@ -1,4 +1,5 @@
 using MeetingAssistant.Api.Infrastructure.Services;
+using MeetingAssistant.Features.Organizations.Infrastructure.Filters;
 using MeetingAssistant.Features.Organizations.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -6,6 +7,7 @@ namespace MeetingAssistant.Features.Organizations.Endpoints.Member
 {
     [ApiController]
     [Route("api/organizations/{orgId:guid}/members")]
+    [EnforceOrgAccess]
     public partial class MemberController(
         IMemberService memberService,
         ICorrelationIdProvider correlationIdProvider) : ControllerBase

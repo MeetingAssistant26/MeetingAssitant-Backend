@@ -1,6 +1,5 @@
 using FluentValidation;
 using MeetingAssistant.Features.Organizations.Contracts.Requests;
-using MeetingAssistant.Features.Organizations.Contracts.Responses;
 
 namespace MeetingAssistant.Features.Organizations.Validators
 {
@@ -11,7 +10,7 @@ namespace MeetingAssistant.Features.Organizations.Validators
             RuleFor(x => x.Name)
                 .Cascade(CascadeMode.Stop)
                 .NotEmpty()
-                .Length(1, 200);
+                .Length(1, 50);
         }
     }
 }

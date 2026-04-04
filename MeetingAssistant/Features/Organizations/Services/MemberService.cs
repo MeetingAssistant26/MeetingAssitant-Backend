@@ -75,5 +75,38 @@ namespace MeetingAssistant.Features.Organizations.Services
 
             return Result.Success();
         }
+
+        public async Task<Result> UpdateMemberContextAsync(
+            Guid organizationId,
+            Guid memberUserId,
+            UpdateMemberContextRequest request,
+            Guid currentUserId,
+            CancellationToken cancellationToken = default)
+        {
+            var membership = await _dbContext.UserOrgMemberships
+                .FirstOrDefaultAsync(m => m.OrganizationId == organizationId && m.UserId == memberUserId && m.IsEnabled, cancellationToken);
+
+            if (membership is null)
+                return Result.Failure(OrganizationErrors.MemberNotFound);
+
+            var currMembership = await _dbContext.UserOrgMemberships
+                .FirstOrDefaultAsync(m => m.OrganizationId == organizationId && m.UserId == currentUserId && m.IsEnabled, cancellationToken);
+            
+            if (currMembership is null)
+                return Result.Failure(OrganizationErrors.Unauthorized);
+
+            if (currentUserId != memberUserId && currMembership.OrgRole != OrganizationRole.Admin)
+                return Result.Failure(OrganizationErrors.Unauthorized);
+
+            membership.JobRole = request.JobRole;
+            membership.Context = request.Context;
+            membership.ContextStatus = ContextStatus.Pending;
+
+            membership.RaiseDomainEvent(new MemberContextUpdatedEvent(organizationId, memberUserId));
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            return Result.Success();
+        }
     }
 }

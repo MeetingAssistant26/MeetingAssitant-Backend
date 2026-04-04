@@ -51,8 +51,6 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
 
             foreach ( var fk in cascadeFks)
                     fk.DeleteBehavior = DeleteBehavior.Restrict;
-
-            base.OnModelCreating(modelBuilder);
         }
 
         private void ApplyTenantFilter<T>(ModelBuilder builder) where T : class, IHasOrganizationId

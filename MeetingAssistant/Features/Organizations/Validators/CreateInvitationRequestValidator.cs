@@ -10,6 +10,8 @@ namespace MeetingAssistant.Features.Organizations.Validators
             RuleFor(x => x.EmailWhitelist)
                 .Cascade(CascadeMode.Stop)
                 .NotEmpty()
+                .Must(emails => emails.Distinct(StringComparer.OrdinalIgnoreCase).Count() == emails.Count)
+                    .WithMessage("Duplicate emails are not allowed.")
                 .ForEach(email => email.NotEmpty().EmailAddress());
         }
     }

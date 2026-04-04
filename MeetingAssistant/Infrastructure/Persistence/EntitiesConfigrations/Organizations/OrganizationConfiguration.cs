@@ -20,14 +20,6 @@ namespace MeetingAssistant.Infrastructure.Persistence.EntitiesConfigrations.Orga
 
             builder.HasIndex(o => o.Slug)
                    .IsUnique();
-
-            builder.HasMany(o => o.Memberships)
-                   .WithOne(m => m.Organization)
-                   .HasForeignKey(m => m.OrganizationId);
-
-            builder.HasMany(o => o.Invitations)
-                   .WithOne(i => i.Organization)
-                   .HasForeignKey(i => i.OrganizationId);
         }
     }
 }

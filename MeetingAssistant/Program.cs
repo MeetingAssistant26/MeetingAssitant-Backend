@@ -4,6 +4,7 @@ using MeetingAssistant.Infrastructure.SignalR;
 using MeetingAssistant.Features.Identity;
 using MeetingAssistant.Features.Organizations;
 using Serilog;
+using Microsoft.EntityFrameworkCore;
 
 namespace MeetingAssistant.Api
 {
@@ -57,6 +58,12 @@ namespace MeetingAssistant.Api
 
             app.UseSecureHangfireDashboard();
             app.RegisterRecurringJobs();
+
+            using (var scope = app.Services.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<MeetingAssistant.Infrastructure.Persistence.DbContext.ApplicationDbContext>();
+                dbContext.Database.Migrate();
+            }
 
             app.Run();
         }

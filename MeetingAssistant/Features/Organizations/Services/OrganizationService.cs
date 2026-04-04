@@ -59,5 +59,39 @@ namespace MeetingAssistant.Features.Organizations.Services
                 organization.CreatedAtUtc
             ));
         }
+
+        public async Task<Result> LeaveOrganizationAsync(
+            Guid organizationId,
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var membership = await _dbContext.UserOrgMemberships
+                .FirstOrDefaultAsync(m => m.OrganizationId == organizationId && m.UserId == userId && m.IsEnabled, cancellationToken);
+
+            if (membership is null)
+                return Result.Failure(OrganizationErrors.MemberNotFound);
+
+            if (membership.OrgRole == OrganizationRole.Admin)
+            {
+                var adminCount = await _dbContext.UserOrgMemberships
+                    .CountAsync(m => m.OrganizationId == organizationId && m.OrgRole == OrganizationRole.Admin && m.IsEnabled, cancellationToken);
+
+                if (adminCount <= 1)
+                    return Result.Failure(OrganizationErrors.LastAdmin);
+            }
+
+            membership.IsEnabled = false;
+
+            // Revoke all refresh tokens so the user can't get new JWTs with the old org claims
+            await _dbContext.RefreshTokens
+                .Where(rt => rt.UserId == userId && rt.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(s => s.SetProperty(rt => rt.RevokedAtUtc, DateTime.UtcNow), cancellationToken);
+
+            membership.RaiseDomainEvent(new MemberLeftEvent(organizationId, userId));
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            return Result.Success();
+        }
     }
 }
