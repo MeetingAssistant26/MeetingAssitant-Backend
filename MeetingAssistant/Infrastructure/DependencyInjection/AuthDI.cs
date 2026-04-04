@@ -100,6 +100,18 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                 options.FallbackPolicy = new AuthorizationPolicyBuilder()
                     .RequireAuthenticatedUser()
                     .Build();
+
+                options.AddPolicy("RequireOrgAdmin", policy =>
+                    policy.RequireAuthenticatedUser()
+                          .RequireClaim("org_role", "Admin"));
+
+                options.AddPolicy("RequireOrgMember", policy =>
+                    policy.RequireAuthenticatedUser()
+                          .RequireClaim("org_role", "Admin", "Member"));
+
+                options.AddPolicy("RequireOrgAccess", policy =>
+                    policy.RequireAuthenticatedUser()
+                          .RequireClaim("org_role", "Admin", "Member", "Guest"));
             });
 
             return services;

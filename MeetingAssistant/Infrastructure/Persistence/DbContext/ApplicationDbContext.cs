@@ -1,9 +1,11 @@
 ﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+using MediatR;
 using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 using System.Security.Claims;
 using MeetingAssistant.Features.Identity.Entites;
+using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Shared;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Api.Infrastructure.Services;
@@ -14,13 +16,18 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
     public class ApplicationDbContext(
         DbContextOptions<ApplicationDbContext> options,
         IHttpContextAccessor httpContextAccessor,
-        ITenantProvider tenantProvider) :
+        ITenantProvider tenantProvider,
+        IPublisher publisher) :
         IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>(options)
     {
         private readonly IHttpContextAccessor _httpContextAccessor = httpContextAccessor;
         private readonly Guid? _currentTenantId = tenantProvider.CurrentOrganizationId;
+        private readonly IPublisher _publisher = publisher;
 
         public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+        public DbSet<Organization> Organizations => Set<Organization>();
+        public DbSet<UserOrgMembership> UserOrgMemberships => Set<UserOrgMembership>();
+        public DbSet<Invitation> Invitations => Set<Invitation>();
 
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -44,8 +51,6 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
 
             foreach ( var fk in cascadeFks)
                     fk.DeleteBehavior = DeleteBehavior.Restrict;
-
-            base.OnModelCreating(modelBuilder);
         }
 
         private void ApplyTenantFilter<T>(ModelBuilder builder) where T : class, IHasOrganizationId
@@ -53,7 +58,7 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
             // EF Core translates field accesses on "this" context correctly into parameters
             builder.Entity<T>().HasQueryFilter(e => !_currentTenantId.HasValue || e.OrganizationId == _currentTenantId.Value);
         }
-        public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+        public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
         {
             var utcNow = DateTime.UtcNow;
 
@@ -91,7 +96,29 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
                     entityEntry.Property(x => x.UpdatedById).CurrentValue = currentUserId;
                 }
             }
-            return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+            var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+
+            await DispatchDomainEventsAsync(cancellationToken);
+
+            return result;
+        }
+
+        private async Task DispatchDomainEventsAsync(CancellationToken cancellationToken)
+        {
+            var entitiesWithEvents = ChangeTracker.Entries<BaseEntity>()
+                .Where(e => e.Entity.DomainEvents.Any())
+                .Select(e => e.Entity)
+                .ToList();
+
+            var domainEvents = entitiesWithEvents
+                .SelectMany(e => e.DomainEvents)
+                .ToList();
+
+            foreach (var entity in entitiesWithEvents)
+                entity.ClearDomainEvents();
+
+            foreach (var domainEvent in domainEvents)
+                await _publisher.Publish(domainEvent, cancellationToken);
         }
 
     }

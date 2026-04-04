@@ -21,7 +21,7 @@ namespace MeetingAssistant.Api.Infrastructure.Services
                     return null;
 
                 // Look for claim named "org" or "organization"
-                var claim = ctx.User.FindFirst("org") ?? ctx.User.FindFirst("organization");
+                var claim = ctx.User.FindFirst("organizationId");
                 if (claim == null)
                     return null;
 

@@ -4,7 +4,6 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Api.Infrastructure.Configuration;
 
@@ -14,16 +13,20 @@ namespace MeetingAssistant.Features.Identity.Services
     {
         private readonly JwtSettings _jwtSettings = jwtSettingsOptions.Value;
 
-        public (string Token, int ExpiresIn) GenerateAccessToken(ApplicationUser User, IEnumerable<string> roles, IEnumerable<string> permissions)
+        public (string Token, int ExpiresIn) GenerateAccessToken(ApplicationUser User, Guid? organizationId = null, string? orgRole = null)
         {
             var claims = new List<Claim> {
                 new(JwtRegisteredClaimNames.Sub, User.Id.ToString()),
                 new(JwtRegisteredClaimNames.Email, User.Email!),
                 new(JwtRegisteredClaimNames.Name, User.DisplayName ?? string.Empty),
                 new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                new(nameof(roles), JsonSerializer.Serialize(roles), JsonClaimValueTypes.JsonArray),
-                new(nameof(permissions), JsonSerializer.Serialize(permissions), JsonClaimValueTypes.JsonArray)
             };
+
+            if (organizationId.HasValue)
+            {
+                claims.Add(new Claim("organizationId", organizationId.Value.ToString()));
+                claims.Add(new Claim("org_role", orgRole!));
+            }
 
             var symmetricSecurityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.SigningKey!));
             var signingCredentials = new SigningCredentials(symmetricSecurityKey, SecurityAlgorithms.HmacSha256);
