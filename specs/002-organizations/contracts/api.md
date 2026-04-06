@@ -118,3 +118,127 @@ All endpoints return errors using `StandardErrorResponse` via `result.ToProblem(
 **Request**: Empty body
 **Response (200 OK)**: `MembershipResponse`
 **Errors**: 403 Forbidden (Bad email or already belongs to Org), 404 Not Found (Expired/Invalid Token)
+
+---
+
+## 4. Meeting Tag Endpoints (MeetingTagController)
+
+### List Meeting Tags
+`GET /api/organizations/{organizationId}/meeting-tags`
+**Headers**: `Authorization: Bearer <token>`
+**Requires Policy**: `RequireOrgMember`
+**Query Parameters**: None
+**Response (200 OK)**: Array of `MeetingTagResponse` (active tags only — `IsActive = true`), ordered by `CreatedAtUtc ASC` (oldest first)
+```json
+[
+  {
+    "id": "guid",
+    "organizationId": "guid",
+    "name": "string",
+    "color": "string?",
+    "createdAtUtc": "datetime",
+    "updatedAtUtc": "datetime"
+  }
+]
+```
+
+### Create Meeting Tag
+`POST /api/organizations/{organizationId}/meeting-tags`
+**Headers**: `Authorization: Bearer <token>`
+**Requires Policy**: `RequireOrgAdmin`
+**Request**:
+```json
+{
+  "name": "string (1-50 chars, required)",
+  "color": "string (optional, hex format #RRGGBB)"
+}
+```
+**Validation Rules:**
+- `name`: Required, not empty, max 50 characters
+- `name`: Unique within organization (case-insensitive comparison: "Standup" = "standup")
+- `color`: Optional. If provided, must match regex `^#[0-9A-Fa-f]{6}$`
+**Response (201 Created)**: `MeetingTagResponse`
+**Errors**: 
+- 400 Validation (invalid name format or color format)
+- 401 Unauthorized
+- 403 Forbidden (non-admin)
+- 409 Conflict (duplicate name)
+
+**Example Error (409 Conflict)**:
+```json
+{
+  "type": "MeetingTag.DuplicateName",
+  "title": "A tag with this name already exists in the organization.",
+  "status": 409,
+  "errors": {},
+  "correlationId": "string"
+}
+```
+
+### Update Meeting Tag
+`PUT /api/organizations/{organizationId}/meeting-tags/{tagId}`
+**Headers**: `Authorization: Bearer <token>`
+**Requires Policy**: `RequireOrgAdmin`
+**Request**: Partial update — only provided fields are updated:
+```json
+{
+  "name": "string (1-50 chars)",
+  "color": "string (hex format #RRGGBB or null to clear)"
+}
+```
+**Validation Rules:**
+- Only fields present in request are updated (partial update)
+- `name`: If provided, same rules as create (unique within org, case-insensitive, excluding this tag itself)
+- `color`: If provided, must match hex format or be `null` to remove color
+- Setting `color` to `null` clears the color (UI shows default)
+**Response (200 OK)**: `MeetingTagResponse` (full tag object after update)
+**Errors**: 
+- 400 Validation
+- 401 Unauthorized
+- 403 Forbidden
+- 404 Not Found (tag doesn't exist or is inactive)
+- 409 Conflict (duplicate name)
+
+**Example Request (rename only)**:
+```json
+{ "name": "Sprint Planning" }
+```
+
+**Example Request (change color only)**:
+```json
+{ "color": "#4CAF50" }
+```
+
+**Example Request (clear color)**:
+```json
+{ "color": null }
+```
+
+**Example Success Response**:
+```json
+{
+  "id": "987fcdeb-51a2-43f7-9876-543210987654",
+  "organizationId": "123e4567-e89b-12d3-a456-426614174000",
+  "name": "Sprint Planning",
+  "color": "#4CAF50",
+  "createdAtUtc": "2026-03-10T08:00:00Z",
+  "updatedAtUtc": "2026-04-06T14:30:00Z"
+}
+```
+
+### Delete Meeting Tag (Soft Delete)
+`DELETE /api/organizations/{organizationId}/meeting-tags/{tagId}`
+**Headers**: `Authorization: Bearer <token>`
+**Requires Policy**: `RequireOrgAdmin`
+**Behavior**: 
+- Sets `IsActive = false` (soft delete)
+- Tag immediately disappears from `GET /meeting-tags` list
+- Tag remains in database for referential integrity with existing meetings
+- Tag name becomes available for reuse (unique constraint is `WHERE IsActive = true`)
+**Response**: 204 No Content
+**Errors**: 
+- 401 Unauthorized
+- 403 Forbidden
+- 404 Not Found (tag doesn't exist or already inactive)
+
+**Note**: Hard delete intentionally not provided. Tags marked inactive remain in DB for historical meeting references. Admin can create a new tag with the same name after deletion.

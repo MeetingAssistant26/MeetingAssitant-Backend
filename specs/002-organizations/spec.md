@@ -129,6 +129,78 @@ A member voluntarily leaves their organization. The system deactivates their `Us
 
 ---
 
+### User Story 8 - Admin Creates a Meeting Tag (Priority: P1)
+
+An organization administrator creates a reusable tag for categorizing meetings within the organization. Tags are defined at the organization level and used when creating meetings (Phase 3). Tags support optional color customization for visual identification.
+
+**Why this priority**: Meeting tags are required for the meeting creation and categorization features. Without a tag pool defined by admins, meetings cannot be tagged, and AI features (context retrieval by tag) cannot function properly.
+
+**Independent Test**: Can be fully tested by authenticating as an admin, calling the create tag endpoint with name and optional color, and verifying the tag appears in the organization's tag list.
+
+**Acceptance Scenarios**:
+
+1. **Given** an admin, **When** they create a tag "Sprint Planning" with color "#4CAF50", **Then** the tag is created with the provided color and appears in the organization's tag list.
+2. **Given** an admin, **When** they create a tag "Standup" without providing a color, **Then** the tag is created with `color = null` and appears in the list (UI shows default color).
+3. **Given** an admin, **When** they attempt to create a duplicate tag name (case-insensitive: "sprint planning" vs "Sprint Planning"), **Then** the system rejects with 409 Conflict.
+4. **Given** an admin, **When** they attempt to create a tag with an invalid color format (e.g., "red" instead of "#FF0000"), **Then** the system returns 400 Validation error.
+5. **Given** a member (non-admin), **When** they attempt to create a tag, **Then** the system returns 403 Forbidden.
+
+---
+
+### User Story 9 - Admin Updates a Meeting Tag (Priority: P1)
+
+An admin updates an existing tag's name and/or color. The update is partial — only provided fields are modified.
+
+**Why this priority**: Admins need the ability to rename tags (fix typos, improve clarity) and adjust colors for better visual organization.
+
+**Independent Test**: Can be tested by creating a tag, then calling update with only name, only color, or both, and verifying the changes.
+
+**Acceptance Scenarios**:
+
+1. **Given** an admin and existing tag "Standup" with color "#FF0000", **When** they update only the name to "Daily Standup", **Then** the name changes but color remains "#FF0000".
+2. **Given** an admin and existing tag "Planning", **When** they update only the color to "#4CAF50", **Then** the color changes but name remains unchanged.
+3. **Given** an admin and existing tag with color, **When** they send `color: null`, **Then** the color is cleared (set to null) and UI shows default color.
+4. **Given** an admin, **When** they update to a duplicate name (excluding the current tag), **Then** 409 Conflict is returned.
+5. **Given** a member, **When** they attempt to update a tag, **Then** 403 Forbidden.
+6. **Given** an admin, **When** they update a soft-deleted tag (by ID), **Then** 404 Not Found is returned (cannot modify deleted tags).
+
+---
+
+### User Story 10 - Admin Deletes a Meeting Tag (Priority: P2)
+
+An admin soft-deletes a tag, removing it from the pool of available tags for future meetings. Existing meetings referencing this tag retain the reference for historical purposes.
+
+**Why this priority**: Organization needs change over time — obsolete tags need to be removable without breaking historical meeting data. Soft delete preserves referential integrity.
+
+**Independent Test**: Can be tested by creating a tag, deleting it (soft delete), verifying it disappears from the list, then attempting to create a new tag with the same name (should succeed).
+
+**Acceptance Scenarios**:
+
+1. **Given** an admin and existing tag "Deprecated", **When** they delete the tag, **Then** `IsActive` is set to false, the tag no longer appears in `GET /meeting-tags`, and the tag name becomes available for reuse.
+2. **Given** a meeting was created with tag "Deprecated", **When** the tag is soft-deleted, **Then** the meeting still shows "Deprecated" tag in its history (referential integrity preserved via junction table).
+3. **Given** an admin, **When** they delete a tag and then create a new tag with the same name, **Then** the creation succeeds (unique constraint is `WHERE IsActive = true`).
+4. **Given** a member, **When** they attempt to delete a tag, **Then** 403 Forbidden.
+5. **Given** an admin, **When** they attempt to delete an already-deleted tag, **Then** 404 Not Found is returned.
+
+---
+
+### User Story 11 - Member Lists Meeting Tags (Priority: P1)
+
+Any organization member can view the list of active meeting tags. This is needed when creating meetings (to select tags from the pool) and for understanding organization topic categories.
+
+**Why this priority**: Members need to see available tags when creating meetings (Phase 3). Read access should be available to all organization members.
+
+**Independent Test**: Can be tested by authenticating as any member (Admin, Member, or Guest) and calling the list tags endpoint.
+
+**Acceptance Scenarios**:
+
+1. **Given** an organization with 5 active tags ("Engineering", "Design", "Planning", "Review", "Retro"), **When** any member requests the tag list, **Then** all 5 active tags are returned ordered by `CreatedAtUtc ASC` (oldest first).
+2. **Given** an organization with 3 active tags and 2 soft-deleted tags, **When** a member requests the tag list, **Then** only the 3 active tags are returned (deleted tags excluded).
+3. **Given** a user who is not a member of the organization, **When** they request the tag list, **Then** the system returns 403 Forbidden (tenant isolation).
+4. **Given** a newly created tag, **When** the list is retrieved, **Then** the new tag appears at the end of the list (chronological ordering).
+
+---
+
 ### Edge Cases
 
 - What happens when two admins try to create invitations with overlapping email whitelists simultaneously? → **Resolved**: Each invitation is independent. A user can only accept one invitation (single-membership constraint enforced at join time by DB unique constraint).
@@ -160,18 +232,26 @@ A member voluntarily leaves their organization. The system deactivates their `Us
 - **FR-015**: System MUST reject join requests where the user's email is not in the invitation's email whitelist. Error: "Your email is not authorized for this invitation."
 - **FR-016**: System MUST allow members to leave their organization by deactivating their `UserOrgMembership` (`is_enabled = false`). The system MUST reject leave requests from the last remaining admin.
 - **FR-016b**: System MUST allow Admin users to explicitly revoke/cancel an active invitation before its intrinsic expiration.
-- **FR-017**: System MUST emit domain events for all state changes: `OrganizationCreatedEvent`, `MemberJoinedEvent`, `RoleChangedEvent`, `MemberContextUpdatedEvent`, `MemberLeftEvent`, `InvitationRevokedEvent`.
+- **FR-017**: System MUST emit domain events for all state changes: `OrganizationCreatedEvent`, `MemberJoinedEvent`, `RoleChangedEvent`, `MemberContextUpdatedEvent`, `MemberLeftEvent`, `InvitationRevokedEvent`, `MeetingTagCreatedEvent`, `MeetingTagUpdatedEvent`, `MeetingTagDeletedEvent`.
 - **FR-018**: System MUST enforce the single-membership constraint via a database unique constraint: `UNIQUE(user_id) WHERE is_enabled = true` on the `UserOrgMembership` table.
 - **FR-019**: System MUST scope all endpoints in this feature to the authenticated user's organization. Org ID from route parameters MUST match the JWT `organizationId` claim — mismatches MUST return 403 Forbidden.
 - **FR-020**: System MUST implement organization-scoped authorization policies: `RequireOrgAdmin` (only Admin role), `RequireOrgMember` (Admin or Member), `RequireOrgAccess` (Admin, Member, or Guest).
 - **FR-021**: System MUST use the Partial Controller Pattern for all endpoints — one endpoint per file via partial classes. Controller definition files contain `[ApiController]`, `[Route]`, base class, constructor, and shared dependencies. Endpoint files contain exactly one action method.
 - **FR-022**: System MUST use `result.ToProblem(correlationIdProvider)` for all endpoint error responses. Endpoints MUST NOT manually construct `StandardErrorResponse`.
+- **FR-023**: System MUST allow Organization Admins to create meeting tags with a name (1-50 chars) and optional color (hex format #RRGGBB). Name MUST be unique per organization (case-insensitive, unique constraint `WHERE IsActive = true`).
+- **FR-024**: System MUST reject duplicate tag names within the same organization with 409 Conflict. Error code: `MeetingTag.DuplicateName`.
+- **FR-025**: System MUST allow Organization Admins to update meeting tags via partial update (PUT) — only provided fields (name and/or color) are modified. Name uniqueness constraint applies excluding the current tag.
+- **FR-026**: System MUST allow Organization Admins to soft-delete tags (set `IsActive = false`). Deleted tags MUST NOT appear in list endpoints. Deleted tag names MUST be available for reuse (unique constraint excludes inactive tags).
+- **FR-027**: System MUST allow any organization member (Admin, Member, or Guest) to list active meeting tags. List MUST be ordered by `CreatedAtUtc ASC` (oldest first).
+- **FR-028**: System MUST validate color format using regex `^#[0-9A-Fa-f]{6}$` when color is provided. Setting color to `null` MUST clear the color.
+- **FR-029**: System MUST emit `MeetingTagCreatedEvent`, `MeetingTagUpdatedEvent`, and `MeetingTagDeletedEvent` domain events for tag state changes.
 
 ### Key Entities
 
 - **Organization**: Represents a tenant/workspace. Key attributes: unique identifier (`Id`), display name (`Name`), URL-safe identifier (`Slug`, unique), creation timestamp (`CreatedAtUtc`). Does NOT implement `IHasOrganizationId` — it IS the tenant.
 - **UserOrgMembership**: Represents a user's membership in an organization. Key attributes: `UserId`, `OrganizationId`, `OrgRole` (Admin/Member/Guest enum), `JobRole` (text, nullable — job title), `Context` (text — Member Context for AI), `ContextStatus` (text, nullable), `IsEnabled` (bool, default true). Implements `IHasOrganizationId`. DB constraint: `UNIQUE(user_id) WHERE is_enabled = true`.
 - **Invitation**: Represents a pending invitation to join an organization. Key attributes: `Id`, `OrganizationId`, `InvitedByUserId`, `EmailWhitelist` (JSONB array of strings), `Token` (unique string), `ExpiresAtUtc`, `CreatedAtUtc`, `RevokedAtUtc` (timestampz, nullable). Implements `IHasOrganizationId`.
+- **MeetingTag**: Organization-level label for categorizing meetings. Key attributes: `Id`, `OrganizationId`, `Name` (text 1-50 chars), `Color` (hex string, nullable), `IsActive` (bool, default true), `CreatedAtUtc`, `UpdatedAtUtc`. DB constraint: unique `(organization_id, lower(name)) WHERE is_active = true`. Soft delete via `IsActive = false`. Referenced by meetings via many-to-many junction table (defined in Phase 3). Implements `IHasOrganizationId`.
 
 ## Success Criteria *(mandatory)*
 
@@ -187,6 +267,11 @@ A member voluntarily leaves their organization. The system deactivates their `Us
 - **SC-008**: All domain events (`OrganizationCreatedEvent`, `MemberJoinedEvent`, `RoleChangedEvent`, `MemberContextUpdatedEvent`, `MemberLeftEvent`, `InvitationRevokedEvent`) are emitted and logged with correlation IDs.
 - **SC-009**: All endpoint error responses include `CorrelationId` and use `StandardErrorResponse` format via `result.ToProblem(correlationIdProvider)`.
 - **SC-010**: All 3 controllers and 8 endpoint files follow the Partial Controller Pattern — verified by code review (no constructor/attributes/fields in endpoint files).
+- **SC-011**: Meeting tag creation enforces name uniqueness at the database level — attempting to create a duplicate active tag name MUST fail at the DB level, confirmed by integration test with concurrent creation attempts.
+- **SC-012**: Meeting tag soft delete correctly sets `IsActive = false` and excluded from list queries — verified by creating, deleting, and listing tags.
+- **SC-013**: Deleted tag name becomes available for reuse — after soft delete, creating a tag with the same name MUST succeed, confirmed by integration test.
+- **SC-014**: All MeetingTag endpoints enforce authorization — non-admins receive 403 Forbidden on create/update/delete, verified by integration tests with Member and Guest roles.
+- **SC-015**: MeetingTag list endpoint returns results, ordered chronologically.
 
 ## Clarifications
 
@@ -201,6 +286,12 @@ A member voluntarily leaves their organization. The system deactivates their `Us
 - Q: Should the `Organization.Slug` be editable after creation? → A: No. Slugs are immutable once created. If needed, the admin creates a new organization.
 - Q: What authorization is required for the `JoinOrganization` endpoint? → A: The user must be authenticated (valid JWT) but does NOT need to belong to any organization. The endpoint validates the invitation token and email whitelist.
 
+### Session 2026-04-06 (MeetingTag)
+- Q: What happens when a tag is soft-deleted but meetings still reference it? → **Resolved**: Meetings retain the reference via the junction table. The tag name is preserved for historical context. If the same name is recreated, it's a new tag with a new ID — existing meetings keep the old tag reference.
+- Q: Can a soft-deleted tag be reactivated? → **Resolved**: No. Reactivation is not supported. Admins should create a new tag if needed. This prevents confusion between old and new tag contexts.
+- Q: What color format should be stored and returned? → **Resolved**: Always uppercase hex with hash prefix (e.g., "#4CAF50"). API accepts any case but normalizes to uppercase.
+- Q: Should color be validated as a "real" color or just format? → **Resolved**: Only format validation (regex `^#[0-9A-Fa-f]{6}$`). No semantic validation (e.g., "#000000" is valid even if black).
+
 ## Assumptions
 
 - Organization names must be non-empty and have a maximum length of 200 characters.
@@ -213,6 +304,8 @@ A member voluntarily leaves their organization. The system deactivates their `Us
 - When a user leaves an organization and their JWT has not yet expired, org-scoped endpoints MUST still reject requests because the `AppDbContext` global query filter will no longer match (the membership is deactivated).
 - `MemberLeftEvent` and `InvitationRevokedEvent` are additions to the implementation plan's domain event list — the plan lists `OrganizationCreatedEvent`, `MemberJoinedEvent`, `RoleChangedEvent`, `MemberContextUpdatedEvent` only. These two new events are required by the leave and revocation flows added in this spec.
 - `RevokedAtUtc` on the `Invitation` entity is an addition to the implementation plan's entity definition. The plan defines `Id`, `OrganizationId`, `InvitedByUserId`, `EmailWhitelist`, `Token`, `ExpiresAtUtc`, `CreatedAtUtc` only. This field is required by the invitation revocation flow (FR-016b).
+- **MeetingTag additions**: `MeetingTagCreatedEvent`, `MeetingTagUpdatedEvent`, and `MeetingTagDeletedEvent` are additions to the domain event list. The `Color` field is nullable and stores hex color codes (e.g., "#4CAF50"). Soft delete via `IsActive` follows the same pattern as `UserOrgMembership.IsEnabled`.
+- **MeetingTag ordering**: Tags are always returned in chronological order by `CreatedAtUtc ASC` (oldest first). This provides a stable, predictable ordering without requiring an explicit "sort order" field.
 
 ## Dependencies
 
