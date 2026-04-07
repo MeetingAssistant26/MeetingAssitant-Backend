@@ -46,7 +46,7 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
         {
             RecurringJob.AddOrUpdate<RefreshTokenCleanupService>(
                 "cleanup-expired-refresh-tokens",
-                service => service.CleanupExpiredTokensAsync(),
+                service => service.CleanupExpiredTokensAsync(default),
                 Cron.Daily);
         }
 

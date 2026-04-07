@@ -27,7 +27,8 @@ namespace MeetingAssistant.Features.Identity.Services
         IConfiguration configuration,
         IOptions<JwtSettings> jwtSettingsOptions,
         ApplicationDbContext Context,
-        MediatR.IPublisher publisher
+        MediatR.IPublisher publisher,
+        IBackgroundJobClient backgroundJobClient
         ) : IAuthService
     {
         private readonly UserManager<ApplicationUser> _userManager = userManager;
@@ -39,6 +40,7 @@ namespace MeetingAssistant.Features.Identity.Services
         private readonly ApplicationDbContext _context = Context;
         private readonly MediatR.IPublisher _publisher = publisher;
         private readonly int _refreshTokenExpiryDays = jwtSettingsOptions.Value.RefreshTokenExpiryDays;
+        private readonly IBackgroundJobClient _backgroundJobClient = backgroundJobClient;
 
         public async Task<Result<AuthTokenResponse>> LoginAsync(LoginRequest request, CancellationToken cancellationToken)
         {
@@ -374,7 +376,7 @@ namespace MeetingAssistant.Features.Identity.Services
                 }
             );
 
-            BackgroundJob.Enqueue<IEmailSender>(x => x.SendEmailAsync(user.Email!, "Meeting Assistant: Email Confirmation", emailBody));
+            _backgroundJobClient.Enqueue<IEmailSender>(x => x.SendEmailAsync(user.Email!, "Meeting Assistant: Email Confirmation", emailBody));
         }
 
         private void SendResetPasswordEmail(ApplicationUser user, string code)
@@ -387,7 +389,7 @@ namespace MeetingAssistant.Features.Identity.Services
                 }
             );
 
-            BackgroundJob.Enqueue<IEmailSender>(x => x.SendEmailAsync(user.Email!, "Meeting Assistant: Reset Password", emailBody));
+            _backgroundJobClient.Enqueue<IEmailSender>(x => x.SendEmailAsync(user.Email!, "Meeting Assistant: Reset Password", emailBody));
         }
 
         private async Task<UserOrgMembership?> GetActiveMembership(Guid userId, CancellationToken cancellationToken)
