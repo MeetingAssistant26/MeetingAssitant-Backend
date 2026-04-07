@@ -7,14 +7,14 @@ namespace MeetingAssistant.Features.Identity.Services
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
 
-        public async Task CleanupExpiredTokensAsync()
+        public async Task CleanupExpiredTokensAsync(CancellationToken cancellationToken = default)
         {
             var cutoff = DateTime.UtcNow.AddDays(-30);
 
             await _dbContext.RefreshTokens
                 .Where(rt => (rt.RevokedAtUtc != null && rt.RevokedAtUtc < cutoff)
                            || rt.ExpiresAtUtc < cutoff)
-                .ExecuteDeleteAsync();
+                .ExecuteDeleteAsync(cancellationToken);
         }
     }
 }
