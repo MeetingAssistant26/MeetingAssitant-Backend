@@ -61,10 +61,16 @@ src/
 │   │   │   │   ├── ListMembersEndpoint.cs
 │   │   │   │   ├── UpdateMemberRoleEndpoint.cs
 │   │   │   │   └── UpdateMemberContextEndpoint.cs
-│   │   │   └── Invitation/
-│   │   │       ├── InvitationController.cs
-│   │   │       ├── CreateInvitationEndpoint.cs
-│   │   │       └── JoinInvitationEndpoint.cs
+│   │   │   ├── Invitation/
+│   │   │   │   ├── InvitationController.cs
+│   │   │   │   ├── CreateInvitationEndpoint.cs
+│   │   │   │   └── JoinInvitationEndpoint.cs
+│   │   │   └── MeetingTag/
+│   │   │       ├── MeetingTagController.cs
+│   │   │       ├── ListMeetingTagsEndpoint.cs
+│   │   │       ├── CreateMeetingTagEndpoint.cs
+│   │   │       ├── UpdateMeetingTagEndpoint.cs
+│   │   │       └── DeleteMeetingTagEndpoint.cs
 │   │   ├── Models/
 │   │   ├── Services/
 │   │   └── Validators/

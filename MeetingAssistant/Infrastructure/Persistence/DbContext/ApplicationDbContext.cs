@@ -28,6 +28,7 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<Organization> Organizations => Set<Organization>();
         public DbSet<UserOrgMembership> UserOrgMemberships => Set<UserOrgMembership>();
         public DbSet<Invitation> Invitations => Set<Invitation>();
+        public DbSet<MeetingTag> MeetingTags => Set<MeetingTag>();
 
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {

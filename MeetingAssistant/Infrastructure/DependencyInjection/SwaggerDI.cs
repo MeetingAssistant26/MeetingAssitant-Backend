@@ -1,4 +1,5 @@
 using Microsoft.OpenApi;
+using MeetingAssistant.Shared.Types;
 
 namespace MeetingAssistant.Infrastructure.DependencyInjection
 {
@@ -9,6 +10,8 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
             services.AddEndpointsApiExplorer();
             services.AddSwaggerGen(options =>
             {
+                options.SchemaFilter<OptionalSchemaFilter>();
+
                 options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
                 {
                     Name = "Authorization",
