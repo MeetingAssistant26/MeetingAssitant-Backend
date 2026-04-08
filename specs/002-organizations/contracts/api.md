@@ -126,7 +126,7 @@ All endpoints return errors using `StandardErrorResponse` via `result.ToProblem(
 ### List Meeting Tags
 `GET /api/organizations/{organizationId}/meeting-tags`
 **Headers**: `Authorization: Bearer <token>`
-**Requires Policy**: `RequireOrgMember`
+**Requires Policy**: `RequireOrgAccess`
 **Query Parameters**: None
 **Response (200 OK)**: Array of `MeetingTagResponse` (active tags only — `IsActive = true`), ordered by `CreatedAtUtc ASC` (oldest first)
 ```json

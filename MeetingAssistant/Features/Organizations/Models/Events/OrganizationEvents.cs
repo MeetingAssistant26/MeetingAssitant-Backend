@@ -8,4 +8,8 @@ namespace MeetingAssistant.Features.Organizations.Models.Events
     public record MemberContextUpdatedEvent(Guid OrganizationId, Guid UserId) : IDomainEvent;
     public record MemberLeftEvent(Guid OrganizationId, Guid UserId) : IDomainEvent;
     public record InvitationRevokedEvent(Guid OrganizationId, Guid InvitationId) : IDomainEvent;
+    
+    public record MeetingTagCreatedEvent(Guid OrganizationId, Guid TagId) : IDomainEvent;
+    public record MeetingTagUpdatedEvent(Guid OrganizationId, Guid TagId) : IDomainEvent;
+    public record MeetingTagDeletedEvent(Guid OrganizationId, Guid TagId) : IDomainEvent;
 }

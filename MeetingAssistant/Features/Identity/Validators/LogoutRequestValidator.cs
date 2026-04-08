@@ -7,7 +7,9 @@ namespace MeetingAssistant.Features.Identity.Validators
     {
         public LogoutRequestValidator()
         {
-            RuleFor(x => x.RefreshToken).NotEmpty();
+            RuleFor(x => x.RefreshToken)
+                .Cascade(CascadeMode.Stop)
+                .NotEmpty();
         }
     }
 }

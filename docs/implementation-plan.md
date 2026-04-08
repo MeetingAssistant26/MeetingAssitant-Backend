@@ -167,7 +167,8 @@ src/
 │   │   ├── Endpoints/
 │   │   │   ├── Organization/
 │   │   │   ├── Member/
-│   │   │   └── Invitation/
+│   │   │   ├── Invitation/
+│   │   │   └── MeetingTag/
 │   │   ├── Models/
 │   │   ├── Services/
 │   │   └── Validators/
@@ -588,6 +589,15 @@ Deliverable:
   - `EmailWhitelist` (JSONB — array of allowed emails)
   - `Token` (unique invite link token)
   - `ExpiresAtUtc`, `CreatedAtUtc`, `RevokedAtUtc` (timestampz, nullable)
+- `MeetingTag` (organization-scoped labels for categorizing meetings)
+  - `Id`, `OrganizationId`
+  - `Name` (text, max 50) — display name of the tag
+  - `Color` (text, max 7, nullable) — hex color code (e.g., "#4CAF50")
+  - `IsActive` (bool, default true) — soft delete flag
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+  - **DB Constraint**: `UNIQUE(OrganizationId, LOWER(Name)) WHERE IsActive = true` — case-insensitive uniqueness per org
+  - Soft delete via `IsActive = false` — deleted tags remain in DB for referential integrity with existing meetings
+  - Referenced by meetings via many-to-many junction table (defined in Phase 3)
 
 > **Terminology note**: `UserOrgMembership.Context` stores **Member Context** (people knowledge).
 > This is distinct from **Meeting Memory** (vectorized past meeting content in Phase 6).
@@ -609,11 +619,18 @@ Features/
     │   │   ├── UpdateMemberRoleEndpoint.cs
     │   │   └── UpdateMemberContextEndpoint.cs
     │   │
-    │   └── Invitation/
-    │       ├── InvitationController.cs
-    │       ├── CreateInvitationEndpoint.cs
-    │       ├── JoinOrganizationEndpoint.cs
-    │       └── RevokeInvitationEndpoint.cs
+    │   ├── Invitation/
+    │   │   ├── InvitationController.cs
+    │   │   ├── CreateInvitationEndpoint.cs
+    │   │   ├── JoinOrganizationEndpoint.cs
+    │   │   └── RevokeInvitationEndpoint.cs
+    │   │
+    │   └── MeetingTag/
+    │       ├── MeetingTagController.cs
+    │       ├── ListMeetingTagsEndpoint.cs
+    │       ├── CreateMeetingTagEndpoint.cs
+    │       ├── UpdateMeetingTagEndpoint.cs
+    │       └── DeleteMeetingTagEndpoint.cs
     │
     ├── Models/
     │   ├── Requests/
@@ -621,11 +638,14 @@ Features/
     │   │   ├── CreateInvitationRequest.cs
     │   │   ├── JoinOrganizationRequest.cs
     │   │   ├── UpdateMemberRoleRequest.cs
-    │   │   └── UpdateMemberContextRequest.cs
+    │   │   ├── UpdateMemberContextRequest.cs
+    │   │   ├── CreateMeetingTagRequest.cs
+    │   │   └── UpdateMeetingTagRequest.cs
     │   └── Responses/
     │       ├── OrganizationResponse.cs
     │       ├── MemberResponse.cs
-    │       └── InvitationResponse.cs
+    │       ├── InvitationResponse.cs
+    │       └── MeetingTagResponse.cs
     │
     ├── Services/
     │   ├── IOrganizationService.cs
@@ -633,14 +653,18 @@ Features/
     │   ├── IMemberService.cs
     │   ├── MemberService.cs
     │   ├── IInvitationService.cs
-    │   └── InvitationService.cs
+    │   ├── InvitationService.cs
+    │   ├── IMeetingTagService.cs
+    │   └── MeetingTagService.cs
     │
     └── Validators/
         ├── CreateOrganizationRequestValidator.cs
         ├── CreateInvitationRequestValidator.cs
         ├── JoinOrganizationRequestValidator.cs
         ├── UpdateMemberRoleRequestValidator.cs
-        └── UpdateMemberContextRequestValidator.cs
+        ├── UpdateMemberContextRequestValidator.cs
+        ├── CreateMeetingTagRequestValidator.cs
+        └── UpdateMeetingTagRequestValidator.cs
 ```
 
 ## Controller Definitions
@@ -717,6 +741,30 @@ public partial class InvitationController : ControllerBase
 - `POST /api/organizations/join` → `JoinOrganizationEndpoint.cs`
 - `POST /api/organizations/{orgId}/invitations/{invitationId}/revoke` → `RevokeInvitationEndpoint.cs`
 
+### MeetingTagController — `api/organizations/{orgId}/meeting-tags`
+
+```csharp
+namespace MeetingAssistant.Features.Organizations.Endpoints.MeetingTag;
+
+[ApiController]
+[Route("api/organizations/{orgId:guid}/meeting-tags")]
+public partial class MeetingTagController : ControllerBase
+{
+    private readonly IMeetingTagService _meetingTagService;
+
+    public MeetingTagController(IMeetingTagService meetingTagService)
+    {
+        _meetingTagService = meetingTagService;
+    }
+}
+```
+
+**Endpoints:**
+- `GET /api/organizations/{orgId}/meeting-tags` → `ListMeetingTagsEndpoint.cs`
+- `POST /api/organizations/{orgId}/meeting-tags` → `CreateMeetingTagEndpoint.cs`
+- `PUT /api/organizations/{orgId}/meeting-tags/{tagId}` → `UpdateMeetingTagEndpoint.cs`
+- `DELETE /api/organizations/{orgId}/meeting-tags/{tagId}` → `DeleteMeetingTagEndpoint.cs`
+
 ## Invitation Flow (v3.4 — simplified membership)
 
 When a user accepts an invitation:
@@ -732,6 +780,9 @@ When a user accepts an invitation:
 - `MemberContextUpdatedEvent`
 - `MemberLeftEvent`
 - `InvitationRevokedEvent`
+- `MeetingTagCreatedEvent`
+- `MeetingTagUpdatedEvent`
+- `MeetingTagDeletedEvent`
 
 ## Tests (Phase 2)
 
@@ -743,7 +794,8 @@ Deliverable:
 - Org-scoped queries enforced
 - Member context stored and retrievable
 - Leave organization flow functional
-- 3 controllers, 8 endpoint files
+- Meeting tag CRUD with soft delete and case-insensitive uniqueness
+- 4 controllers, 12 endpoint files
 
 ---
 
@@ -762,8 +814,9 @@ Deliverable:
   - `Id`, `MeetingId`, `OrganizationId`, `UserId`, `MeetingRole`, `CreatedAtUtc`
 - `RecurrenceConfig` (JSONB)
   - Stored as JSONB on `Meeting` entity: `{ "frequency": "weekly", "interval": 1, "daysOfWeek": [...], "endsAtUtc": "..." }`
-- `MeetingTag`
-  - `Id`, `MeetingId`, `OrganizationId`, `Name`, `CreatedAtUtc`
+- `MeetingMeetingTag` (junction table — many-to-many between `Meeting` and `MeetingTag`)
+  - `MeetingId` (FK to Meeting), `MeetingTagId` (FK to MeetingTag defined in Phase 2)
+  - Composite PK: `(MeetingId, MeetingTagId)`
 
 ## Folder Structure
 
@@ -2049,7 +2102,7 @@ Deliverable:
 | Phase | Feature | Controllers | Endpoint Files | Total Actions |
 |-------|---------|-------------|----------------|---------------|
 | 1 | Identity | 3 (Auth, Token, Profile) | 8 | 8 |
-| 2 | Organizations | 3 (Organization, Member, Invitation) | 7 | 7 |
+| 2 | Organizations | 4 (Organization, Member, Invitation, MeetingTag) | 11 | 11 |
 | 3 | Meetings | 4 (Meeting, Recurring, Participant, Calendar) | 7 | 7 |
 | 4 | LiveSession | 3 (Session, Webhook, Transcript) | 3 | 3 |
 | 5 | Recordings | 1 (Recording) | 2 | 2 |
@@ -2057,7 +2110,7 @@ Deliverable:
 | 6.5 | Meeting Memory | 1 (MeetingMemory) | 1 | 1 |
 | 7 | Tasks | 3 (ReviewQueue, Task, Reminder) | 11 | 11 |
 | 8 | Integrations | 1 (Trello) | 4 | 4 |
-| **Total** | | **19 controllers** | **43 endpoint files** | **43 actions** |
+| **Total** | | **20 controllers** | **47 endpoint files** | **47 actions** |
 
 Deliverable:
 - Complete runnable demo via API
@@ -2170,6 +2223,15 @@ Tests/
 ---
 
 # Decisions & Changes
+
+## v3.5 Changes — Meeting Tags in Phase 2 (2026-04-07)
+
+| # | Change | Detail |
+|---|--------|--------|
+| 91 | `MeetingTag` moved back to Phase 2 (Organizations) | Reverses decision #1 (v1). MeetingTag is an organization-scoped tag pool with CRUD, soft delete (`IsActive`), and optional color. Entity defined in Phase 2 with `MeetingTagController` (4 endpoints). Phase 3 defines the `MeetingMeetingTag` junction table for many-to-many relationship with meetings. |
+| 92 | Phase 2 expanded to 4 controllers, 12 endpoint files | Added `MeetingTagController` with `ListMeetingTagsEndpoint`, `CreateMeetingTagEndpoint`, `UpdateMeetingTagEndpoint`, `DeleteMeetingTagEndpoint`. New service: `IMeetingTagService` / `MeetingTagService`. New validators: `CreateMeetingTagRequestValidator`, `UpdateMeetingTagRequestValidator`. |
+| 93 | MeetingTag domain events added | `MeetingTagCreatedEvent`, `MeetingTagUpdatedEvent`, `MeetingTagDeletedEvent` added to Phase 2 domain events. |
+| 94 | Phase 3 `MeetingTag` entity replaced with junction table | Phase 3 no longer defines `MeetingTag` entity. Instead defines `MeetingMeetingTag` junction table (composite PK: `MeetingId`, `MeetingTagId`) for many-to-many. |
 
 ## v3.4 Changes — Simplified Membership Model (2026-03-13)
 

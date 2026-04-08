@@ -10,6 +10,7 @@ namespace MeetingAssistant.Features.Organizations
             services.AddScoped<IOrganizationService, OrganizationService>();
             services.AddScoped<IMemberService, MemberService>();
             services.AddScoped<IInvitationService, InvitationService>();
+            services.AddScoped<IMeetingTagService, MeetingTagService>();
 
             return services;
         }

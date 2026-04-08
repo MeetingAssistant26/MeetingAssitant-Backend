@@ -37,11 +37,13 @@ namespace MeetingAssistant.Infrastructure.Persistence.EntitiesConfigrations.Orga
 
             builder.HasOne(m => m.User)
                    .WithMany()
-                   .HasForeignKey(m => m.UserId);
+                   .HasForeignKey(m => m.UserId)
+                   .OnDelete(DeleteBehavior.Cascade);
 
             builder.HasOne(m => m.Organization)
                    .WithMany(o => o.Memberships)
-                   .HasForeignKey(m => m.OrganizationId);
+                   .HasForeignKey(m => m.OrganizationId)
+                   .OnDelete(DeleteBehavior.Cascade);
         }
     }
 }
