@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Security.Claims;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.Organizations.Models;
+using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Shared;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Api.Infrastructure.Services;
@@ -29,6 +30,9 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<UserOrgMembership> UserOrgMemberships => Set<UserOrgMembership>();
         public DbSet<Invitation> Invitations => Set<Invitation>();
         public DbSet<MeetingTag> MeetingTags => Set<MeetingTag>();
+        public DbSet<Meeting> Meetings => Set<Meeting>();
+        public DbSet<MeetingParticipant> MeetingParticipants => Set<MeetingParticipant>();
+        public DbSet<MeetingMeetingTag> MeetingMeetingTags => Set<MeetingMeetingTag>();
 
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {
