@@ -37,7 +37,10 @@ namespace MeetingAssistant.Api
 
             var app = builder.Build();
 
-            app.CheckRedisConnection();
+            if (!app.Environment.IsEnvironment("Testing"))
+            {
+                app.CheckRedisConnection();
+            }
 
             if (app.Environment.IsDevelopment())
             {
@@ -58,13 +61,16 @@ namespace MeetingAssistant.Api
             app.MapHub<NotificationHub>("/hubs/notifications").RequireAuthorization();
             app.MapHealthChecks("/healthz");
 
-            app.UseSecureHangfireDashboard();
-            app.RegisterRecurringJobs();
-
-            using (var scope = app.Services.CreateScope())
+            if (!app.Environment.IsEnvironment("Testing"))
             {
-                var dbContext = scope.ServiceProvider.GetRequiredService<MeetingAssistant.Infrastructure.Persistence.DbContext.ApplicationDbContext>();
-                dbContext.Database.Migrate();
+                app.UseSecureHangfireDashboard();
+                app.RegisterRecurringJobs();
+
+                using (var scope = app.Services.CreateScope())
+                {
+                    var dbContext = scope.ServiceProvider.GetRequiredService<MeetingAssistant.Infrastructure.Persistence.DbContext.ApplicationDbContext>();
+                    dbContext.Database.Migrate();
+                }
             }
 
             app.Run();

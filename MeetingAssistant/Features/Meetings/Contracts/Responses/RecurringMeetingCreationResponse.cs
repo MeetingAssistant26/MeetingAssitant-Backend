@@ -1,7 +1,6 @@
 namespace MeetingAssistant.Features.Meetings.Contracts.Responses
 {
-    public sealed record CalendarDataResponse(
-        DateTime WeekStartUtc,
-        DateTime WeekEndUtc,
+    public sealed record RecurringMeetingCreationResponse(
+        int Count,
         IReadOnlyList<MeetingResponse> Meetings);
 }

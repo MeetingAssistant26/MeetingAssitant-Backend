@@ -9,6 +9,8 @@ namespace MeetingAssistant.Features.Meetings
         {
             services.AddScoped<IMeetingService, MeetingService>();
             services.AddScoped<IParticipantService, ParticipantService>();
+            services.AddScoped<IRecurrenceService, RecurrenceService>();
+            services.AddScoped<ICalendarService, CalendarService>();
 
             return services;
         }

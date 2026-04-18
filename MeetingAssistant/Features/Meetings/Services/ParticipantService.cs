@@ -31,7 +31,7 @@ namespace MeetingAssistant.Features.Meetings.Services
             Guid callerId,
             CancellationToken cancellationToken = default)
         {
-            var orgId = GetOrganizationId();
+          var orgId = GetOrganizationId();
 
             var check = await _dbContext.Meetings
                 .Where(m => m.Id == meetingId)
@@ -49,7 +49,7 @@ namespace MeetingAssistant.Features.Meetings.Services
                 return Result.Failure<ParticipantResponse>(MeetingErrors.NotFound);
 
             if (check.CallerRole == null)
-                return Result.Failure<ParticipantResponse>(MeetingErrors.NotParticipant);
+             return Result.Failure<ParticipantResponse>(MeetingErrors.NotParticipant);
 
             if (check.CallerRole != MeetingRole.Host && check.CallerRole != MeetingRole.CoHost)
                 return Result.Failure<ParticipantResponse>(MeetingErrors.NotHost);
@@ -64,7 +64,7 @@ namespace MeetingAssistant.Features.Meetings.Services
 
             if (check.AlreadyParticipant)
                 return Result.Failure<ParticipantResponse>(MeetingErrors.AlreadyParticipant);
-
+            
             var newParticipant = new MeetingParticipant
             {
                 MeetingId = meetingId,
