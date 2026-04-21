@@ -2,8 +2,22 @@
 
 **Feature Branch**: `004-realtime-pipeline`
 **Created**: 2026-04-18
-**Status**: Draft
-**Input**: User description: "Phase 4 — Realtime Pipeline: LiveKit Cloud join tokens, live transcription via LiveKit Cloud STT agent, webhook ingestion for room lifecycle events, and transcript retrieval. Includes TranscriptSegment entity, role-based realtime permissions (Host/CoHost/Participant/Observer), tenant-scoped SignalR notifications for session events."
+**Last Updated**: 2026-04-21
+**Status**: Draft (revised — MVP simplification)
+**Input**: User description: "Phase 4 — Realtime Pipeline: LiveKit Cloud join tokens, webhook ingestion for room lifecycle events, recording download to MinIO for Phase 6 to pick up. Live captions are delivered directly by the realtime platform. Role-based realtime permissions (Host/CoHost/Participant/Observer), tenant-scoped SignalR notifications for session events."
+
+> **Revision notes**:
+>
+> - **2026-04-21 (scope revision)**: Realtime transcript persistence, transcript retrieval, and transcription pause/resume are no longer part of Phase 4. Live captions are delivered directly from the realtime platform to clients over its native data channels. The authoritative transcript is produced in **Phase 6 (Post-Meeting AI Pipeline)** using WhisperX (or an equivalent offline STT) applied to the recording.
+> - **2026-04-21 (MVP simplification)**: The recording pipeline is intentionally minimal. No domain events, no reconciliation job, no multi-step orchestration. One entity (`Recording`), one background job (`DownloadRecordingJob`), one essential webhook (`egress_ended`). Phase 6 integration is a **storage boundary**: Phase 6 reads files from MinIO, not from an event bus or queue.
+
+## The Recording Pipeline (at a glance)
+
+```
+LiveKit Egress → egress_ended webhook → DownloadRecordingJob → MinIO → Phase 6 (WhisperX)
+```
+
+That is the entire flow. No orchestrator, no event bus, no reconciliation layer.
 
 ## User Scenarios & Testing
 
@@ -27,37 +41,37 @@ A participant of a scheduled meeting requests a credential that lets them join t
 
 ---
 
-### User Story 2 - Capture Live Transcription During a Meeting (Priority: P1)
+### User Story 2 - View Live Captions During a Meeting (Priority: P1)
 
-While a meeting is live, speech from all speaking participants is transcribed in real time. Each transcribed segment is delivered to the system and stored so it can be retrieved after the meeting, and forwarded to the post-meeting processing pipeline. The stored transcript preserves the order of utterances, their approximate start and end times within the session, and the speaking participant when identifiable.
+While a meeting is live, speech from speaking participants is transcribed in real time by the realtime platform and delivered as captions directly to connected clients over the platform's native data channels. The backend does NOT receive, relay, store, or process these realtime captions — they are a client/platform concern for the duration of the session.
 
-**Why this priority**: Live transcription is the primary data artifact produced during a meeting. All downstream AI processing (summaries, action items, meeting memory in later phases) depends on captured transcript data. If transcripts are not captured, the entire post-meeting value chain collapses.
+**Why this priority**: Users expect live captions during a meeting for accessibility and clarity. Delegating this to the realtime platform reduces backend complexity and latency, and aligns with deferring the authoritative transcription to Phase 6.
 
-**Independent Test**: Can be tested by running a meeting with known spoken content, then retrieving the transcript after the meeting ends and verifying segments are present, ordered correctly, and contain the expected text with speaker attribution where available.
+**Independent Test**: Can be tested by joining a live session as any participant role with a client that subscribes to the realtime platform's caption data channel and verifying caption messages are received from the platform directly, without any round-trip to the backend.
 
 **Acceptance Scenarios**:
 
-1. **Given** a meeting is live with at least one participant speaking, **When** transcript segments are delivered to the system, **Then** each segment is persisted with the meeting, speaker (when known), text content, start time, end time, and sequence order.
-2. **Given** the same transcript segment is delivered more than once (duplicate delivery), **When** the system receives it, **Then** it is stored only once (idempotent ingestion by sequence identifier).
-3. **Given** a speaker cannot be identified for a given segment, **When** the segment is ingested, **Then** the segment is stored with an empty/unknown speaker attribution rather than being discarded.
-4. **Given** a meeting ends, **When** all pending transcript segments have been delivered, **Then** all segments for that meeting are available for retrieval in stored order.
+1. **Given** a meeting is live and a participant is subscribed via the realtime platform, **When** another participant speaks, **Then** caption text for that speech is delivered to the subscribing client via the platform's data channel within the platform's own latency budget.
+2. **Given** a client is connected to the live session, **When** the realtime platform delivers caption messages, **Then** the backend is not involved in that delivery path and no caption text is stored on the backend.
+3. **Given** a meeting has ended, **When** clients query the backend for the meeting's transcript, **Then** Phase 4 does not expose any transcript endpoint; the authoritative transcript becomes available only after Phase 6's post-meeting pipeline completes.
 
 ---
 
-### User Story 3 - Retrieve a Meeting's Transcript (Priority: P1)
+### User Story 3 - Record the Meeting for Post-Processing (Priority: P1)
 
-An organization member who is a participant of a meeting retrieves the full transcript of that meeting after (or during) the session. The transcript is returned as an ordered list of segments with timing, speaker (where known), and text.
+When a meeting's live session ends, LiveKit Cloud Egress finalises a recording to its managed cloud storage and notifies the backend via the `egress_ended` webhook. The backend enqueues a single background job that downloads the file into MinIO. Once the file is in MinIO, it is considered ready for Phase 6 to process.
 
-**Why this priority**: Retrieval completes the transcript value loop. A captured transcript with no way to read it has no value. This is required for the end user to see meeting output and is a prerequisite for any client-side transcript review UI.
+**Why this priority**: The recording is the single input for the entire Phase 6 post-meeting AI pipeline. Without the recording landing in MinIO, every downstream value stream (transcripts, summaries, action items, meeting memory) is blocked.
 
-**Independent Test**: Can be tested by running a meeting that captures several transcript segments, then calling the transcript retrieval endpoint as a participant and verifying all segments are returned in the correct order with expected fields.
+**Independent Test**: Can be tested by posting a signed `egress_ended` webhook and verifying (a) a `Recording` row exists with `Status = Completed` and a populated `FilePath`, (b) the corresponding object is present in the MinIO bucket at that path, (c) no transcript text is produced or stored by Phase 4, and (d) Phase 6 can read the object from MinIO without any coordination message from Phase 4.
 
 **Acceptance Scenarios**:
 
-1. **Given** a meeting has captured transcript segments, **When** a participant requests the transcript, **Then** the system returns all segments for that meeting ordered by sequence/time.
-2. **Given** a meeting has no transcript segments yet, **When** a participant requests the transcript, **Then** the system returns an empty transcript (not an error).
-3. **Given** a user is not a participant of a meeting, **When** they request the transcript, **Then** the system rejects the request with an authorization error.
-4. **Given** a user requests the transcript of a meeting in another organization, **When** tenant scoping is applied, **Then** the meeting is not found (tenant isolation).
+1. **Given** a meeting session has ended and LiveKit Egress has finalised a recording, **When** the verified `egress_ended` webhook arrives at the backend, **Then** the system enqueues a single `DownloadRecordingJob` for the meeting's recording.
+2. **Given** the download job runs successfully, **When** it finishes, **Then** a `Recording` row exists for the meeting with `Status = Completed` and `FilePath` pointing at the object's location in MinIO.
+3. **Given** the download job fails, **When** its retry budget is exhausted, **Then** the `Recording` row is left with `Status = Failed`; no further automatic recovery is attempted (manual retry is acceptable for MVP).
+4. **Given** a duplicate `egress_ended` webhook is delivered for the same recording, **When** it is processed, **Then** no duplicate job is enqueued and no duplicate object is uploaded to MinIO.
+5. **Given** the recording has landed in MinIO with `Status = Completed`, **When** Phase 6 is ready to process it, **Then** Phase 6 reads the file directly from MinIO using the stored `FilePath`; no event, message, or queue hand-off from Phase 4 is required.
 
 ---
 
@@ -65,7 +79,7 @@ An organization member who is a participant of a meeting retrieves the full tran
 
 When the realtime platform reports that a meeting's session has started, a participant has joined or left, or the session has ended, the system consumes those events and keeps meeting state in sync. A meeting transitions to "InProgress" when its session starts and to "Completed" when its session ends. Participant presence is tracked for audit purposes.
 
-**Why this priority**: Automatic lifecycle tracking removes the need for manual meeting status management and produces the data needed for analytics and attendance. However, it is not strictly required for a first-demo MVP — a meeting could run without automatic state transitions as long as transcripts and joins work.
+**Why this priority**: Automatic lifecycle tracking removes the need for manual meeting status management. It is not strictly required for a first-demo MVP — a meeting could run without automatic state transitions as long as joins and the recording download work.
 
 **Independent Test**: Can be tested by simulating the realtime platform's lifecycle events (session started, participant joined, participant left, session ended) against the system's ingestion endpoint, and verifying the corresponding meeting's status and participant presence reflect the events.
 
@@ -81,9 +95,9 @@ When the realtime platform reports that a meeting's session has started, a parti
 
 ### User Story 5 - Tenant-Scoped Realtime Notifications (Priority: P2)
 
-When a meeting session starts, ends, or changes state (e.g., transcription paused, participant joined), the system pushes notifications to connected clients of the same organization so they can update UI (e.g., a "Meeting is live" badge, a participant-count indicator). Notifications are strictly scoped to the meeting's organization; clients of other organizations never receive them.
+When a meeting session starts, ends, or a participant joins or leaves, the system pushes notifications to connected clients of the same organization so they can update UI (e.g., a "Meeting is live" badge, a participant-count indicator). Notifications are strictly scoped to the meeting's organization; clients of other organizations never receive them.
 
-**Why this priority**: Realtime UI updates improve user experience for members watching the meeting list, but they are not required for the core joining/transcription workflow. Clients can also poll as a fallback.
+**Why this priority**: Realtime UI updates improve user experience for members watching the meeting list, but they are not required for the core joining/recording workflow. Clients can also poll as a fallback.
 
 **Independent Test**: Can be tested by connecting two clients in different organizations, triggering a session event in one organization, and verifying only clients of that organization receive the notification.
 
@@ -91,9 +105,6 @@ When a meeting session starts, ends, or changes state (e.g., transcription pause
 
 1. **Given** a client is connected and subscribed to its organization's channel, **When** a meeting in that organization's session starts, **Then** the client receives a "session started" notification for that meeting.
 2. **Given** a client is connected for organization A, **When** a meeting in organization B changes state, **Then** the client does NOT receive any notification for that event.
-3. **Given** the transcription service reports "paused" or "error" during a live session, **When** the event is received, **Then** clients in the meeting's organization receive a transcription status notification.
-4. **Given** a Host or CoHost pauses live transcription mid-session, **When** the pause takes effect, **Then** no further transcript segments are ingested until transcription is resumed, and clients in the meeting's organization receive a "transcription paused" notification identifying the acting user.
-5. **Given** a Participant or Observer attempts to pause live transcription, **When** the request reaches the system, **Then** the system rejects it with an authorization error.
 
 ---
 
@@ -101,10 +112,10 @@ When a meeting session starts, ends, or changes state (e.g., transcription pause
 
 - What happens when a participant requests a join credential for a meeting whose scheduled start time is far in the future? The system still issues the credential — time-of-day gating is not enforced; meeting status gating is the authority.
 - What happens when the last Host leaves the live session mid-meeting? The session continues; the meeting does not automatically end, and remaining CoHosts retain their moderation permissions.
-- What happens when a webhook event references a meeting that does not exist in the system (e.g., stale or orphaned event)? The event is acknowledged to prevent retries but not processed; no meeting state is created from an unrecognized event.
-- What happens when transcript segments arrive after a meeting is already marked "Completed"? Late segments are still ingested and appended to the meeting's transcript in correct sequence order.
-- What happens when a user's active organization has changed since they requested the join credential? The credential was issued against a specific organization context; if the user has switched active organizations, their subsequent actions (e.g., viewing transcript) are scoped to the new active organization and may not see the meeting.
-- What happens when two transcript segments have the same sequence number or overlapping timestamps? The system accepts the first occurrence and treats subsequent ones as duplicates (no overwrite).
+- What happens when a webhook event references a meeting that does not exist in the system (e.g., stale or orphaned event)? The event is acknowledged to prevent retries but not processed; no meeting state or `Recording` row is created from an unrecognized event.
+- What happens when the `DownloadRecordingJob` fails after its retry budget? The `Recording` row is left with `Status = Failed`. The MVP does not automatically recover; an operator can re-enqueue the job manually (or delete the row and replay the webhook).
+- What happens when LiveKit Cloud never delivers `egress_ended` (e.g., recording disabled for the room, or Egress dropped)? No `Recording` row is created; Phase 6 simply has no file to read for that meeting. This is accepted MVP behaviour — no reconciliation sweep.
+- What happens when a user's active organization has changed since they requested the join credential? The credential was issued against a specific organization context; subsequent actions are scoped to the new active organization.
 
 ## Requirements
 
@@ -115,66 +126,76 @@ When a meeting session starts, ends, or changes state (e.g., transcription pause
 - **FR-003**: System MUST reject join credential requests from users who are not participants of the target meeting.
 - **FR-004**: System MUST reject join credential requests when the meeting's status is "Cancelled" or "Completed".
 - **FR-005**: System MUST issue join credentials that are valid for 15 minutes from issuance and scoped to a single meeting's session. After the validity window elapses, the credential cannot be used to join; a participant who has already joined the session remains connected under the realtime platform's own session lifetime.
-- **FR-006**: System MUST accept realtime platform webhook callbacks for session lifecycle events (session started, session ended, participant joined, participant left) and for transcription status events.
+- **FR-006**: System MUST accept realtime platform webhook callbacks for session lifecycle events (`room_started`, `room_finished`, `participant_joined`, `participant_left`) and for the `egress_ended` event that signals a finalised recording.
 - **FR-007**: System MUST verify the authenticity of webhook callbacks (e.g., signature validation) and reject unverified events.
-- **FR-008**: System MUST process webhook events idempotently so that duplicate or replayed events do not cause duplicate state changes.
+- **FR-008**: System MUST process webhook events idempotently so that duplicate or replayed events do not cause duplicate state changes or duplicate `DownloadRecordingJob` enqueues.
 - **FR-009**: System MUST transition a meeting's status from "Scheduled" to "InProgress" upon receiving a verified session-started event.
 - **FR-010**: System MUST transition a meeting's status from "InProgress" to "Completed" upon receiving a verified session-ended event.
-- **FR-011**: System MUST ingest transcript segments delivered during a live session and persist each segment with its meeting identifier, organization identifier, speaker identifier (when known), text content, start time, end time, and sequence number.
-- **FR-012**: System MUST de-duplicate transcript segments by sequence identifier within a given meeting.
-- **FR-013**: System MUST provide an endpoint that returns the full stored transcript for a meeting as an ordered list of segments.
-- **FR-014**: System MUST restrict transcript retrieval to participants of the meeting.
-- **FR-015**: System MUST enforce tenant isolation on all transcript reads and session operations — a user cannot access sessions or transcripts outside their active organization.
-- **FR-016**: System MUST push realtime notifications for session lifecycle and transcription status changes to clients of the meeting's organization only, never broadcast to all connected clients.
-- **FR-017**: System MUST emit domain events for key session lifecycle changes (session started, session ended, transcript segment ingested) so downstream features can subscribe.
-- **FR-018**: System MUST store all session and transcript timestamps in UTC.
-- **FR-019**: System MUST continue to persist and retrieve transcript segments that arrive after the associated meeting has already transitioned to "Completed".
-- **FR-020**: System MUST record participant presence events (joined/left) so attendance data can be derived for downstream reporting.
-- **FR-021**: System MUST support up to 50 concurrent participants per live meeting session, consistent with the participant cap established in Phase 3.
-- **FR-022**: System MUST transcribe spoken English in live sessions. Non-English speech is out of scope for this phase; any output produced by the underlying platform for non-English audio is not guaranteed, not supported, and not validated by tests in this phase.
-- **FR-023**: System MUST allow only Hosts and CoHosts of a meeting to pause or resume live transcription during the session. Participants and Observers MUST NOT have this capability. When transcription is paused, no new transcript segments are ingested until it is resumed.
-- **FR-024**: System MUST emit a tenant-scoped notification when live transcription is paused or resumed, including the acting user so clients can reflect the state change in the UI.
+- **FR-011**: System MUST NOT persist, store, or relay live transcript/caption text during a session. Realtime captions are delivered directly from the realtime platform to subscribed clients via the platform's native data channels.
+- **FR-012**: System MUST NOT expose any transcript retrieval endpoint in this phase. The authoritative transcript for a meeting is produced by the Phase 6 post-meeting AI pipeline from the recording in MinIO; any transcript read API is defined by Phase 6, not by Phase 4.
+- **FR-013**: System MUST, upon a verified `egress_ended` webhook, enqueue a single `DownloadRecordingJob` that downloads the recording from LiveKit Cloud storage and stores it in MinIO.
+- **FR-014**: System MUST persist a single `Recording` row per meeting that carries at minimum: `Id`, `MeetingId`, `FilePath` (MinIO object key), and `Status` (`Pending`, `Completed`, or `Failed`).
+- **FR-015**: System MUST enforce tenant isolation on all session operations — a user cannot request join credentials for or receive notifications about meetings outside their active organization. `Recording` rows MUST carry the meeting's organization id for tenant-scoped queries from Phase 6.
+- **FR-016**: System MUST push realtime notifications for session lifecycle changes (`room_started`, `room_finished`, `participant_joined`, `participant_left`) to clients of the meeting's organization only, never broadcast to all connected clients.
+- **FR-017**: System MUST store all session-event and recording timestamps in UTC.
+- **FR-018**: System MUST record participant presence events (joined/left) so attendance data can be derived for downstream reporting.
+- **FR-019**: System MUST support up to 50 concurrent participants per live meeting session, consistent with the participant cap established in Phase 3.
+- **FR-020**: System MUST, when an `egress_ended` webhook arrives for a meeting that does not exist in the system, acknowledge the webhook (200 OK) without creating a `Recording` row and without enqueuing a download job.
+- **FR-021**: Phase 4 MUST NOT publish any recording-related domain event. Phase 6 reads recordings from MinIO directly, using the `Recording.FilePath` to locate the object. MinIO is the integration boundary between Phase 4 and Phase 6.
 
 ### Key Entities
 
-- **TranscriptSegment**: A single unit of transcribed speech captured during a live meeting session. Belongs to one meeting and one organization. Includes the speaking user (when known), the transcribed text, start and end times within the session, a sequence number for ordering and de-duplication, and the time it was recorded.
 - **SessionJoinCredential**: A transient, short-lived credential issued to a specific user for a specific meeting's live session. Carries the participant's role-derived permissions. Not persisted long-term; its issuance is logged for audit.
-- **SessionLifecycleEvent**: A verified event delivered by the realtime platform describing a change in session or participant state (session started, session ended, participant joined, participant left, transcription paused/resumed). Used to update meeting status and participant attendance. Processed idempotently.
+- **SessionLifecycleEvent**: A verified event delivered by the realtime platform describing a change in session, participant, or recording state (`room_started`, `room_finished`, `participant_joined`, `participant_left`, `egress_ended`). Used to update meeting status, participant attendance, and to trigger the recording download. Processed idempotently by a stable external event id.
+- **Recording**: A minimal metadata record describing a recording produced for a meeting. Carries `Id`, `MeetingId`, `FilePath` (MinIO object key), and `Status` (`Pending` / `Completed` / `Failed`). The binary lives in MinIO; this entity only points at it. Phase 6 reads the row to find the `FilePath` and then reads the object from MinIO.
+
+> **Removed from this phase**: `TranscriptSegment`, `RecordingAsset` (replaced by the simpler `Recording`), `RecordingAvailableEvent`, `RecordingFailedEvent`. Any transcript entity belongs to Phase 6.
 
 ## Success Criteria
 
 ### Measurable Outcomes
 
 - **SC-001**: A participant receives a valid join credential within 1 second of requesting one for a Scheduled or InProgress meeting.
-- **SC-002**: Live captions for a spoken utterance appear to session participants within 3 seconds of the speech ending.
-- **SC-003**: Meeting status reflects the real session state (InProgress / Completed) within 5 seconds of the corresponding lifecycle event.
-- **SC-004**: A meeting's full transcript of up to 1 hour of speech can be retrieved in under 2 seconds.
+- **SC-002**: Live captions for a spoken utterance appear to session participants within the realtime platform's own latency budget (typically under 3 seconds). The backend is **not on this path** — no backend latency target applies.
+- **SC-003**: Meeting status reflects the real session state (InProgress / Completed) within 5 seconds of the corresponding verified lifecycle event.
+- **SC-004**: For 100% of completed meetings that had recording enabled and whose `egress_ended` webhook was delivered, the `Recording` row transitions to `Status = Completed` and the MinIO object is readable within 10 minutes of webhook receipt.
 - **SC-005**: 100% of join credentials carry permissions that match the requester's meeting role — no role mismatch is ever observed.
-- **SC-006**: 100% of session operations and transcript reads are scoped to the requester's active organization — no cross-organization leakage is observed in automated tenant-isolation tests.
+- **SC-006**: 100% of session operations are scoped to the requester's active organization — no cross-organization leakage is observed in automated tenant-isolation tests.
 - **SC-007**: 100% of webhook events with invalid or missing source signatures are rejected.
-- **SC-008**: Duplicate or replayed webhook events produce zero duplicate state transitions and zero duplicate stored segments.
+- **SC-008**: Duplicate or replayed webhook events produce zero duplicate state transitions, zero duplicate `DownloadRecordingJob` enqueues, and zero duplicate MinIO objects.
 - **SC-009**: Realtime notifications for session events are delivered only to clients of the meeting's organization — zero cross-organization notifications are observed in automated tests.
-- **SC-010**: A live session with 50 concurrent participants operates within the latency targets of SC-001 through SC-004 with no degradation.
+- **SC-010**: A live session with 50 concurrent participants operates within the latency targets of SC-001 and SC-003 with no degradation.
 
 ## Clarifications
 
 ### Session 2026-04-18
 
 - Q: What is the maximum number of concurrent participants per live meeting session? → A: Up to 50 participants per session (aligns with Phase 3 SC-002).
-- Q: What language(s) must live transcription support in this phase? → A: English only; multi-language support is deferred to a later phase.
 - Q: How long should a join credential remain valid before a participant must request a new one? → A: 15 minutes from issuance; once joined, the realtime platform's own session lifetime takes over.
-- Q: Who is authorized to pause or resume live transcription during an active session? → A: Hosts and CoHosts only; Participants and Observers cannot pause or resume.
+
+### Session 2026-04-21 (scope simplification)
+
+- Q: Does Phase 4 persist realtime transcript text? → **A: No.** Live captions are delivered directly from the realtime platform to clients over native data channels; the backend does not receive, relay, or store them. The authoritative transcript is produced in Phase 6 from the recording in MinIO.
+- Q: Does Phase 4 expose a transcript retrieval endpoint? → **A: No.** Any transcript read API is owned by Phase 6.
+- Q: Is realtime transcription pause/resume a Phase 4 capability? → **A: No.**
+
+### Session 2026-04-21 (MVP simplification of the recording pipeline)
+
+- Q: How does Phase 4 hand off the recording to Phase 6? → **A: MinIO is the integration boundary.** Phase 6 reads the file from MinIO using `Recording.FilePath`. No domain events, no queues, no message bus.
+- Q: What is the minimum shape of the `Recording` entity? → **A: `Id`, `MeetingId`, `FilePath`, and a simple `Status` (Pending / Completed / Failed).** No size, duration, cloud URL, egress id, or failure-reason columns are required for the MVP. If the implementation finds some of these useful for idempotency (e.g., a stable external egress id), that is acceptable — but the spec commits only to the minimum.
+- Q: Is there a reconciliation or self-healing job? → **A: No.** If a download fails after retries, the row is left at `Status = Failed` and manual recovery is acceptable. If an `egress_ended` webhook is never delivered, no recording exists; Phase 6 simply skips that meeting.
+- Q: How many background jobs are involved? → **A: One — `DownloadRecordingJob`.** It downloads the recording from LiveKit Cloud storage, uploads it to MinIO, and updates the `Recording` row.
+- Q: Which recording-related webhooks are essential? → **A: Only `egress_ended`.** `recording_started` is optional and MAY be handled to pre-create a `Pending` row for auditing, but is not required.
 
 ## Assumptions
 
-- Users are authenticated, belong to at least one organization, and have an active organization selected (Phase 1 and Phase 2 complete). All session and transcript operations are scoped via the active organization on the request identity.
+- Users are authenticated, belong to at least one organization, and have an active organization selected (Phase 1 and Phase 2 complete). All session operations are scoped via the active organization on the request identity.
 - The Meeting and MeetingParticipant entities exist and support the roles Host, CoHost, Participant, and Observer (Phase 3 complete).
-- A managed realtime platform (LiveKit Cloud) provides the underlying audio/video infrastructure, speech-to-text transcription, and webhook delivery. The backend does not host WebRTC or transcription services itself — this satisfies the "single deployable unit" constitution constraint.
-- Live captions are delivered to session clients via the realtime platform's native data channels during the session; the backend persists transcript segments for later retrieval rather than relaying captions in real time.
-- The transcript retrieval endpoint returns the transcript as stored so far. During an active session, partial transcripts may be returned; clients that need "live" captions rely on the realtime platform's native delivery.
-- A meeting's in-progress state updates (e.g., extending end time, pausing transcription for privacy) are driven primarily by the realtime platform's events. In-session meeting-metadata edits remain out of scope here.
-- Meeting-memory semantic search, summarization, and action item extraction are explicitly out of scope for this phase; they are handled in Phase 6 and 6.5 by a post-meeting pipeline that consumes the transcript segments stored here.
-- Transcription is limited to spoken English in this phase. Multi-language support (including Arabic, per-org language selection, or auto-detection) is deferred to a later phase and will require STT configuration and downstream AI pipeline changes.
-- Recording and storage of audio/video files are out of scope for this phase; they are handled in Phase 5.
-- The system relies on the realtime platform's speaker identification to attribute segments to users. When the platform cannot identify a speaker, segments are stored with an unknown speaker attribution rather than dropped.
+- A managed realtime platform (LiveKit Cloud) provides the underlying audio/video infrastructure, native live-caption delivery over data channels, egress-based recording into its managed cloud storage, and webhook delivery for session and recording lifecycle events. The backend does not host WebRTC, STT, or media processing services itself — this satisfies the "single deployable unit" constitution constraint.
+- **Live captions are delivered directly from the realtime platform to clients via its native data channels.** The backend is not on the caption path at any point; it does not relay, buffer, store, or process realtime caption text.
+- **The authoritative transcript is generated in Phase 6** by an offline speech-to-text pipeline (WhisperX or equivalent) running over the recording in MinIO. Phase 4 does not produce, store, or expose any transcript.
+- **MinIO is the integration boundary between Phase 4 and Phase 6.** Phase 6 reads recordings from MinIO using `Recording.FilePath` looked up by meeting id. No events, queues, or other coupling mechanisms bridge the two phases.
+- The recording pipeline is intentionally minimal: one webhook (`egress_ended`) triggers one background job (`DownloadRecordingJob`), which updates one entity (`Recording`). No reconciliation, no event bus, no self-healing.
+- Phase 6 is the single source of truth for transcript, summary, tasks, and meeting memory. Phase 4 explicitly does not duplicate or shadow any of these concerns.
 - Realtime notifications to clients use the existing tenant-scoped channel convention established in earlier phases (group-per-organization); client subscription and authentication on those channels is already in place.
+- Recording is an infrastructure-level concern configured on the realtime platform (LiveKit Egress); enabling or disabling recording per meeting is a policy / admin matter and is not exposed as a per-request backend API in Phase 4.

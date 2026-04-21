@@ -1,9 +1,11 @@
-namespace MeetingAssistant.Api.Infrastructure.Configuration
+﻿namespace MeetingAssistant.Api.Infrastructure.Configuration
 {
     public class LiveKitSettings
     {
         public string? ApiKey { get; set; }
         public string? ApiSecret { get; set; }
-        public string? BaseUrl { get; set; }
+        public string? ServerUrl { get; set; }
+        public string? WebhookSecret { get; set; }
     }
 }
+

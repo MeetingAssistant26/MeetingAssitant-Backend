@@ -7,6 +7,7 @@ using System.Security.Claims;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Meetings.Models;
+using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Shared;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Api.Infrastructure.Services;
@@ -33,6 +34,8 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<Meeting> Meetings => Set<Meeting>();
         public DbSet<MeetingParticipant> MeetingParticipants => Set<MeetingParticipant>();
         public DbSet<MeetingMeetingTag> MeetingMeetingTags => Set<MeetingMeetingTag>();
+        public DbSet<TranscriptSegment> TranscriptSegments => Set<TranscriptSegment>();
+        public DbSet<SessionEvent> SessionEvents => Set<SessionEvent>();
 
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -128,3 +131,4 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
 
     }
 }
+

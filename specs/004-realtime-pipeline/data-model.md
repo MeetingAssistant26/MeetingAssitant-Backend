@@ -1,49 +1,10 @@
 # Data Model: Realtime Session Pipeline
 
-**Feature**: 004-realtime-pipeline | **Date**: 2026-04-18
+**Feature**: 004-realtime-pipeline | **Date**: 2026-04-18 | **Last Updated**: 2026-04-21
+
+> **Revision note (2026-04-21)**: `TranscriptSegment` is out of scope — the authoritative transcript is produced in Phase 6. The recording pipeline has been simplified to the MVP minimum: one entity (`Recording`), one job (`DownloadRecordingJob`), no domain events for recording, no reconciliation.
 
 ## Entities
-
-### TranscriptSegment
-
-A single unit of transcribed speech captured during a live meeting session. One row per finalized segment delivered by the realtime platform's STT.
-
-| Field | Type | Constraints | Notes |
-|-------|------|-------------|-------|
-| Id | Guid | PK, auto-generated | Inherited from `BaseEntity` |
-| MeetingId | Guid | FK to `Meeting`, required, indexed | Cascade not set (soft isolation) |
-| OrganizationId | Guid | FK to `Organization`, required | `IHasOrganizationId` — tenant isolation via global query filter |
-| SpeakerUserId | Guid? | FK to `ApplicationUser`, nullable | Null when platform cannot identify the speaker (FR-011, edge case) |
-| Text | string | Required, max 8000 chars | The final transcribed utterance. Stored as PostgreSQL `text` (no length cap at DB, app-level cap) |
-| StartMs | long | Required | Milliseconds from session start (monotonic, supplied by platform) |
-| EndMs | long | Required | Milliseconds from session start; MUST be `>= StartMs` |
-| SequenceNumber | long | Required | Platform-supplied monotonic sequence within the meeting; dedup key |
-| ExternalSegmentId | string | Required, max 100 chars | Platform's stable identifier for the segment; for traceability |
-| CreatedAtUtc | DateTime | Auto-set | Inherited from `BaseEntity`; time the backend persisted the row |
-| UpdatedAtUtc | DateTime | Auto-set | Inherited from `BaseEntity` |
-
-**Relationships**:
-
-- Belongs to one `Meeting` (via `MeetingId`)
-- Belongs to one `Organization` (via `OrganizationId`)
-- Optionally belongs to one `ApplicationUser` (via `SpeakerUserId`)
-
-**Indexes**:
-
-- `IX_TranscriptSegments_MeetingId_SequenceNumber` on `(MeetingId, SequenceNumber)` — **UNIQUE**. Primary read path (transcript retrieval ordered by sequence) AND dedup primitive for idempotent ingestion (R-006).
-- `IX_TranscriptSegments_OrganizationId` on `OrganizationId` — required by the global query filter.
-
-**Constraints**:
-
-- Unique `(MeetingId, SequenceNumber)` — prevents duplicate storage of the same segment; unique-violation on insert is the idempotency signal per R-006.
-- Check constraint: `EndMs >= StartMs`.
-
-**Notes**:
-
-- Only segments with `IsFinal = true` at the platform layer are ever inserted (R-007). Interim segments are discarded by `WebhookService`.
-- `Text` is kept as-is (platform-provided casing and punctuation). Normalisation is a Phase 6 concern.
-
----
 
 ### SessionEvent
 
@@ -56,11 +17,10 @@ A verified event delivered by the realtime platform. Persisted for (a) idempoten
 | OrganizationId | Guid | FK to `Organization`, required | `IHasOrganizationId` — tenant isolation via global query filter |
 | ExternalEventId | string | Required, max 100 chars, **UNIQUE** | Platform-supplied event id; idempotency primitive |
 | EventType | SessionEventType (enum) | Required | See enum below |
-| ParticipantUserId | Guid? | FK to `ApplicationUser`, nullable | Only set for `ParticipantJoined` / `ParticipantLeft` events; resolved from the participant identity (`user:{UserId}`) in the payload (R-004) |
-| PayloadJson | string | Required | Raw webhook payload, stored as `jsonb`, for debugging / replay / future schema needs |
+| ParticipantUserId | Guid? | FK to `ApplicationUser`, nullable | Only set for `ParticipantJoined` / `ParticipantLeft` events; resolved from `user:{UserId}` identity in the payload |
+| PayloadJson | string | Required | Raw webhook payload, stored as `jsonb`, for debugging / audit |
 | OccurredAtUtc | DateTime | Required | Time the event occurred at the platform (from payload) |
-| ProcessedAtUtc | DateTime | Required | Time the backend accepted and persisted the event |
-| IsReconciliation | bool | Required, default `false` | `true` when the event was synthesised by the R-011 reconciliation job, not received via webhook |
+| ProcessedAtUtc | DateTime | Required | Time the backend persisted the event |
 
 **Relationships**:
 
@@ -70,13 +30,50 @@ A verified event delivered by the realtime platform. Persisted for (a) idempoten
 
 **Indexes**:
 
-- `IX_SessionEvents_ExternalEventId` on `ExternalEventId` — **UNIQUE**. The core idempotency primitive (R-006).
+- `IX_SessionEvents_ExternalEventId` on `ExternalEventId` — **UNIQUE**. The core idempotency primitive.
 - `IX_SessionEvents_MeetingId_OccurredAtUtc` on `(MeetingId, OccurredAtUtc)` — for attendance and timeline queries.
 - `IX_SessionEvents_OrganizationId` on `OrganizationId` — required by the global query filter.
 
 **Constraints**:
 
-- Unique `ExternalEventId` (across the whole table — event ids are globally unique on LiveKit Cloud's side).
+- Unique `ExternalEventId` (event ids are globally unique on LiveKit Cloud's side).
+
+> **Removed**: the `IsReconciliation` flag. With no reconciliation job, there is no synthesised event source.
+
+---
+
+### Recording
+
+Minimal metadata record pointing at a recording's location in MinIO. One row per meeting.
+
+| Field | Type | Constraints | Notes |
+|-------|------|-------------|-------|
+| Id | Guid | PK, auto-generated | Inherited from `BaseEntity` |
+| MeetingId | Guid | FK to `Meeting`, required, **UNIQUE** | One recording per meeting in this phase |
+| OrganizationId | Guid | FK to `Organization`, required | `IHasOrganizationId` — tenant isolation via global query filter. Carried so Phase 6 queries stay tenant-scoped. |
+| FilePath | string? | Nullable until download completes, max 500 chars | MinIO object key. `null` while `Status = Pending`; set when `Status = Completed`. |
+| Status | RecordingStatus (enum) | Required, default `Pending` | `Pending`, `Completed`, or `Failed` |
+| CreatedAtUtc | DateTime | Auto-set | Inherited from `BaseEntity` |
+| UpdatedAtUtc | DateTime | Auto-set | Inherited from `BaseEntity` |
+
+**Relationships**:
+
+- Belongs to one `Meeting` (via `MeetingId`) — at most one `Recording` per meeting.
+- Belongs to one `Organization` (via `OrganizationId`).
+
+**Indexes**:
+
+- `IX_Recordings_MeetingId` on `MeetingId` — **UNIQUE**. One recording per meeting; also serves as the idempotency primitive for the handoff (duplicate `egress_ended` deliveries that try to create a second row fail the uniqueness check and are treated as no-ops).
+- `IX_Recordings_OrganizationId` on `OrganizationId` — required by the global query filter.
+
+**Constraints**:
+
+- Unique `MeetingId`.
+
+**Notes on shape**:
+
+- No `CloudStorageUrl`, `SizeBytes`, `DurationMs`, `ExternalEgressId`, `FailureReason`, or `CompletedAtUtc` columns in the MVP. Implementations are free to add columns that are strictly helpful for operations (for example, a stable external egress id as a second unique index to harden against LiveKit retries), but the spec commits only to the four fields above.
+- The binary itself is never stored in the database — only the `FilePath` pointing into MinIO.
 
 ---
 
@@ -85,28 +82,24 @@ A verified event delivered by the realtime platform. Persisted for (a) idempoten
 ### SessionEventType
 
 ```text
-RoomStarted              = 0
-RoomFinished             = 1
-ParticipantJoined        = 2
-ParticipantLeft          = 3
-TranscriptionStarted     = 4
-TranscriptionPaused      = 5
-TranscriptionResumed     = 6
-TranscriptionFinished    = 7
-TranscriptSegmentStored  = 8   // shadow record when a TranscriptSegment was inserted; convenient for timeline queries
-Unknown                  = 99  // event types not yet recognised — persisted for forward-compatibility
+RoomStarted         = 0
+RoomFinished        = 1
+ParticipantJoined   = 2
+ParticipantLeft     = 3
+RecordingStarted    = 4   // optional — recorded only if the handler is enabled
+EgressEnded         = 5   // the one essential recording event
+Unknown             = 99
 ```
 
-### TranscriptionState
+> Any event type not listed above is persisted as `Unknown` for forward-compatibility and then ignored.
+
+### RecordingStatus
 
 ```text
-Started  = 0
-Paused   = 1
-Resumed  = 2
-Finished = 3
+Pending    = 0   // download not yet finished (row may exist from recording_started, or be created at egress_ended)
+Completed  = 1   // MinIO object is readable; FilePath populated
+Failed     = 2   // terminal failure after the job's retry budget
 ```
-
-Carried on `TranscriptionStateChangedEvent` (MediatR) and `ILiveSessionNotifier.NotifyTranscriptionStateChangedAsync`. Not persisted as a column — derived from the most recent `TranscriptionPaused` / `TranscriptionResumed` / `TranscriptionStarted` / `TranscriptionFinished` row in `SessionEvents` if ever needed for retrospective queries.
 
 ---
 
@@ -114,16 +107,14 @@ Carried on `TranscriptionStateChangedEvent` (MediatR) and `ILiveSessionNotifier.
 
 ### SessionPermissions
 
-A pure value record returned by `SessionPermissions.ForRole(MeetingRole)`. Lives under `Features/LiveSession/Models/SessionPermissions.cs`.
+A pure value record returned by `SessionPermissions.ForRole(MeetingRole)`.
 
-| Field | Type | Notes |
-|-------|------|-------|
-| CanPublish | bool | Audio/video publish rights |
-| CanSubscribe | bool | Always `true` in this phase (no "cannot hear" role) |
-| CanModerate | bool | Host/CoHost only |
-| CanPublishData | bool | Follows `CanPublish` in this phase |
-
-**Role mapping** (per R-003):
+| Field | Type |
+|-------|------|
+| CanPublish | bool |
+| CanSubscribe | bool |
+| CanModerate | bool |
+| CanPublishData | bool |
 
 | MeetingRole | CanPublish | CanSubscribe | CanModerate | CanPublishData |
 |-------------|-----------:|-------------:|------------:|---------------:|
@@ -132,67 +123,62 @@ A pure value record returned by `SessionPermissions.ForRole(MeetingRole)`. Lives
 | Participant | yes        | yes          | no          | yes            |
 | Observer    | no         | yes          | no          | no             |
 
-### TranscriptSegmentIngestRequest
-
-Internal DTO handed from `WebhookService` to `ITranscriptService.IngestAsync`. Not exposed over HTTP. Lives under `Features/LiveSession/Contracts/Internal/TranscriptSegmentIngestRequest.cs`.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| MeetingId | Guid | Resolved from `room.name` by stripping the `mtg:` prefix |
-| ExternalSegmentId | string | Platform-supplied stable id (copied to `TranscriptSegment.ExternalSegmentId`) |
-| SpeakerUserId | Guid? | Resolved from the payload's `participant.identity = user:{UserId}`; null when platform cannot attribute |
-| Text | string | Final transcribed utterance |
-| StartMs | long | From payload |
-| EndMs | long | From payload; MUST be `>= StartMs` |
-| SequenceNumber | long | Platform-supplied monotonic sequence within the meeting; dedup key |
-| IsFinal | bool | Only `true` values are persisted; `false` is discarded by `WebhookService` before this DTO is constructed (R-007) |
-
 ### JoinCredential
 
-A transient DTO returned by `POST /api/meetings/{id}/session/join-token`. Not stored; lives only in the response.
+Transient DTO returned by `POST /api/meetings/{id}/session/join-token`. Not stored.
 
 | Field | Type | Notes |
 |-------|------|-------|
 | AccessToken | string | The signed LiveKit access-token JWT |
-| RoomName | string | `mtg:{MeetingId}` — the LiveKit room name |
+| RoomName | string | `mtg:{MeetingId}` |
 | ServerUrl | string | LiveKit Cloud WebSocket URL (from config) |
-| ExpiresAtUtc | DateTime | 15 minutes from issuance (FR-005, R-004) |
-| Permissions | SessionPermissions | Echoed for client UI (e.g., hide "mute" button for Observers) |
+| ExpiresAtUtc | DateTime | 15 minutes from issuance |
+| Permissions | SessionPermissions | Echoed for client UI |
+
+---
+
+## Domain Events (MediatR)
+
+Only **session lifecycle** events. No recording events.
+
+```text
+SessionStartedEvent(Guid MeetingId, Guid OrganizationId, DateTime OccurredAtUtc)
+SessionEndedEvent(Guid MeetingId, Guid OrganizationId, DateTime OccurredAtUtc)
+```
+
+> **Removed**: `RecordingAvailableEvent`, `RecordingFailedEvent`, `TranscriptSegmentIngestedEvent`, `TranscriptionStateChangedEvent`. Phase 6 reads recordings from MinIO directly using `Recording.FilePath`; no event bridges the two phases.
 
 ---
 
 ## State Transitions
 
-### Meeting Status (continued from Phase 3)
+### Meeting Status
+
+`Scheduled → InProgress` on verified `RoomStarted`.
+`InProgress → Completed` on verified `RoomFinished`.
+`Scheduled → Cancelled` is Phase 3's concern (Host action).
+
+No reconciliation job in this phase. A meeting whose `RoomFinished` is never delivered will remain `InProgress` until an operator intervenes — acceptable MVP behaviour.
+
+### Recording Status
 
 ```text
-                    ┌──────────────┐
-                    │  Scheduled   │
-                    └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-              v            v            │
-       ┌────────────┐  ┌──────────┐    │
-       │ InProgress │  │Cancelled │    │
-       └──────┬─────┘  └──────────┘    │
-              │                         │
-         ┌────┼────┐                    │
-         │         │                    │
-         v         v                    │
-   ┌──────────┐ ┌────────┐             │
-   │Completed │ │ Failed │             │
-   └──────────┘ └────────┘             │
+  (egress_ended webhook, or recording_started if the optional handler is enabled)
+                    │
+                    v
+               ┌──────────┐
+               │ Pending  │───── DownloadRecordingJob enqueued
+               └────┬─────┘
+                    │ (job runs, downloads from cloud URL, uploads to MinIO)
+         ┌──────────┼──────────┐
+         │                     │
+         v                     v
+    ┌───────────┐         ┌──────────┐
+    │ Completed │         │  Failed  │
+    └───────────┘         └──────────┘
 ```
 
-**Phase 3 implemented**: `Scheduled → Cancelled` (Host action).
-**Phase 4 implements**: `Scheduled → InProgress` (on verified `RoomStarted`), `InProgress → Completed` (on verified `RoomFinished` OR reconciliation sweep per R-011). `InProgress → Failed` is reserved for later phases.
-
-**Sole authority**: `WebhookService` (R-010). No user-facing endpoint in this phase transitions `MeetingStatus`.
-
-### Session Transcription State (not stored in our DB)
-
-Transcription "is running" / "is paused" lives entirely on the realtime platform side. The backend does NOT persist a boolean for this — webhooks of type `TranscriptionPaused` / `TranscriptionResumed` simply drive client notifications via `ILiveSessionNotifier` (FR-024).
+Once `Status = Completed` and `FilePath` is populated, Phase 6 can read the object from MinIO.
 
 ---
 
@@ -206,14 +192,14 @@ Organization (Phase 2)
 Meeting (Phase 3) ───────── MeetingParticipant (Phase 3) ──── ApplicationUser (Phase 1)
     │ 1                              │ *                           │ 1
     │                                                              │
+    │ 1                                                            │
+    ├── 0..1 Recording                                             │
+    │                                                              │
     │ *                                                            │
-TranscriptSegment ──────────────────────────────────────────────── │ 0..1  (SpeakerUserId)
-    │ *
-    │
-Meeting 1 ──── * SessionEvent ──────────────────────────────────── │ 0..1  (ParticipantUserId)
+    └── SessionEvent ──────────────────────────────────────────── │ 0..1  (ParticipantUserId)
 ```
 
-Both `TranscriptSegment` and `SessionEvent` belong to the same tenant (`Organization`) as their parent `Meeting` — this is enforced by setting `OrganizationId` at insert time from the resolved `Meeting`, and by the global query filter on reads.
+`SessionEvent` and `Recording` both carry `OrganizationId`, enforced by the global query filter on reads.
 
 ---
 
@@ -223,25 +209,22 @@ Both `TranscriptSegment` and `SessionEvent` belong to the same tenant (`Organiza
 |----|------------------|-----------|
 | FR-001 | `SessionController.GetJoinToken` | `[Authorize]` + `[EnforceOrgAccess]` |
 | FR-002 | `SessionPermissions.ForRole(MeetingRole)` | Pure function, unit-tested exhaustively |
-| FR-003 | `SessionService.IssueJoinTokenAsync` | Lookup `MeetingParticipant` by `(MeetingId, UserId, OrganizationId)`; return `LiveSessionErrors.NotAParticipant` if absent |
-| FR-004 | `SessionService.IssueJoinTokenAsync` | Reject if `Meeting.Status ∈ {Cancelled, Completed}` → `LiveSessionErrors.MeetingNotJoinable` |
+| FR-003 | `SessionService.IssueJoinTokenAsync` | Lookup `MeetingParticipant`; return `NotAParticipant` if absent |
+| FR-004 | `SessionService.IssueJoinTokenAsync` | Reject if `Meeting.Status ∈ {Cancelled, Completed}` → `MeetingNotJoinable` |
 | FR-005 | `LiveKitTokenIssuer.Issue` | `ttl = TimeSpan.FromMinutes(15)` |
 | FR-006 | `WebhookController.Receive` | Reads raw body, invokes validator, dispatches to `WebhookService` |
 | FR-007 | `LiveKitWebhookValidator.Validate` | `WebhookReceiver.Receive(body, authHeader)`; on failure → 401 |
-| FR-008 | `WebhookService.ProcessAsync` | Insert-and-catch-unique on `SessionEvents.ExternalEventId` |
-| FR-009 | `WebhookService.HandleRoomStarted` | Transition within transaction; no-op if already `InProgress` or beyond |
+| FR-008 | `WebhookService.ProcessAsync` | Insert-and-catch-unique on `SessionEvents.ExternalEventId`; uniqueness on `Recordings.MeetingId` covers duplicate `egress_ended` |
+| FR-009 | `WebhookService.HandleRoomStarted` | Transition within transaction; no-op if already past |
 | FR-010 | `WebhookService.HandleRoomFinished` | Transition within transaction; no-op if already `Completed` |
-| FR-011 | `TranscriptService.IngestAsync` | Insert segment with all required fields |
-| FR-012 | DB unique constraint | `IX_TranscriptSegments_MeetingId_SequenceNumber` |
-| FR-013 | `TranscriptController.Get` → `TranscriptService.GetAsync` | Query ordered by `SequenceNumber` |
-| FR-014 | `TranscriptService.GetAsync` | Enforce participant check before returning; non-participant → `LiveSessionErrors.NotAParticipant` |
-| FR-015 | EF Core global query filter on `TranscriptSegment` and `SessionEvent` | `EntityTypeBuilder.HasQueryFilter(x => x.OrganizationId == _orgContext.OrganizationId)` |
+| FR-011 | N/A — negative requirement | Enforced by *absence* of any caption-ingest code in the slice |
+| FR-012 | N/A — negative requirement | No `TranscriptController`; no transcript endpoint |
+| FR-013 | `WebhookService.HandleEgressEnded` → `DownloadRecordingJob` enqueue | Upsert `Recording (Status=Pending)`; `BackgroundJobClient.Enqueue` |
+| FR-014 | `RecordingConfiguration` + `DownloadRecordingJob` | Row shape enforced at the EF config; job sets `FilePath` + `Status=Completed` on success, `Status=Failed` on terminal error |
+| FR-015 | EF Core global query filter on `SessionEvent` and `Recording` | `HasQueryFilter(x => x.OrganizationId == _orgContext.OrganizationId)` |
 | FR-016 | `LiveSessionNotifier` | Only exposes group-scoped sends; no `Clients.All` method |
-| FR-017 | `WebhookService.ProcessAsync` | `IPublisher.Publish(new SessionStartedEvent(...))` etc. inside the tx |
-| FR-018 | EF Core conventions + entity fields | All `DateTime` fields typed as `timestamp with time zone`, defaulted to UTC |
-| FR-019 | `TranscriptService.IngestAsync` | No status check on ingest — a `Completed` meeting can still accept late segments |
-| FR-020 | `WebhookService.HandleParticipantJoined` / `HandleParticipantLeft` | Persist `SessionEvent` rows; attendance is derived by query (no separate attendance table) |
-| FR-021 | Not enforced in code (platform-imposed) | Documented limit; load tests assert latency targets hold at 50 participants |
-| FR-022 | `LiveKitTokenIssuer.Issue` | Access token does not request non-English STT; LiveKit Cloud STT configured to English only |
-| FR-023 | `SessionService.PauseTranscriptionAsync` / `ResumeTranscriptionAsync` | Authorisation check: caller's `MeetingRole ∈ {Host, CoHost}`; else `LiveSessionErrors.ForbiddenForRole` |
-| FR-024 | `WebhookService.HandleTranscriptionPaused` / `HandleTranscriptionResumed` | Emit via `ILiveSessionNotifier.NotifyTranscriptionStateChangedAsync(orgId, meetingId, state, actingUserId)` |
+| FR-017 | EF Core conventions + entity fields | All `DateTime` fields typed as `timestamp with time zone`, defaulted to UTC |
+| FR-018 | `WebhookService.HandleParticipantJoined` / `HandleParticipantLeft` | Persist `SessionEvent` rows; attendance derived by query |
+| FR-019 | Not enforced in code (platform-imposed) | Documented limit; load tests assert latency targets hold at 50 participants |
+| FR-020 | `WebhookService.HandleEgressEnded` | If meeting not found, log Warning and return 200 without creating a `Recording` |
+| FR-021 | N/A — negative requirement | Enforced by absence of any `Recording*Event` record in `LiveSessionEvents.cs` |

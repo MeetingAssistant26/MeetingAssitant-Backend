@@ -4,6 +4,8 @@ using MeetingAssistant.Infrastructure.SignalR;
 using MeetingAssistant.Features.Identity;
 using MeetingAssistant.Features.Organizations;
 using MeetingAssistant.Features.Meetings;
+using MeetingAssistant.Features.LiveSession;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using Serilog;
 using Microsoft.EntityFrameworkCore;
 
@@ -29,10 +31,12 @@ namespace MeetingAssistant.Api
                 .AddIdentityFeature()
                 .AddOrganizationsFeature()
                 .AddMeetingsFeature()
+                .AddLiveSessionFeature()
                 .AddMapping()
                 .AddSwaggerServices()
                 .AddHangfireServices(builder.Configuration);
 
+            builder.Services.Configure<LiveKitOptions>(builder.Configuration.GetSection("LiveKit"));
             builder.Services.AddSignalR();
 
             var app = builder.Build();
@@ -77,5 +81,7 @@ namespace MeetingAssistant.Api
         }
     }
 }
+
+
 
 
