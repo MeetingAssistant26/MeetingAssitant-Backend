@@ -30,9 +30,9 @@ description: "Task list for feature 004-realtime-pipeline"
 
 **Purpose**: Add the LiveKit SDK + MinIO + Hangfire dependencies, create the feature folder skeleton, and wire configuration.
 
-- [ ] T001 Add `Livekit.Server.Sdk`, `Hangfire.AspNetCore`, `Hangfire.PostgreSql`, and `Minio` NuGet package references to `MeetingAssistant/MeetingAssistant.csproj`
-- [ ] T002 [P] Add LiveKit configuration keys (`LiveKit:ApiKey`, `LiveKit:ApiSecret`, `LiveKit:ServerUrl`, `LiveKit:WebhookSecret`) and MinIO keys (`Storage:Endpoint`, `Storage:AccessKey`, `Storage:SecretKey`, `Storage:Bucket`) to `MeetingAssistant/appsettings.json` and `MeetingAssistant/appsettings.Development.json` with placeholder values; document expectation that real values live in `dotnet user-secrets` / env vars
-- [ ] T003 [P] Create feature folder skeleton under `MeetingAssistant/Features/LiveSession/` with empty subfolders: `Endpoints/Session/`, `Endpoints/Webhook/`, `Contracts/Requests/`, `Contracts/Responses/`, `Models/`, `Models/Events/`, `Services/`, `Jobs/`, `Hubs/`, `Infrastructure/`, `Infrastructure/Persistence/Configurations/`, `Validators/`, `Mapping/`
+- [X] T001 Add `Livekit.Server.Sdk`, `Hangfire.AspNetCore`, `Hangfire.PostgreSql`, and `Minio` NuGet package references to `MeetingAssistant/MeetingAssistant.csproj`
+- [X] T002 [P] Add LiveKit configuration keys (`LiveKit:ApiKey`, `LiveKit:ApiSecret`, `LiveKit:ServerUrl`, `LiveKit:WebhookSecret`) and MinIO keys (`Storage:Endpoint`, `Storage:AccessKey`, `Storage:SecretKey`, `Storage:Bucket`) to `MeetingAssistant/appsettings.json` and `MeetingAssistant/appsettings.Development.json` with placeholder values; document expectation that real values live in `dotnet user-secrets` / env vars
+- [X] T003 [P] Create feature folder skeleton under `MeetingAssistant/Features/LiveSession/` with empty subfolders: `Endpoints/Session/`, `Endpoints/Webhook/`, `Contracts/Requests/`, `Contracts/Responses/`, `Models/`, `Models/Events/`, `Services/`, `Jobs/`, `Hubs/`, `Infrastructure/`, `Infrastructure/Persistence/Configurations/`, `Validators/`, `Mapping/`
 
 ---
 
@@ -42,11 +42,11 @@ description: "Task list for feature 004-realtime-pipeline"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T004 Create `MeetingAssistant/Shared/Errors/LiveSessionErrors.cs` with entries: `NotAParticipant`, `MeetingNotJoinable`, `InvalidWebhookSignature`, `LiveKitCallFailed`, `MeetingNotFound`, `RecordingDownloadFailed`
-- [ ] T005 [P] Create `MeetingAssistant/Features/LiveSession/Infrastructure/LiveKitOptions.cs` strongly-typed options class (`ApiKey`, `ApiSecret`, `ServerUrl`, `WebhookSecret`) and bind in `Program.cs`
-- [ ] T006 Create `MeetingAssistant/Features/LiveSession/LiveSessionDI.cs` with empty `AddLiveSessionFeature(this IServiceCollection)` extension (service registrations will be added in later phases)
-- [ ] T007 Register `builder.Services.AddLiveSessionFeature()` and `builder.Services.AddSignalR()` in `MeetingAssistant/Program.cs`; ensure Hangfire is registered (`AddHangfire` / `AddHangfireServer`) against PostgreSQL
-- [ ] T008 [P] Create `MeetingAssistant/Features/LiveSession/Models/Events/LiveSessionEvents.cs` with placeholder records for `SessionStartedEvent` and `SessionEndedEvent` only (field sets filled in by US4). **No recording domain events.**
+- [X] T004 Create `MeetingAssistant/Shared/Errors/LiveSessionErrors.cs` with entries: `NotAParticipant`, `MeetingNotJoinable`, `InvalidWebhookSignature`, `LiveKitCallFailed`, `MeetingNotFound`, `RecordingDownloadFailed`
+- [X] T005 [P] Create `MeetingAssistant/Features/LiveSession/Infrastructure/LiveKitOptions.cs` strongly-typed options class (`ApiKey`, `ApiSecret`, `ServerUrl`, `WebhookSecret`) and bind in `Program.cs`
+- [X] T006 Create `MeetingAssistant/Features/LiveSession/LiveSessionDI.cs` with empty `AddLiveSessionFeature(this IServiceCollection)` extension (service registrations will be added in later phases)
+- [X] T007 Register `builder.Services.AddLiveSessionFeature()` and `builder.Services.AddSignalR()` in `MeetingAssistant/Program.cs`; ensure Hangfire is registered (`AddHangfire` / `AddHangfireServer`) against PostgreSQL
+- [X] T008 [P] Create `MeetingAssistant/Features/LiveSession/Models/Events/LiveSessionEvents.cs` with placeholder records for `SessionStartedEvent` and `SessionEndedEvent` only (field sets filled in by US4). **No recording domain events.**
 
 **Checkpoint**: Feature skeleton compiles; no user-facing behavior yet.
 
@@ -60,22 +60,22 @@ description: "Task list for feature 004-realtime-pipeline"
 
 ### Tests for User Story 1 ⚠️
 
-- [ ] T009 [P] [US1] Unit test `tests/Unit/LiveSession/RolePermissionMappingTests.cs` — full `SessionPermissions.ForRole` matrix
-- [ ] T010 [P] [US1] Integration test `tests/Integration/LiveSession/JoinTokenTests.cs` — acceptance scenarios 1–7 from spec US1
+- [X] T009 [P] [US1] Unit test `tests/Unit/LiveSession/RolePermissionMappingTests.cs` — full `SessionPermissions.ForRole` matrix
+- [X] T010 [P] [US1] Integration test `tests/Integration/LiveSession/JoinTokenTests.cs` — acceptance scenarios 1–7 from spec US1
 
 ### Implementation for User Story 1
 
-- [ ] T011 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Models/SessionPermissions.cs` as a `readonly record struct` with static `ForRole(MeetingRole)`
-- [ ] T012 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Services/ILiveKitTokenIssuer.cs`
-- [ ] T013 [US1] Implement `MeetingAssistant/Features/LiveSession/Services/LiveKitTokenIssuer.cs` (depends on T012)
-- [ ] T014 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Contracts/Requests/JoinTokenRequest.cs`
-- [ ] T015 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Contracts/Responses/JoinTokenResponse.cs`
-- [ ] T016 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Validators/JoinTokenRequestValidator.cs`
-- [ ] T017 [US1] Create `MeetingAssistant/Features/LiveSession/Services/ISessionService.cs`
-- [ ] T018 [US1] Implement `MeetingAssistant/Features/LiveSession/Services/SessionService.cs`
-- [ ] T019 [US1] Create partial controller `MeetingAssistant/Features/LiveSession/Endpoints/Session/SessionController.cs` with `[Authorize]` + `[EnforceOrgAccess]`
-- [ ] T020 [US1] Create endpoint `MeetingAssistant/Features/LiveSession/Endpoints/Session/GetJoinTokenEndpoint.cs` (depends on T018, T019)
-- [ ] T021 [US1] Register `ISessionService`, `ILiveKitTokenIssuer` in `LiveSessionDI.cs`
+- [X] T011 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Models/SessionPermissions.cs` as a `readonly record struct` with static `ForRole(MeetingRole)`
+- [X] T012 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Services/ILiveKitTokenIssuer.cs`
+- [X] T013 [US1] Implement `MeetingAssistant/Features/LiveSession/Services/LiveKitTokenIssuer.cs` (depends on T012)
+- [X] T014 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Contracts/Requests/JoinTokenRequest.cs`
+- [X] T015 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Contracts/Responses/JoinTokenResponse.cs`
+- [X] T016 [P] [US1] Create `MeetingAssistant/Features/LiveSession/Validators/JoinTokenRequestValidator.cs`
+- [X] T017 [US1] Create `MeetingAssistant/Features/LiveSession/Services/ISessionService.cs`
+- [X] T018 [US1] Implement `MeetingAssistant/Features/LiveSession/Services/SessionService.cs`
+- [X] T019 [US1] Create partial controller `MeetingAssistant/Features/LiveSession/Endpoints/Session/SessionController.cs` with `[Authorize]` + `[EnforceOrgAccess]`
+- [X] T020 [US1] Create endpoint `MeetingAssistant/Features/LiveSession/Endpoints/Session/GetJoinTokenEndpoint.cs` (depends on T018, T019)
+- [X] T021 [US1] Register `ISessionService`, `ILiveKitTokenIssuer` in `LiveSessionDI.cs`
 
 **Checkpoint**: Participants can request role-scoped join credentials.
 
