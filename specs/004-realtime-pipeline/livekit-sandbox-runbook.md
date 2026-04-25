@@ -9,6 +9,7 @@ Execute the full Phase 4 recording flow end-to-end against a fresh LiveKit Cloud
 3. `egress_ended` fan-outs one participant track per `FileResult`.
 4. MinIO objects exist at `tracks/{MeetingId}/{ParticipantUserId}.ogg`.
 5. `ParticipantAudioTracks.Status` reaches terminal states (`Available`/`Failed`) and join barrier can fire.
+6. Post-meeting pipeline writes `MeetingTranscript` and `MeetingSummary`.
 
 ## Prerequisites
 
@@ -177,6 +178,7 @@ Collect all items below and attach to the task/PR.
 3. Backend logs show `Participant audio ingest completed` with target key `tracks/{MeetingId}/{ParticipantUserId}.ogg`.
 4. MinIO bucket contains one object per participant under `tracks/{MeetingId}/`.
 5. Database rows in `ParticipantAudioTracks` have `MeetingId = {MeetingId}` with terminal statuses and populated `StorageObjectKey` for available tracks.
+6. Database rows in `MeetingTranscripts` and `MeetingSummaries` exist for the meeting when at least one track is available.
 
 Example SQL checks (PostgreSQL):
 
@@ -189,6 +191,14 @@ SELECT "ExternalEventId", "EventType", "OccurredAtUtc"
 FROM "SessionEvents"
 WHERE "MeetingId" = '<MEETING_ID>'
 ORDER BY "OccurredAtUtc";
+
+SELECT "MeetingId", "GeneratedAtUtc", "SttModel"
+FROM "MeetingTranscripts"
+WHERE "MeetingId" = '<MEETING_ID>';
+
+SELECT "MeetingId", "GeneratedAtUtc", "LlmModel"
+FROM "MeetingSummaries"
+WHERE "MeetingId" = '<MEETING_ID>';
 ```
 
 If using docker-compose postgres service:
@@ -206,6 +216,7 @@ PASS when all are true:
 3. `egress_ended` webhook was accepted.
 4. MinIO objects exist under `tracks/{MeetingId}/` for successful participant tracks.
 5. `ParticipantAudioTracks` rows are terminal (`Available` or `Failed`) and webhook idempotency remains intact.
+6. Transcript and summary rows are persisted for meetings with at least one available track.
 
 FAIL when any are true:
 
