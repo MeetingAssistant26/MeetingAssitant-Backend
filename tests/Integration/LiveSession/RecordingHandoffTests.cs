@@ -16,12 +16,14 @@ namespace tests.Integration.LiveSession
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
             var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser();
+            db.AddParticipant(meetingId, orgId, userId);
 
             var jobs = new FakeBackgroundJobClient();
             var notifier = new FakeLiveSessionNotifier();
             var sut = new WebhookService(db.DbContext, jobs, notifier, NullLogger<WebhookService>.Instance);
 
-            var evt = WebhookEventFactory.EgressEnded(meetingId, "evt-success", EgressStatus.EgressComplete, "https://example.com/a.mp4");
+            var evt = WebhookEventFactory.EgressEnded(meetingId, "evt-success", EgressStatus.EgressComplete, userId, "https://example.com/a.mp4");
             await sut.ProcessAsync(evt, "{\"event\":\"egress_ended\"}");
 
             var recording = db.DbContext.ParticipantAudioTracks.Single(r => r.MeetingId == meetingId);
@@ -35,11 +37,13 @@ namespace tests.Integration.LiveSession
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
             var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser();
+            db.AddParticipant(meetingId, orgId, userId);
 
             var jobs = new FakeBackgroundJobClient();
             var notifier = new FakeLiveSessionNotifier();
             var sut = new WebhookService(db.DbContext, jobs, notifier, NullLogger<WebhookService>.Instance);
-            var evt = WebhookEventFactory.EgressEnded(meetingId, "evt-dup", EgressStatus.EgressComplete, "https://example.com/a.mp4");
+            var evt = WebhookEventFactory.EgressEnded(meetingId, "evt-dup", EgressStatus.EgressComplete, userId, "https://example.com/a.mp4");
 
             await sut.ProcessAsync(evt, "{}");
             await sut.ProcessAsync(evt, "{}");
@@ -54,12 +58,14 @@ namespace tests.Integration.LiveSession
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
             var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser();
+            db.AddParticipant(meetingId, orgId, userId);
 
             var jobs = new FakeBackgroundJobClient();
             var notifier = new FakeLiveSessionNotifier();
             var sut = new WebhookService(db.DbContext, jobs, notifier, NullLogger<WebhookService>.Instance);
 
-            var evt = WebhookEventFactory.EgressEnded(meetingId, "evt-fail", EgressStatus.EgressFailed);
+            var evt = WebhookEventFactory.EgressEnded(meetingId, "evt-fail", EgressStatus.EgressFailed, userId);
             await sut.ProcessAsync(evt, "{}");
 
             var recording = db.DbContext.ParticipantAudioTracks.Single(r => r.MeetingId == meetingId);
@@ -75,7 +81,7 @@ namespace tests.Integration.LiveSession
             var notifier = new FakeLiveSessionNotifier();
             var sut = new WebhookService(db.DbContext, jobs, notifier, NullLogger<WebhookService>.Instance);
 
-            var evt = WebhookEventFactory.EgressEnded(Guid.NewGuid(), "evt-orphan", EgressStatus.EgressComplete, "https://example.com/a.mp4");
+            var evt = WebhookEventFactory.EgressEnded(Guid.NewGuid(), "evt-orphan", EgressStatus.EgressComplete, Guid.NewGuid(), "https://example.com/a.mp4");
             var result = await sut.ProcessAsync(evt, "{}");
 
             result.IsSuccess.Should().BeTrue();

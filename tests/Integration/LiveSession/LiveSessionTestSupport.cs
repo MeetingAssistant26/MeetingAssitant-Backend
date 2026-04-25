@@ -207,7 +207,12 @@ namespace tests.Integration.LiveSession
 
     internal static class WebhookEventFactory
     {
-        public static WebhookEvent EgressEnded(Guid meetingId, string eventId, EgressStatus status, string? sourceUrl = null)
+        public static WebhookEvent EgressEnded(
+            Guid meetingId,
+            string eventId,
+            EgressStatus status,
+            Guid? participantUserId = null,
+            string? sourceUrl = null)
         {
             var evt = new WebhookEvent
             {
@@ -221,10 +226,11 @@ namespace tests.Integration.LiveSession
                 }
             };
 
-            if (!string.IsNullOrWhiteSpace(sourceUrl))
+            evt.EgressInfo.FileResults.Add(new Livekit.Server.Sdk.Dotnet.FileInfo
             {
-                evt.EgressInfo.FileResults.Add(new Livekit.Server.Sdk.Dotnet.FileInfo { Location = sourceUrl });
-            }
+                Filename = participantUserId.HasValue ? $"user:{participantUserId.Value}" : string.Empty,
+                Location = sourceUrl ?? string.Empty,
+            });
 
             return evt;
         }

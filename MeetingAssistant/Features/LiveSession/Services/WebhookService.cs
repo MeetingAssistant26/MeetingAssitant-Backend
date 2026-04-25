@@ -6,6 +6,7 @@ using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -82,8 +83,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             _dbContext.SessionEvents.Add(sessionEvent);
 
             var notifications = new List<Func<CancellationToken, Task>>();
-            string? sourceCloudUrl = null;
-            var enqueueDownload = false;
+            var ingestEnqueues = new List<(Guid TrackId, string SourceUrl)>();
 
             switch (eventType)
             {
@@ -132,24 +132,53 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     break;
 
                 case SessionEventType.RecordingStarted:
-                    await UpsertRecordingAsync(meeting.Id, meeting.OrganizationId, ParticipantAudioTrackStatus.Pending, null, cancellationToken);
                     break;
 
                 case SessionEventType.EgressEnded:
-                    sourceCloudUrl = ResolveSourceCloudUrl(webhookEvent);
-                    var isSuccess = webhookEvent.EgressInfo?.Status == EgressStatus.EgressComplete
-                        && !string.IsNullOrWhiteSpace(sourceCloudUrl);
+                {
+                    var fileResults = webhookEvent.EgressInfo?.FileResults ?? [];
+                    var payloadIdentities = ExtractFileParticipantIdentities(rawPayload);
+                    var egressOk = webhookEvent.EgressInfo?.Status == EgressStatus.EgressComplete;
 
-                    if (isSuccess)
+                    for (var i = 0; i < fileResults.Count; i++)
                     {
-                        await UpsertRecordingAsync(meeting.Id, meeting.OrganizationId, ParticipantAudioTrackStatus.Pending, null, cancellationToken);
-                        enqueueDownload = true;
-                    }
-                    else
-                    {
-                        await UpsertRecordingAsync(meeting.Id, meeting.OrganizationId, ParticipantAudioTrackStatus.Failed, null, cancellationToken);
+                        var file = fileResults[i];
+                        var participantIdentity = i < payloadIdentities.Count
+                            ? payloadIdentities[i]
+                            : file.Filename;
+
+                        var resolvedParticipantUserId = await ResolveParticipantUserIdAsync(
+                            meeting.Id,
+                            participantIdentity,
+                            cancellationToken);
+
+                        if (resolvedParticipantUserId is null)
+                        {
+                            _logger.LogWarning(
+                                "Skipping participant audio track because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity}",
+                                meeting.Id,
+                                participantIdentity);
+                            continue;
+                        }
+
+                        var status = egressOk && !string.IsNullOrWhiteSpace(file.Location)
+                            ? ParticipantAudioTrackStatus.Pending
+                            : ParticipantAudioTrackStatus.Failed;
+
+                        var trackId = await UpsertParticipantAudioTrackAsync(
+                            meeting.Id,
+                            meeting.OrganizationId,
+                            resolvedParticipantUserId.Value,
+                            status,
+                            cancellationToken);
+
+                        if (status == ParticipantAudioTrackStatus.Pending)
+                        {
+                            ingestEnqueues.Add((trackId, file.Location!));
+                        }
                     }
                     break;
+                }
 
                 case SessionEventType.Unknown:
                 default:
@@ -165,10 +194,10 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 return Result.Success();
             }
 
-            if (enqueueDownload && !string.IsNullOrWhiteSpace(sourceCloudUrl))
+            foreach (var (trackId, sourceUrl) in ingestEnqueues)
             {
                 _backgroundJobClient.Enqueue<IngestParticipantAudioJob>(
-                    job => job.RunAsync(meeting.Id, sourceCloudUrl, CancellationToken.None));
+                    job => job.RunAsync(trackId, sourceUrl, CancellationToken.None));
             }
 
             try
@@ -187,43 +216,34 @@ namespace MeetingAssistant.Features.LiveSession.Services
             return Result.Success();
         }
 
-        private async Task UpsertRecordingAsync(
+        private async Task<Guid> UpsertParticipantAudioTrackAsync(
             Guid meetingId,
             Guid organizationId,
+            Guid participantUserId,
             ParticipantAudioTrackStatus status,
-            string? filePath,
             CancellationToken cancellationToken)
         {
-            var recording = await _dbContext.ParticipantAudioTracks
-                .FirstOrDefaultAsync(x => x.MeetingId == meetingId, cancellationToken);
+            var track = await _dbContext.ParticipantAudioTracks
+                .FirstOrDefaultAsync(
+                    x => x.MeetingId == meetingId && x.ParticipantUserId == participantUserId,
+                    cancellationToken);
 
-            if (recording == null)
+            if (track == null)
             {
-                recording = new ParticipantAudioTrack
+                track = new ParticipantAudioTrack
                 {
                     MeetingId = meetingId,
                     OrganizationId = organizationId,
-                    ParticipantUserId = Guid.Empty,
-                    Status = status,
-                    StorageObjectKey = filePath
+                    ParticipantUserId = participantUserId,
+                    Status = status
                 };
 
-                _dbContext.ParticipantAudioTracks.Add(recording);
-                return;
+                _dbContext.ParticipantAudioTracks.Add(track);
+                return track.Id;
             }
 
-            recording.Status = status;
-            recording.StorageObjectKey = filePath;
-        }
-
-        private static string? ResolveSourceCloudUrl(WebhookEvent webhookEvent)
-        {
-            var fileResultLocation = webhookEvent.EgressInfo?.FileResults
-                .FirstOrDefault()?.Location;
-
-            return string.IsNullOrWhiteSpace(fileResultLocation)
-                ? null
-                : fileResultLocation;
+            track.Status = status;
+            return track.Id;
         }
 
         private static SessionEventType MapEventType(string? eventName)
@@ -290,6 +310,47 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             var idPart = roomName[prefix.Length..];
             return Guid.TryParse(idPart, out meetingId);
+        }
+
+        private static List<string?> ExtractFileParticipantIdentities(string rawPayload)
+        {
+            var identities = new List<string?>();
+
+            if (string.IsNullOrWhiteSpace(rawPayload))
+            {
+                return identities;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(rawPayload);
+                if (!document.RootElement.TryGetProperty("egressInfo", out var egressInfo)
+                    || egressInfo.ValueKind != JsonValueKind.Object
+                    || !egressInfo.TryGetProperty("fileResults", out var fileResults)
+                    || fileResults.ValueKind != JsonValueKind.Array)
+                {
+                    return identities;
+                }
+
+                foreach (var fileResult in fileResults.EnumerateArray())
+                {
+                    if (fileResult.ValueKind == JsonValueKind.Object
+                        && fileResult.TryGetProperty("participantIdentity", out var identity)
+                        && identity.ValueKind == JsonValueKind.String)
+                    {
+                        identities.Add(identity.GetString());
+                        continue;
+                    }
+
+                    identities.Add(null);
+                }
+            }
+            catch (JsonException)
+            {
+                return identities;
+            }
+
+            return identities;
         }
 
         private async Task<Guid?> ResolveParticipantUserIdAsync(

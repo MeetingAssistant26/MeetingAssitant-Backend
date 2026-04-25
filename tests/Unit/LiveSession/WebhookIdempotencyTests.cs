@@ -15,6 +15,8 @@ namespace tests.Unit.LiveSession
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
             var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser();
+            db.AddParticipant(meetingId, orgId, userId);
 
             var jobs = new FakeBackgroundJobClient();
             var notifier = new FakeLiveSessionNotifier();
@@ -24,6 +26,7 @@ namespace tests.Unit.LiveSession
                 meetingId,
                 "evt-1",
                 EgressStatus.EgressComplete,
+                userId,
                 "https://example.com/recording.mp4");
 
             await sut.ProcessAsync(evt, "{\"event\":\"egress_ended\"}");
