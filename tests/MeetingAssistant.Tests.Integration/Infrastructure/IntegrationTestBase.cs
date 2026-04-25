@@ -48,6 +48,8 @@ public abstract class IntegrationTestBase : IClassFixture<MeetingAssistantWebFac
         // Delete in dependency order (children before parents)
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"SessionEvents\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"ParticipantAudioTracks\"");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingSummaries\"");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingTranscripts\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingMeetingTags\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingParticipants\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Meetings\"");

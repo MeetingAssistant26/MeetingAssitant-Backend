@@ -36,6 +36,8 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<MeetingMeetingTag> MeetingMeetingTags => Set<MeetingMeetingTag>();
         public DbSet<SessionEvent> SessionEvents => Set<SessionEvent>();
         public DbSet<ParticipantAudioTrack> ParticipantAudioTracks => Set<ParticipantAudioTrack>();
+        public DbSet<MeetingTranscript> MeetingTranscripts => Set<MeetingTranscript>();
+        public DbSet<MeetingSummary> MeetingSummaries => Set<MeetingSummary>();
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
