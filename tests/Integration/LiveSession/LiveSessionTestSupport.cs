@@ -7,12 +7,15 @@ using MeetingAssistant.Api.Infrastructure.Services;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.LiveSession.Hubs;
 using MeetingAssistant.Features.LiveSession.Models;
+using MeetingAssistant.Features.LiveSession.Models.Events;
+using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using System.Collections.Concurrent;
 
 namespace tests.Integration.LiveSession
 {
@@ -31,6 +34,31 @@ namespace tests.Integration.LiveSession
         public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default)
             where TNotification : INotification
             => Task.CompletedTask;
+    }
+
+    internal sealed class CollectingPublisher(
+        Func<object, CancellationToken, Task>? onPublish = null) : IPublisher
+    {
+        private readonly Func<object, CancellationToken, Task>? _onPublish = onPublish;
+
+        public ConcurrentBag<object> Notifications { get; } = new();
+
+        public Task Publish(object notification, CancellationToken cancellationToken = default)
+            => PublishCoreAsync(notification, cancellationToken);
+
+        public Task Publish<TNotification>(TNotification notification, CancellationToken cancellationToken = default)
+            where TNotification : INotification
+            => PublishCoreAsync(notification!, cancellationToken);
+
+        private async Task PublishCoreAsync(object notification, CancellationToken cancellationToken)
+        {
+            Notifications.Add(notification);
+
+            if (_onPublish != null)
+            {
+                await _onPublish(notification, cancellationToken);
+            }
+        }
     }
 
     internal sealed class FakeBackgroundJobClient : IBackgroundJobClient
@@ -94,6 +122,46 @@ namespace tests.Integration.LiveSession
 
             Uploads.Add((sourceUrl, objectKey));
             return Task.FromResult(NextSizeBytes);
+        }
+    }
+
+    internal sealed class StubSttService(
+        IReadOnlyDictionary<string, TrackTranscriptionResult> resultsByObjectKey,
+        IReadOnlyDictionary<string, Exception>? failuresByObjectKey = null) : ISttService
+    {
+        private readonly IReadOnlyDictionary<string, TrackTranscriptionResult> _resultsByObjectKey = resultsByObjectKey;
+        private readonly IReadOnlyDictionary<string, Exception> _failuresByObjectKey = failuresByObjectKey
+            ?? new Dictionary<string, Exception>();
+
+        public Task<TrackTranscriptionResult> TranscribeTrackAsync(
+            Guid participantUserId,
+            string storageObjectKey,
+            CancellationToken ct = default)
+        {
+            if (_failuresByObjectKey.TryGetValue(storageObjectKey, out var failure))
+            {
+                throw failure;
+            }
+
+            if (_resultsByObjectKey.TryGetValue(storageObjectKey, out var result))
+            {
+                return Task.FromResult(result);
+            }
+
+            throw new KeyNotFoundException($"No STT result configured for object key '{storageObjectKey}'.");
+        }
+    }
+
+    internal sealed class StubSummarizerService(SummaryResult result) : ISummarizerService
+    {
+        private readonly SummaryResult _result = result;
+
+        public string? LastTranscript { get; private set; }
+
+        public Task<SummaryResult> SummarizeAsync(string fullTranscript, CancellationToken ct = default)
+        {
+            LastTranscript = fullTranscript;
+            return Task.FromResult(_result);
         }
     }
 
