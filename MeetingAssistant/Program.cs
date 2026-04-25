@@ -6,6 +6,7 @@ using MeetingAssistant.Features.Organizations;
 using MeetingAssistant.Features.Meetings;
 using MeetingAssistant.Features.LiveSession;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
+using MeetingAssistant.Features.LiveSession.Hubs;
 using Serilog;
 using Microsoft.EntityFrameworkCore;
 
@@ -31,12 +32,13 @@ namespace MeetingAssistant.Api
                 .AddIdentityFeature()
                 .AddOrganizationsFeature()
                 .AddMeetingsFeature()
-                .AddLiveSessionFeature()
+                .AddLiveSessionFeature(builder.Configuration)
                 .AddMapping()
                 .AddSwaggerServices()
                 .AddHangfireServices(builder.Configuration);
 
             builder.Services.Configure<LiveKitOptions>(builder.Configuration.GetSection("LiveKit"));
+            builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
             builder.Services.AddSignalR();
 
             var app = builder.Build();
@@ -63,6 +65,7 @@ namespace MeetingAssistant.Api
 
             app.MapControllers();
             app.MapHub<NotificationHub>("/hubs/notifications").RequireAuthorization();
+            app.MapHub<LiveSessionHub>("/hubs/live-session").RequireAuthorization();
             app.MapHealthChecks("/healthz");
 
             if (!app.Environment.IsEnvironment("Testing"))
