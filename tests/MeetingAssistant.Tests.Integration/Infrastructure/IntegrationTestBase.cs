@@ -43,11 +43,11 @@ public abstract class IntegrationTestBase : IClassFixture<MeetingAssistantWebFac
 
     public virtual Task DisposeAsync() => Task.CompletedTask;
 
-        private static async Task CleanDatabaseAsync(ApplicationDbContext db)
+    private static async Task CleanDatabaseAsync(ApplicationDbContext db)
     {
         // Delete in dependency order (children before parents)
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"SessionEvents\"");
-        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"TranscriptSegments\"");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"ParticipantAudioTracks\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingMeetingTags\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingParticipants\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Meetings\"");
