@@ -75,6 +75,8 @@ services:
       # LiveKit (optional)
       LiveKit__ApiKey: ${LiveKit__ApiKey:-}
       LiveKit__ApiSecret: ${LiveKit__ApiSecret:-}
+      LiveKit__ServerUrl: ${LiveKit__ServerUrl:-}
+      LiveKit__WebhookSecret: ${LiveKit__WebhookSecret:-}
 
     ports:
       - "8080:8080"
