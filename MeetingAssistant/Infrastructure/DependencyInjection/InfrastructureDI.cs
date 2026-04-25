@@ -1,5 +1,6 @@
 using MeetingAssistant.Api.Infrastructure.Configuration;
 using MeetingAssistant.Api.Infrastructure.Services;
+using MeetingAssistant.Features.DevSeeding;
 using MeetingAssistant.Infrastructure.AI;
 using MeetingAssistant.Shared.Errors;
 using MeetingAssistant.Shared.Settings;
@@ -38,6 +39,7 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
             // Scoped infrastructure services
             services.AddScoped<ITenantProvider, TenantProvider>();
             services.AddScoped<ICorrelationIdProvider, CorrelationIdProvider>();
+            services.AddScoped<DevDbSeeder>();
 
             // MediatR assembly scan
             services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));

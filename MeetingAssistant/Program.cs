@@ -7,6 +7,7 @@ using MeetingAssistant.Features.Meetings;
 using MeetingAssistant.Features.LiveSession;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Hubs;
+using MeetingAssistant.Features.DevSeeding;
 using Serilog;
 using Microsoft.EntityFrameworkCore;
 
@@ -77,6 +78,12 @@ namespace MeetingAssistant.Api
                 {
                     var dbContext = scope.ServiceProvider.GetRequiredService<MeetingAssistant.Infrastructure.Persistence.DbContext.ApplicationDbContext>();
                     dbContext.Database.Migrate();
+
+                    if (app.Environment.IsDevelopment())
+                    {
+                        var seeder = scope.ServiceProvider.GetRequiredService<DevDbSeeder>();
+                        seeder.SeedAsync().GetAwaiter().GetResult();
+                    }
                 }
             }
 

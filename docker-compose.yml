@@ -84,6 +84,46 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: meetingassistant-livekit
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["exec /livekit-server --config-body \"$$LIVEKIT_CONFIG\""]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+        redis:
+          address: redis:6379
+        keys:
+          devkey: devsecret_devsecret_devsecret_32chars
+        webhook:
+          api_key: devkey
+          urls:
+            - http://api:8080/api/webhooks/livekit
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: meetingassistant-web
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
 
 volumes:
   postgres_data:
