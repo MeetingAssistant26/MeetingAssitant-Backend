@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Reflection;
 using System.Security.Claims;
 using MeetingAssistant.Features.Identity.Entites;
+using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Shared;
@@ -33,7 +34,10 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<Meeting> Meetings => Set<Meeting>();
         public DbSet<MeetingParticipant> MeetingParticipants => Set<MeetingParticipant>();
         public DbSet<MeetingMeetingTag> MeetingMeetingTags => Set<MeetingMeetingTag>();
-
+        public DbSet<SessionEvent> SessionEvents => Set<SessionEvent>();
+        public DbSet<ParticipantAudioTrack> ParticipantAudioTracks => Set<ParticipantAudioTrack>();
+        public DbSet<MeetingTranscript> MeetingTranscripts => Set<MeetingTranscript>();
+        public DbSet<MeetingSummary> MeetingSummaries => Set<MeetingSummary>();
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -128,3 +132,4 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
 
     }
 }
+

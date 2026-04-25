@@ -143,6 +143,203 @@ namespace MeetingAssistant.Migrations
                     b.ToTable("RefreshTokens");
                 });
 
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.MeetingSummary", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("CompletionTokens")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("GeneratedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LlmModel")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("MeetingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("PromptTokens")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SummaryText")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MeetingId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_MeetingSummaries_MeetingId");
+
+                    b.HasIndex("OrganizationId")
+                        .HasDatabaseName("IX_MeetingSummaries_OrganizationId");
+
+                    b.ToTable("MeetingSummaries");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.MeetingTranscript", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FullText")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("GeneratedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("MeetingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("SegmentsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("SttModel")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MeetingId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_MeetingTranscripts_MeetingId");
+
+                    b.HasIndex("OrganizationId")
+                        .HasDatabaseName("IX_MeetingTranscripts_OrganizationId");
+
+                    b.ToTable("MeetingTranscripts");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.ParticipantAudioTrack", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<double?>("DurationSeconds")
+                        .HasColumnType("double precision");
+
+                    b.Property<Guid>("MeetingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ParticipantUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long?>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("StorageObjectKey")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId")
+                        .HasDatabaseName("IX_ParticipantAudioTracks_OrganizationId");
+
+                    b.HasIndex("MeetingId", "ParticipantUserId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_ParticipantAudioTracks_MeetingId_ParticipantUserId");
+
+                    b.HasIndex("MeetingId", "Status")
+                        .HasDatabaseName("IX_ParticipantAudioTracks_MeetingId_Status");
+
+                    b.ToTable("ParticipantAudioTracks");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.SessionEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("EventType")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ExternalEventId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<Guid>("MeetingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ParticipantUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTime>("ProcessedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExternalEventId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_SessionEvents_ExternalEventId");
+
+                    b.HasIndex("OrganizationId")
+                        .HasDatabaseName("IX_SessionEvents_OrganizationId");
+
+                    b.HasIndex("ParticipantUserId");
+
+                    b.HasIndex("MeetingId", "OccurredAtUtc")
+                        .HasDatabaseName("IX_SessionEvents_MeetingId_OccurredAtUtc");
+
+                    b.ToTable("SessionEvents");
+                });
+
             modelBuilder.Entity("MeetingAssistant.Features.Meetings.Models.Meeting", b =>
                 {
                     b.Property<Guid>("Id")
@@ -552,6 +749,55 @@ namespace MeetingAssistant.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.MeetingSummary", b =>
+                {
+                    b.HasOne("MeetingAssistant.Features.Meetings.Models.Meeting", "Meeting")
+                        .WithMany()
+                        .HasForeignKey("MeetingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Meeting");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.MeetingTranscript", b =>
+                {
+                    b.HasOne("MeetingAssistant.Features.Meetings.Models.Meeting", "Meeting")
+                        .WithMany()
+                        .HasForeignKey("MeetingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Meeting");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.ParticipantAudioTrack", b =>
+                {
+                    b.HasOne("MeetingAssistant.Features.Meetings.Models.Meeting", "Meeting")
+                        .WithMany()
+                        .HasForeignKey("MeetingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Meeting");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.SessionEvent", b =>
+                {
+                    b.HasOne("MeetingAssistant.Features.Meetings.Models.Meeting", "Meeting")
+                        .WithMany()
+                        .HasForeignKey("MeetingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MeetingAssistant.Features.Identity.Entites.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("ParticipantUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Meeting");
                 });
 
             modelBuilder.Entity("MeetingAssistant.Features.Meetings.Models.Meeting", b =>

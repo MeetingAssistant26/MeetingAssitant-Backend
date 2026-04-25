@@ -1,4 +1,4 @@
-using MeetingAssistant.Infrastructure.Persistence.DbContext;
+﻿using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -32,7 +32,11 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
                 ["ConnectionStrings:DefaultConnection"] = "not-used",
                 ["Redis:ConnectionString"] = "not-used",
                 ["HangfireSettings:DashboardUsername"] = "test",
-                ["HangfireSettings:DashboardPassword"] = "test"
+                ["HangfireSettings:DashboardPassword"] = "test",
+                ["LiveKit:ApiKey"] = "test-livekit-key",
+                ["LiveKit:ApiSecret"] = "0123456789abcdef0123456789abcdef",
+                ["LiveKit:ServerUrl"] = "wss://test.livekit.local",
+                ["LiveKit:WebhookSecret"] = "0123456789abcdef0123456789abcdef"
             });
         });
 
@@ -113,3 +117,4 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
         }
     }
 }
+

@@ -1,4 +1,4 @@
-using System.Net.Http.Headers;
+﻿using System.Net.Http.Headers;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
@@ -46,6 +46,10 @@ public abstract class IntegrationTestBase : IClassFixture<MeetingAssistantWebFac
     private static async Task CleanDatabaseAsync(ApplicationDbContext db)
     {
         // Delete in dependency order (children before parents)
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"SessionEvents\"");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"ParticipantAudioTracks\"");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingSummaries\"");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingTranscripts\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingMeetingTags\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingParticipants\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Meetings\"");
@@ -92,3 +96,6 @@ public abstract class IntegrationTestBase : IClassFixture<MeetingAssistantWebFac
         await db.SaveChangesAsync();
     }
 }
+
+
+
