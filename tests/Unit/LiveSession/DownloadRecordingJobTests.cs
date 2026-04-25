@@ -19,20 +19,25 @@ namespace tests.Unit.LiveSession
             var meetingId = db.SeedMeeting(orgId);
             var userId = db.SeedUser();
 
-            db.DbContext.ParticipantAudioTracks.Add(new ParticipantAudioTrack
+            var track = new ParticipantAudioTrack
             {
                 MeetingId = meetingId,
                 OrganizationId = orgId,
                 ParticipantUserId = userId,
                 Status = status,
                 StorageObjectKey = "recordings/existing.mp4"
-            });
+            };
+            db.DbContext.ParticipantAudioTracks.Add(track);
             await db.DbContext.SaveChangesAsync();
 
             var storage = new FakeStorageService();
-            var sut = new DownloadRecordingJob(db.DbContext, storage, NullLogger<DownloadRecordingJob>.Instance);
+            var sut = new IngestParticipantAudioJob(
+                db.DbContext,
+                storage,
+                new NoopPublisher(),
+                NullLogger<IngestParticipantAudioJob>.Instance);
 
-            await sut.RunAsync(meetingId, "https://example.com/recording.mp4");
+            await sut.RunAsync(track.Id, "https://example.com/recording.mp4");
 
             storage.Uploads.Should().BeEmpty();
         }
@@ -45,23 +50,28 @@ namespace tests.Unit.LiveSession
             var meetingId = db.SeedMeeting(orgId);
             var userId = db.SeedUser();
 
-            db.DbContext.ParticipantAudioTracks.Add(new ParticipantAudioTrack
+            var track = new ParticipantAudioTrack
             {
                 MeetingId = meetingId,
                 OrganizationId = orgId,
                 ParticipantUserId = userId,
                 Status = ParticipantAudioTrackStatus.Pending
-            });
+            };
+            db.DbContext.ParticipantAudioTracks.Add(track);
             await db.DbContext.SaveChangesAsync();
 
             var storage = new FakeStorageService();
-            var sut = new DownloadRecordingJob(db.DbContext, storage, NullLogger<DownloadRecordingJob>.Instance);
+            var sut = new IngestParticipantAudioJob(
+                db.DbContext,
+                storage,
+                new NoopPublisher(),
+                NullLogger<IngestParticipantAudioJob>.Instance);
 
-            await sut.RunAsync(meetingId, "https://example.com/recording.mp4");
+            await sut.RunAsync(track.Id, "https://example.com/recording.mp4");
 
             var recording = db.DbContext.ParticipantAudioTracks.Single(r => r.MeetingId == meetingId);
             recording.Status.Should().Be(ParticipantAudioTrackStatus.Available);
-            recording.StorageObjectKey.Should().Be($"recordings/{meetingId}.mp4");
+            recording.StorageObjectKey.Should().Be($"tracks/{meetingId}/{userId}.ogg");
             storage.Uploads.Count.Should().Be(1);
         }
 
@@ -73,19 +83,24 @@ namespace tests.Unit.LiveSession
             var meetingId = db.SeedMeeting(orgId);
             var userId = db.SeedUser();
 
-            db.DbContext.ParticipantAudioTracks.Add(new ParticipantAudioTrack
+            var track = new ParticipantAudioTrack
             {
                 MeetingId = meetingId,
                 OrganizationId = orgId,
                 ParticipantUserId = userId,
                 Status = ParticipantAudioTrackStatus.Pending
-            });
+            };
+            db.DbContext.ParticipantAudioTracks.Add(track);
             await db.DbContext.SaveChangesAsync();
 
             var storage = new FakeStorageService { ThrowOnUpload = true };
-            var sut = new DownloadRecordingJob(db.DbContext, storage, NullLogger<DownloadRecordingJob>.Instance);
+            var sut = new IngestParticipantAudioJob(
+                db.DbContext,
+                storage,
+                new NoopPublisher(),
+                NullLogger<IngestParticipantAudioJob>.Instance);
 
-            await sut.RunAsync(meetingId, "https://example.com/recording.mp4");
+            await sut.RunAsync(track.Id, "https://example.com/recording.mp4");
 
             var recording = db.DbContext.ParticipantAudioTracks.Single(r => r.MeetingId == meetingId);
             recording.Status.Should().Be(ParticipantAudioTrackStatus.Failed);

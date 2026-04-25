@@ -167,7 +167,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             if (enqueueDownload && !string.IsNullOrWhiteSpace(sourceCloudUrl))
             {
-                _backgroundJobClient.Enqueue<DownloadRecordingJob>(
+                _backgroundJobClient.Enqueue<IngestParticipantAudioJob>(
                     job => job.RunAsync(meeting.Id, sourceCloudUrl, CancellationToken.None));
             }
 
