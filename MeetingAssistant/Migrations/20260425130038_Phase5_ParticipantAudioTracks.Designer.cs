@@ -245,10 +245,6 @@ namespace MeetingAssistant.Migrations
 
                     b.HasIndex("ParticipantUserId");
 
-                    b.HasIndex("MeetingId", "EventType")
-                        .IsUnique()
-                        .HasDatabaseName("IX_SessionEvents_MeetingId_EventType");
-
                     b.HasIndex("MeetingId", "OccurredAtUtc")
                         .HasDatabaseName("IX_SessionEvents_MeetingId_OccurredAtUtc");
 

@@ -41,12 +41,6 @@ namespace MeetingAssistant.Migrations
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_SessionEvents_MeetingId_EventType",
-                table: "SessionEvents",
-                columns: new[] { "MeetingId", "EventType" },
-                unique: true);
-
-            migrationBuilder.CreateIndex(
                 name: "IX_ParticipantAudioTracks_MeetingId_ParticipantUserId",
                 table: "ParticipantAudioTracks",
                 columns: new[] { "MeetingId", "ParticipantUserId" },
@@ -68,10 +62,6 @@ namespace MeetingAssistant.Migrations
         {
             migrationBuilder.DropTable(
                 name: "ParticipantAudioTracks");
-
-            migrationBuilder.DropIndex(
-                name: "IX_SessionEvents_MeetingId_EventType",
-                table: "SessionEvents");
 
             migrationBuilder.CreateTable(
                 name: "Recordings",

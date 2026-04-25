@@ -34,10 +34,6 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
             builder.HasIndex(x => new { x.MeetingId, x.OccurredAtUtc })
                 .HasDatabaseName("IX_SessionEvents_MeetingId_OccurredAtUtc");
 
-            builder.HasIndex(x => new { x.MeetingId, x.EventType })
-                .IsUnique()
-                .HasDatabaseName("IX_SessionEvents_MeetingId_EventType");
-
             builder.HasIndex(x => x.OrganizationId)
                 .HasDatabaseName("IX_SessionEvents_OrganizationId");
 

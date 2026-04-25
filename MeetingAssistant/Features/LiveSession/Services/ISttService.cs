@@ -17,5 +17,5 @@ namespace MeetingAssistant.Features.LiveSession.Services
         long StartMs,
         long EndMs,
         string Text,
-        double? Confidence);
+        double? AvgLogProb);
 }

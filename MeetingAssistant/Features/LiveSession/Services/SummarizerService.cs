@@ -9,13 +9,13 @@ namespace MeetingAssistant.Features.LiveSession.Services
     public class SummarizerService(
         IOptions<OpenAiCompatibleOptions> options,
         IHttpClientFactory httpClientFactory,
-        IHostEnvironment hostEnvironment) : ISummarizerService
+        IPromptProvider promptProvider) : ISummarizerService
     {
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
         private readonly OpenAiCompatibleOptions.ProviderConfig _llm = options.Value.Llm;
         private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
-        private readonly string _promptTemplate = LoadPromptTemplate(hostEnvironment.ContentRootPath);
+        private readonly IPromptProvider _promptProvider = promptProvider;
 
         public async Task<SummaryResult> SummarizeAsync(string fullTranscript, CancellationToken ct = default)
         {
@@ -30,7 +30,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         model = _llm.Model,
                         messages = new object[]
                         {
-                            new { role = "system", content = _promptTemplate },
+                            new { role = "system", content = _promptProvider.GetSummarizerPrompt() },
                             new { role = "user", content = fullTranscript }
                         }
                     }, JsonOptions),
@@ -77,19 +77,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
             }
 
             return new SummaryResult(summaryText, _llm.Model, promptTokens, completionTokens);
-        }
-
-        private static string LoadPromptTemplate(string contentRootPath)
-        {
-            var promptPath = Path.Combine(
-                contentRootPath,
-                "Features",
-                "LiveSession",
-                "Resources",
-                "Prompts",
-                "MeetingSummarizer.md");
-
-            return File.ReadAllText(promptPath);
         }
 
         private static string NormalizeBaseUrl(string baseUrl)

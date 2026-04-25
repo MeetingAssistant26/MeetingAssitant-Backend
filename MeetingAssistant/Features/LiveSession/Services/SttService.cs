@@ -178,13 +178,17 @@ namespace MeetingAssistant.Features.LiveSession.Services
             double endSeconds,
             CancellationToken ct)
         {
+            // Re-encode (rather than -c copy) so each chunk has its own clean OGG/Opus header.
+            // -c copy snaps to packet boundaries and can produce malformed chunks that Whisper
+            // rejects.
             var args = new[]
             {
                 "-y",
                 "-i", sourceFile,
                 "-ss", startSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
                 "-to", endSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture),
-                "-c", "copy",
+                "-c:a", "libopus",
+                "-b:a", "64k",
                 chunkFile
             };
 
@@ -244,9 +248,22 @@ namespace MeetingAssistant.Features.LiveSession.Services
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             response.EnsureSuccessStatusCode();
 
-            await using var responseStream = await response.Content.ReadAsStreamAsync(ct);
-            using var document = await JsonDocument.ParseAsync(responseStream, cancellationToken: ct);
-            return ParseSegments(participantUserId, document.RootElement, offsetMs);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                return ParseSegments(participantUserId, document.RootElement, offsetMs);
+            }
+            catch (JsonException ex)
+            {
+                var snippet = body.Length > 1024 ? body[..1024] : body;
+                _logger.LogError(
+                    ex,
+                    "Failed to parse STT response as JSON. ParticipantUserId={ParticipantUserId} BodySnippet={BodySnippet}",
+                    participantUserId,
+                    snippet);
+                throw;
+            }
         }
 
         private static IReadOnlyList<TranscriptSegment> ParseSegments(
@@ -275,8 +292,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         ? textElement.GetString() ?? string.Empty
                         : string.Empty;
 
-                double? confidence = TryReadDouble(segmentElement, "avg_logprob", out var avgLogProb)
-                    ? avgLogProb
+                double? avgLogProb = TryReadDouble(segmentElement, "avg_logprob", out var parsedAvgLogProb)
+                    ? parsedAvgLogProb
                     : null;
 
                 var startMs = offsetMs + (long)Math.Round(startSeconds * 1000);
@@ -287,7 +304,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     startMs,
                     endMs,
                     text,
-                    confidence));
+                    avgLogProb));
             }
 
             return segments;
@@ -317,7 +334,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
             var getObjectArgs = new GetObjectArgs()
                 .WithBucket(_storage.Bucket)
                 .WithObject(storageObjectKey)
-                .WithCallbackStream(stream => stream.CopyTo(destination));
+                .WithCallbackStream(async (source, callbackCt) =>
+                    await source.CopyToAsync(destination, CopyBufferSize, callbackCt));
 
             await minioClient.GetObjectAsync(getObjectArgs, ct);
         }
@@ -425,7 +443,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 var getObjectArgs = new GetObjectArgs()
                     .WithBucket(_bucketName)
                     .WithObject(_objectKey)
-                    .WithCallbackStream(source => source.CopyTo(stream));
+                    .WithCallbackStream(async (source, callbackCt) =>
+                        await source.CopyToAsync(stream, CopyBufferSize, callbackCt));
 
                 await _minioClient.GetObjectAsync(getObjectArgs, _cancellationToken);
             }

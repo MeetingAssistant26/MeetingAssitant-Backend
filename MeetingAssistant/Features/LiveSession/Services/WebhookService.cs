@@ -131,36 +131,33 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     }
                     break;
 
-                case SessionEventType.RecordingStarted:
-                    break;
-
                 case SessionEventType.EgressEnded:
                 {
+                    // For per-participant audio capture, each egress (Participant or Track mode)
+                    // targets exactly one participant. The identity is on the egress request, not
+                    // on FileResult — fileResults[].participantIdentity is not part of LiveKit's
+                    // schema. See livekit-sandbox-runbook.md for the required egress configuration.
                     var fileResults = webhookEvent.EgressInfo?.FileResults ?? [];
-                    var payloadIdentities = ExtractFileParticipantIdentities(rawPayload);
+                    var egressIdentity = ExtractEgressParticipantIdentity(rawPayload);
                     var egressOk = webhookEvent.EgressInfo?.Status == EgressStatus.EgressComplete;
 
-                    for (var i = 0; i < fileResults.Count; i++)
+                    var resolvedParticipantUserId = await ResolveParticipantUserIdAsync(
+                        meeting.Id,
+                        egressIdentity,
+                        cancellationToken);
+
+                    if (resolvedParticipantUserId is null)
                     {
-                        var file = fileResults[i];
-                        var participantIdentity = i < payloadIdentities.Count
-                            ? payloadIdentities[i]
-                            : file.Filename;
-
-                        var resolvedParticipantUserId = await ResolveParticipantUserIdAsync(
+                        _logger.LogWarning(
+                            "Skipping egress payload because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity} FileResultCount={FileResultCount}",
                             meeting.Id,
-                            participantIdentity,
-                            cancellationToken);
+                            egressIdentity,
+                            fileResults.Count);
+                        break;
+                    }
 
-                        if (resolvedParticipantUserId is null)
-                        {
-                            _logger.LogWarning(
-                                "Skipping participant audio track because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity}",
-                                meeting.Id,
-                                participantIdentity);
-                            continue;
-                        }
-
+                    foreach (var file in fileResults)
+                    {
                         var status = egressOk && !string.IsNullOrWhiteSpace(file.Location)
                             ? ParticipantAudioTrackStatus.Pending
                             : ParticipantAudioTrackStatus.Failed;
@@ -312,45 +309,46 @@ namespace MeetingAssistant.Features.LiveSession.Services
             return Guid.TryParse(idPart, out meetingId);
         }
 
-        private static List<string?> ExtractFileParticipantIdentities(string rawPayload)
+        private static string? ExtractEgressParticipantIdentity(string rawPayload)
         {
-            var identities = new List<string?>();
-
             if (string.IsNullOrWhiteSpace(rawPayload))
             {
-                return identities;
+                return null;
             }
 
             try
             {
                 using var document = JsonDocument.Parse(rawPayload);
                 if (!document.RootElement.TryGetProperty("egressInfo", out var egressInfo)
-                    || egressInfo.ValueKind != JsonValueKind.Object
-                    || !egressInfo.TryGetProperty("fileResults", out var fileResults)
-                    || fileResults.ValueKind != JsonValueKind.Array)
+                    || egressInfo.ValueKind != JsonValueKind.Object)
                 {
-                    return identities;
+                    return null;
                 }
 
-                foreach (var fileResult in fileResults.EnumerateArray())
+                // Participant egress (audio_only=true) — primary configuration.
+                if (egressInfo.TryGetProperty("participant", out var participant)
+                    && participant.ValueKind == JsonValueKind.Object
+                    && participant.TryGetProperty("identity", out var participantIdentity)
+                    && participantIdentity.ValueKind == JsonValueKind.String)
                 {
-                    if (fileResult.ValueKind == JsonValueKind.Object
-                        && fileResult.TryGetProperty("participantIdentity", out var identity)
-                        && identity.ValueKind == JsonValueKind.String)
-                    {
-                        identities.Add(identity.GetString());
-                        continue;
-                    }
-
-                    identities.Add(null);
+                    return participantIdentity.GetString();
                 }
+
+                // Track egress fallback — some LiveKit SDK versions echo the resolved identity here.
+                if (egressInfo.TryGetProperty("track", out var track)
+                    && track.ValueKind == JsonValueKind.Object
+                    && track.TryGetProperty("participantIdentity", out var trackIdentity)
+                    && trackIdentity.ValueKind == JsonValueKind.String)
+                {
+                    return trackIdentity.GetString();
+                }
+
+                return null;
             }
             catch (JsonException)
             {
-                return identities;
+                return null;
             }
-
-            return identities;
         }
 
         private async Task<Guid?> ResolveParticipantUserIdAsync(

@@ -128,7 +128,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     segment.StartMs,
                     segment.EndMs,
                     segment.Text,
-                    segment.Confidence)));
+                    segment.AvgLogProb)));
 
             var transcript = await _dbContext.MeetingTranscripts
                 .FirstOrDefaultAsync(x => x.MeetingId == meetingId, cancellationToken);
@@ -167,6 +167,6 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             long StartMs,
             long EndMs,
             string Text,
-            double? Confidence);
+            double? AvgLogProb);
     }
 }

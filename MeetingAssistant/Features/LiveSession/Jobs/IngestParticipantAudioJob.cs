@@ -47,9 +47,6 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
 
             var previousStatus = track.Status;
-            track.Status = ParticipantAudioTrackStatus.Downloading;
-            await _dbContext.SaveChangesAsync(cancellationToken);
-
             var targetKey = $"tracks/{track.MeetingId}/{track.ParticipantUserId}.ogg";
 
             try
@@ -59,7 +56,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 track.StorageObjectKey = targetKey;
                 track.SizeBytes = sizeBytes;
                 track.Status = ParticipantAudioTrackStatus.Available;
-                var readyEvent = await MarkTerminalAndTryCreateReadyEventAsync(track, cancellationToken);
+                var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
 
                 _logger.LogInformation(
                     "Participant audio ingest completed. TrackId={TrackId} MeetingId={MeetingId} StatusTransition={StatusTransition} TargetKey={TargetKey} SizeBytes={SizeBytes}",
@@ -77,7 +74,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             catch (Exception ex)
             {
                 track.Status = ParticipantAudioTrackStatus.Failed;
-                var readyEvent = await MarkTerminalAndTryCreateReadyEventAsync(track, cancellationToken);
+                var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
 
                 _logger.LogError(
                     ex,
@@ -95,20 +92,18 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
         }
 
-        private async Task<ParticipantAudioReadyEvent?> MarkTerminalAndTryCreateReadyEventAsync(
+        private async Task<ParticipantAudioReadyEvent?> PersistTerminalStatusAndTryCreateReadyEventAsync(
             ParticipantAudioTrack track,
             CancellationToken cancellationToken)
         {
-            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
-
+            // Save terminal status first; the SessionEvent insert below is allowed to fail under
+            // a concurrent winner without rolling back the track update.
             await _dbContext.SaveChangesAsync(cancellationToken);
-            var readyEvent = await TryCreateParticipantAudioReadyEventAsync(
+
+            return await TryCreateParticipantAudioReadyEventAsync(
                 track.MeetingId,
                 track.OrganizationId,
                 cancellationToken);
-
-            await transaction.CommitAsync(cancellationToken);
-            return readyEvent;
         }
 
         private async Task<ParticipantAudioReadyEvent?> TryCreateParticipantAudioReadyEventAsync(
