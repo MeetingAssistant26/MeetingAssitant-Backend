@@ -1,6 +1,5 @@
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
-using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -10,20 +9,23 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 {
     public class IngestParticipantAudioJob(
         ApplicationDbContext dbContext,
-        IStorageService storageService,
         IPublisher publisher,
         ILogger<IngestParticipantAudioJob> logger)
     {
         private const string UniqueViolationSqlState = "23505";
 
         private readonly ApplicationDbContext _dbContext = dbContext;
-        private readonly IStorageService _storageService = storageService;
         private readonly IPublisher _publisher = publisher;
         private readonly ILogger<IngestParticipantAudioJob> _logger = logger;
 
-        public async Task RunAsync(Guid trackId, string egressSourceUrl, CancellationToken cancellationToken = default)
+        public async Task RunAsync(
+            Guid trackId,
+            string s3LocationUrl,
+            long? sizeBytes,
+            CancellationToken cancellationToken = default)
         {
             var track = await _dbContext.ParticipantAudioTracks
+                .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.Id == trackId, cancellationToken);
 
             if (track == null)
@@ -38,32 +40,41 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             if (track.Status is ParticipantAudioTrackStatus.Available or ParticipantAudioTrackStatus.Failed)
             {
                 _logger.LogInformation(
-                    "Participant audio ingest skipped. TrackId={TrackId} StatusTransition={StatusTransition} TargetKey={TargetKey} SizeBytes={SizeBytes}",
+                    "Participant audio ingest skipped. TrackId={TrackId} StatusTransition={StatusTransition} StorageObjectKey={StorageObjectKey} SizeBytes={SizeBytes}",
                     trackId,
                     $"{track.Status}->{track.Status}",
                     track.StorageObjectKey,
-                    (long?)null);
+                    track.SizeBytes);
                 return;
             }
 
             var previousStatus = track.Status;
-            var targetKey = $"tracks/{track.MeetingId}/{track.ParticipantUserId}.ogg";
+            var objectKey = ExtractObjectKeyFromS3Url(s3LocationUrl);
+
+            if (string.IsNullOrWhiteSpace(objectKey))
+            {
+                _logger.LogError(
+                    "Failed to extract object key from S3 location URL. TrackId={TrackId} Url={S3LocationUrl}",
+                    trackId,
+                    s3LocationUrl);
+                track.Status = ParticipantAudioTrackStatus.Failed;
+                await PersistTerminalStatusAsync(track, cancellationToken);
+                return;
+            }
 
             try
             {
-                var sizeBytes = await _storageService.UploadFromUrlAsync(egressSourceUrl, targetKey, cancellationToken);
-
-                track.StorageObjectKey = targetKey;
+                track.StorageObjectKey = objectKey;
                 track.SizeBytes = sizeBytes;
                 track.Status = ParticipantAudioTrackStatus.Available;
                 var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
 
                 _logger.LogInformation(
-                    "Participant audio ingest completed. TrackId={TrackId} MeetingId={MeetingId} StatusTransition={StatusTransition} TargetKey={TargetKey} SizeBytes={SizeBytes}",
+                    "Participant audio ingest completed. TrackId={TrackId} MeetingId={MeetingId} StatusTransition={StatusTransition} StorageObjectKey={StorageObjectKey} SizeBytes={SizeBytes}",
                     trackId,
                     track.MeetingId,
                     $"{previousStatus}->{track.Status}",
-                    targetKey,
+                    objectKey,
                     sizeBytes);
 
                 if (readyEvent is not null)
@@ -78,12 +89,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
                 _logger.LogError(
                     ex,
-                    "Participant audio ingest failed. TrackId={TrackId} MeetingId={MeetingId} StatusTransition={StatusTransition} TargetKey={TargetKey} SizeBytes={SizeBytes}",
+                    "Participant audio ingest failed. TrackId={TrackId} MeetingId={MeetingId} StatusTransition={StatusTransition} StorageObjectKey={StorageObjectKey} SizeBytes={SizeBytes}",
                     trackId,
                     track.MeetingId,
                     $"{previousStatus}->{track.Status}",
-                    targetKey,
-                    (long?)null);
+                    objectKey,
+                    sizeBytes);
 
                 if (readyEvent is not null)
                 {
@@ -92,12 +103,44 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
         }
 
+        private static string? ExtractObjectKeyFromS3Url(string? url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                return null;
+
+            try
+            {
+                var uri = new Uri(url);
+                var path = uri.AbsolutePath.TrimStart('/');
+                var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+                if (segments.Length < 2)
+                    return null;
+
+                // Path-style: /bucket/key/parts → skip bucket segment
+                // Virtual-hosted: /key/parts → first segment is already the key start
+                // Heuristic: if the first segment looks like a bucket (no dots), skip it
+                // In practice for MinIO with ForcePathStyle, it's always path-style.
+                var key = string.Join('/', segments.Skip(1));
+                return key;
+            }
+            catch (UriFormatException)
+            {
+                return null;
+            }
+        }
+
+        private async Task PersistTerminalStatusAsync(
+            ParticipantAudioTrack track,
+            CancellationToken cancellationToken)
+        {
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
         private async Task<ParticipantAudioReadyEvent?> PersistTerminalStatusAndTryCreateReadyEventAsync(
             ParticipantAudioTrack track,
             CancellationToken cancellationToken)
         {
-            // Save terminal status first; the SessionEvent insert below is allowed to fail under
-            // a concurrent winner without rolling back the track update.
             await _dbContext.SaveChangesAsync(cancellationToken);
 
             return await TryCreateParticipantAudioReadyEventAsync(
@@ -112,6 +155,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             CancellationToken cancellationToken)
         {
             var remainingTracks = await _dbContext.ParticipantAudioTracks
+                .IgnoreQueryFilters()
                 .CountAsync(
                     x => x.MeetingId == meetingId
                          && x.Status != ParticipantAudioTrackStatus.Available

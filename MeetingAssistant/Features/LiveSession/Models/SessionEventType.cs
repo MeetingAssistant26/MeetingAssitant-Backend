@@ -9,6 +9,7 @@ namespace MeetingAssistant.Features.LiveSession.Models
         RecordingStarted = 4,
         EgressEnded = 5,
         ParticipantAudioReady = 6,
+        TrackPublished = 7,
         Unknown = 99
     }
 }

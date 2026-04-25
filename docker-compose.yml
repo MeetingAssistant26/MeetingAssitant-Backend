@@ -10,7 +10,6 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U meetingassistant -d meetingassistant"]
       interval: 5s
@@ -77,6 +76,7 @@ services:
       LiveKit__ApiSecret: ${LiveKit__ApiSecret:-}
       LiveKit__ServerUrl: ${LiveKit__ServerUrl:-}
       LiveKit__WebhookSecret: ${LiveKit__WebhookSecret:-}
+      LiveKit__EgressHost: ${LiveKit__EgressHost:-http://livekit:7880}
 
     ports:
       - "8080:8080"
@@ -86,6 +86,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      livekit:
+        condition: service_started
 
   livekit:
     image: livekit/livekit-server:latest
@@ -114,6 +116,36 @@ services:
       - "7880:7880"
       - "7881:7881"
       - "7882:7882/udp"
+
+  egress:
+    image: livekit/egress:latest
+    container_name: meetingassistant-egress
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["exec egress --config-body \"$$EGRESS_CONFIG_BODY\""]
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+    environment:
+      EGRESS_CONFIG_BODY: |
+        log_level: info
+        api_key: devkey
+        api_secret: devsecret_devsecret_devsecret_32chars
+        ws_url: ws://livekit:7880
+        insecure: true
+        redis:
+          address: redis:6379
+        storage:
+          s3:
+            access_key: minioadmin
+            secret: minioadmin
+            endpoint: http://minio:9000
+            bucket: recordings
+            force_path_style: true
+    cap_add:
+      - SYS_ADMIN
 
   web:
     build:

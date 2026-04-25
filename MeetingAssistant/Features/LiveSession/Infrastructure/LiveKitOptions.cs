@@ -6,5 +6,6 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure
         public string ApiSecret { get; init; } = string.Empty;
         public string ServerUrl { get; init; } = string.Empty;
         public string WebhookSecret { get; init; } = string.Empty;
+        public string EgressHost { get; init; } = string.Empty;
     }
 }

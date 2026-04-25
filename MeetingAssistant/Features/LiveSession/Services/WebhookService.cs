@@ -1,14 +1,16 @@
 using Hangfire;
 using Livekit.Server.Sdk.Dotnet;
 using MeetingAssistant.Features.LiveSession.Hubs;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Npgsql;
+using System.Text.Json;
 
 namespace MeetingAssistant.Features.LiveSession.Services
 {
@@ -16,6 +18,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
         ApplicationDbContext dbContext,
         IBackgroundJobClient backgroundJobClient,
         ILiveSessionNotifier liveSessionNotifier,
+        IOptions<LiveKitOptions> options,
+        IEgressService egressService,
         ILogger<WebhookService> logger) : IWebhookService
     {
         private const string UniqueViolationSqlState = "23505";
@@ -23,6 +27,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly IBackgroundJobClient _backgroundJobClient = backgroundJobClient;
         private readonly ILiveSessionNotifier _liveSessionNotifier = liveSessionNotifier;
+        private readonly LiveKitOptions _options = options.Value;
+        private readonly IEgressService _egressService = egressService;
         private readonly ILogger<WebhookService> _logger = logger;
 
         public async Task<Result> ProcessAsync(
@@ -83,7 +89,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             _dbContext.SessionEvents.Add(sessionEvent);
 
             var notifications = new List<Func<CancellationToken, Task>>();
-            var ingestEnqueues = new List<(Guid TrackId, string SourceUrl)>();
+            var ingestEnqueues = new List<(Guid TrackId, string S3LocationUrl, long? SizeBytes)>();
 
             switch (eventType)
             {
@@ -94,6 +100,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         meeting.RaiseDomainEvent(new SessionStartedEvent(meeting.Id, meeting.OrganizationId, occurredAtUtc));
                         notifications.Add(ct => _liveSessionNotifier.NotifySessionStartedAsync(meeting.OrganizationId, meeting.Id, occurredAtUtc, ct));
                     }
+
                     break;
 
                 case SessionEventType.RoomFinished:
@@ -171,11 +178,30 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
                         if (status == ParticipantAudioTrackStatus.Pending)
                         {
-                            ingestEnqueues.Add((trackId, file.Location!));
+                            ingestEnqueues.Add((trackId, file.Location!, file.Size));
                         }
                     }
                     break;
                 }
+
+                case SessionEventType.TrackPublished:
+                    if (webhookEvent.Track?.Type == TrackType.Audio &&
+                        webhookEvent.Track?.Source == TrackSource.Microphone &&
+                        !string.IsNullOrWhiteSpace(_options.EgressHost))
+                    {
+                        var trackSid = webhookEvent.Track?.Sid;
+                        var identity = webhookEvent.Participant?.Identity;
+                        if (!string.IsNullOrWhiteSpace(trackSid) && !string.IsNullOrWhiteSpace(identity))
+                        {
+                            _ = _egressService.StartTrackEgressAsync(
+                                meeting.Id,
+                                webhookEvent.Room?.Name ?? $"mtg:{meeting.Id}",
+                                trackSid,
+                                identity,
+                                cancellationToken);
+                        }
+                    }
+                    break;
 
                 case SessionEventType.Unknown:
                 default:
@@ -191,10 +217,10 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 return Result.Success();
             }
 
-            foreach (var (trackId, sourceUrl) in ingestEnqueues)
+            foreach (var (trackId, s3LocationUrl, sizeBytes) in ingestEnqueues)
             {
                 _backgroundJobClient.Enqueue<IngestParticipantAudioJob>(
-                    job => job.RunAsync(trackId, sourceUrl, CancellationToken.None));
+                    job => job.RunAsync(trackId, s3LocationUrl, sizeBytes, CancellationToken.None));
             }
 
             try
@@ -221,6 +247,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             CancellationToken cancellationToken)
         {
             var track = await _dbContext.ParticipantAudioTracks
+                .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(
                     x => x.MeetingId == meetingId && x.ParticipantUserId == participantUserId,
                     cancellationToken);
@@ -252,6 +279,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 "participant_joined" => SessionEventType.ParticipantJoined,
                 "participant_left" => SessionEventType.ParticipantLeft,
                 "recording_started" => SessionEventType.RecordingStarted,
+                "track_published" => SessionEventType.TrackPublished,
                 "egress_ended" => SessionEventType.EgressEnded,
                 _ => SessionEventType.Unknown
             };
@@ -325,22 +353,33 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     return null;
                 }
 
-                // Participant egress (audio_only=true) — primary configuration.
-                if (egressInfo.TryGetProperty("participant", out var participant)
-                    && participant.ValueKind == JsonValueKind.Object
-                    && participant.TryGetProperty("identity", out var participantIdentity)
-                    && participantIdentity.ValueKind == JsonValueKind.String)
+                // TrackEgress ended webhooks do not include a participant identity field.
+                // We use the S3 object key path to resolve the participant.
+                // Expected path format: tracks/{roomName}/{participantIdentity}/track-{trackId}.ogg
+                if (egressInfo.TryGetProperty("fileResults", out var fileResults)
+                    && fileResults.ValueKind == JsonValueKind.Array
+                    && fileResults.GetArrayLength() > 0)
                 {
-                    return participantIdentity.GetString();
-                }
+                    var firstFile = fileResults[0];
+                    var path = firstFile.TryGetProperty("filename", out var filename)
+                        ? filename.GetString()
+                        : firstFile.TryGetProperty("location", out var location)
+                            ? new Uri(location.GetString()!).AbsolutePath
+                            : null;
 
-                // Track egress fallback — some LiveKit SDK versions echo the resolved identity here.
-                if (egressInfo.TryGetProperty("track", out var track)
-                    && track.ValueKind == JsonValueKind.Object
-                    && track.TryGetProperty("participantIdentity", out var trackIdentity)
-                    && trackIdentity.ValueKind == JsonValueKind.String)
-                {
-                    return trackIdentity.GetString();
+                    if (!string.IsNullOrWhiteSpace(path))
+                    {
+                        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                        // tracks/room/user:{guid}/file.ogg → identity is index 2
+                        if (segments.Length >= 3)
+                        {
+                            var identity = segments[2];
+                            if (!string.IsNullOrWhiteSpace(identity))
+                            {
+                                return identity;
+                            }
+                        }
+                    }
                 }
 
                 return null;

@@ -19,6 +19,7 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<ILiveKitWebhookValidator, LiveKitWebhookValidator>();
             services.AddScoped<IWebhookService, WebhookService>();
             services.AddScoped<IStorageService, StorageService>();
+            services.AddScoped<IEgressService, EgressService>();
             services.AddSingleton<IPromptProvider, PromptProvider>();
             services.AddScoped<ISttService, SttService>();
             services.AddScoped<ISummarizerService, SummarizerService>();

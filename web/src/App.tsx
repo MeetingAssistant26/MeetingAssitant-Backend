@@ -121,7 +121,15 @@ export default function App() {
   // ─── LiveKit Room View ───────────────────────────────────
   if (token && serverUrl) {
     return (
-      <div style={{ height: '100vh' }}>
+      <div
+        style={{
+          height: '100vh',
+          width: '100vw',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }}
+      >
         <LiveKitRoom
           token={token}
           serverUrl={serverUrl}
@@ -133,8 +141,11 @@ export default function App() {
             setServerUrl(null);
             setRoomName(null);
           }}
+          style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
         >
-          <AudioConference />
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <AudioConference />
+          </div>
 
           <div
             style={{

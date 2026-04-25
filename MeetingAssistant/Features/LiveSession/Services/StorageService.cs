@@ -22,7 +22,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             }
 
             var minioClient = CreateClient();
-            await EnsureBucketExistsAsync(minioClient, cancellationToken);
+            await EnsureBucketExistsAsync(cancellationToken);
 
             using var httpClient = _httpClientFactory.CreateClient();
             using var response = await httpClient.GetAsync(sourceUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -48,20 +48,31 @@ namespace MeetingAssistant.Features.LiveSession.Services
             return objectSize >= 0 ? objectSize : null;
         }
 
-        private async Task EnsureBucketExistsAsync(IMinioClient minioClient, CancellationToken cancellationToken)
+        public async Task EnsureBucketExistsAsync(CancellationToken cancellationToken = default)
         {
+            var minioClient = CreateClient();
+
             var bucketExists = await minioClient.BucketExistsAsync(
                 new BucketExistsArgs().WithBucket(_options.Bucket),
                 cancellationToken);
 
             if (bucketExists)
             {
+                _logger.LogDebug("Storage bucket {Bucket} already exists", _options.Bucket);
                 return;
             }
+
+            _logger.LogInformation(
+                "Storage bucket {Bucket} does not exist — creating it now",
+                _options.Bucket);
 
             await minioClient.MakeBucketAsync(
                 new MakeBucketArgs().WithBucket(_options.Bucket),
                 cancellationToken);
+
+            _logger.LogInformation(
+                "Storage bucket {Bucket} created successfully",
+                _options.Bucket);
         }
 
         private IMinioClient CreateClient()

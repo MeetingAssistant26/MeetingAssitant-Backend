@@ -1,0 +1,27 @@
+/* Prevent any page-level scrolling while in a LiveKit room */
+html,
+body,
+#root {
+  height: 100% !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* Ensure LiveKit audio conference fills space and controls are visible */
+.lk-audio-conference {
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.lk-audio-conference > *:not(.lk-control-bar) {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.lk-control-bar {
+  flex: 0 0 auto !important;
+}
