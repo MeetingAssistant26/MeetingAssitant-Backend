@@ -1144,123 +1144,262 @@ Deliverable:
 - No self-hosted WebRTC infrastructure to manage
 - 3 controllers, 3 endpoint files
 
+> **v3.6 amendment**: the "Live transcription flowing and stored" deliverable
+> above is superseded by Phase 4.5. No live STT in v3.6.
+
 ---
 
-# Phase 5 — Recording & Storage (Weeks 7.5–8.5)
+# Phase 4.5 — Realtime Pipeline Amendment (Post-Meeting STT Direction) (v3.6)
 
-## LiveKit Cloud Egress
+> This phase **supersedes the live-transcription portion of Phase 4**. Phase 4's
+> infrastructure sections (LiveKit Cloud join tokens, webhooks, permissions) remain
+> in force. Only the transcription delivery path is changed.
 
-- Configure **LiveKit Cloud Egress** to export recordings to LiveKit Cloud's managed storage (S3-compatible)
-- Room composite or track-based recording configuration via LiveKit Cloud dashboard / API
-- No local Egress service needed
-- Backend runs a **Hangfire download job** to transfer recordings from LiveKit Cloud storage to local MinIO
+## What Changes
 
-> **Why not direct Egress → MinIO?** LiveKit Cloud Egress runs in the cloud
-> and cannot reach a Docker-local MinIO instance without public exposure.
-> The two-step approach (Cloud storage → download to MinIO) works for both
-> local demo and future cloud deployments.
+- **Live STT is removed.** LiveKit Cloud's built-in transcription agent is no
+  longer used for writing `TranscriptSegment` rows during the meeting.
+- **No live captions.** Real-time captions are out of scope in v3.6.
+- **All transcription is post-meeting** (see Phase 5.5). `TranscriptSegment` rows
+  are written after the meeting ends, from per-participant audio processed
+  through the STT pipeline.
+- **LiveKit Cloud webhooks still fire** for room lifecycle (room started/ended,
+  participant joined/left) — unchanged. Only the transcription path is gone.
 
-## Recording Download Pipeline
+## Entity Impact
+
+- `TranscriptSegment` schema is unchanged. Its write path moves from live
+  webhook delivery (Phase 4) to `TranscribeParticipantAudioJob` (Phase 5.5).
+- A transcript "readiness" flag can be inferred from whether segments exist
+  for a meeting; no new column is required.
+
+## TranscriptController Access Policy (updated)
+
+- `GET /api/meetings/{meetingId}/transcript` is retained from Phase 4 but is
+  **restricted to OrgAdmin / debug policy** only. Transcripts are internal
+  pipeline data, not a general participant-facing resource.
+- The endpoint reads ordered `TranscriptSegment` rows directly from PostgreSQL
+  (indexed `ORDER BY StartTime`). No MinIO involvement.
+- Before post-meeting processing completes, the endpoint returns an empty
+  segment list. Clients should rely on the `SummaryGenerated` SignalR event
+  (Phase 6) to know when post-meeting data is ready.
+
+## SignalR Impact
+
+- Remove `Live transcription status (active / paused / error)` notifications
+  from the Phase 4 list — no longer meaningful without live STT.
+- Room lifecycle and participant join/leave SignalR notifications are
+  unchanged.
+
+## Deliverables
+
+- Documentation-only phase (amendment). No new entities, endpoints, or jobs.
+- Signals that `SummarizeTranscriptJob`'s trigger moves from `MeetingEndedEvent`
+  to `MeetingTranscriptReadyEvent` (see Phase 6 amendment).
+
+---
+
+# Phase 5 — Participant Audio Egress & Storage (Weeks 7.5–8.5) (refactor in v3.6)
+
+> **v3.6 direction change**: the recording concept is replaced by
+> per-participant audio track egress. The previous `Recording` entity
+> (room-composite video/audio) is removed. Video recording is out of scope.
+
+## LiveKit Cloud Egress (per-participant track)
+
+- Configure **LiveKit Cloud Egress** in **track-based mode**: one audio track
+  egress per meeting participant.
+- Output targets LiveKit Cloud's managed storage (S3-compatible).
+- Backend runs a **Hangfire download job** to transfer each track to local MinIO.
+
+> **Why not direct Egress → MinIO?** Unchanged from prior direction — LiveKit
+> Cloud Egress runs in the cloud and cannot reach a Docker-local MinIO
+> instance without public exposure.
+
+## Participant Audio Download Pipeline
 
 ```
-LiveKit Cloud Egress completes recording
-  → Webhook: egress_ended event received by backend
-  → Hangfire job: DownloadRecordingJob
-    → Download recording from LiveKit Cloud storage URL
+LiveKit Cloud Egress completes track (one per participant)
+  → Webhook: egress_ended event received by backend (one event per track)
+  → Hangfire job: DownloadParticipantAudioJob(trackId)
+    → Download audio track from LiveKit Cloud storage URL
     → Upload to local MinIO
-    → Create/update Recording entity with local FilePath
-    → Emit RecordingAvailableEvent
+    → Update ParticipantAudioTrack row (Status = Available, LocalFilePath set)
+    → Check: all tracks for this MeetingId now Available?
+        → If yes, emit ParticipantAudioReadyEvent(meetingId)
 ```
 
 ## Entities
 
-- **`Recording`**:
-  - `Id`, `MeetingId`, `OrganizationId`
+- **`ParticipantAudioTrack`** (replaces `Recording`):
+  - `Id`, `MeetingId`, `OrganizationId`, `ParticipantUserId`
   - `CloudStorageUrl` (LiveKit Cloud storage URL — source)
-  - `FilePath` (local MinIO path — populated after download)
-  - `Duration`, `SizeBytes`
+  - `LocalFilePath` (MinIO path — populated after download)
+  - `DurationSeconds`, `SizeBytes`
   - `Status` (Pending / Downloading / Available / Failed)
-  - `CreatedAtUtc`
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+  - **DB Index**: `(MeetingId, Status)` for join-barrier checks
+
+> **Base entity note**: inherits `CreatedAtUtc` / `UpdatedAtUtc` from Phase 0.3.
 
 ## Folder Structure
 
 ```text
 Features/
-└── Recordings/
-    ├── Endpoints/
-    │   └── Recording/
-    │       ├── RecordingController.cs
-    │       ├── GetRecordingEndpoint.cs
-    │       └── ListRecordingsEndpoint.cs
-    │
+└── ParticipantAudio/
     ├── Models/
     │   └── Responses/
-    │       ├── RecordingResponse.cs
-    │       └── RecordingListResponse.cs
+    │       └── ParticipantAudioTrackResponse.cs
     │
     ├── Services/
-    │   ├── IRecordingService.cs
-    │   ├── RecordingService.cs
+    │   ├── IParticipantAudioService.cs
+    │   ├── ParticipantAudioService.cs
     │   ├── IStorageService.cs
     │   └── StorageService.cs
     │
     ├── Jobs/
-    │   └── DownloadRecordingJob.cs
+    │   └── DownloadParticipantAudioJob.cs
     │
     └── Validators/
 ```
 
-## Controller Definitions
-
-### RecordingController — `api/recordings`
-
-```csharp
-namespace MeetingAssistant.Features.Recordings.Endpoints.Recording;
-
-[ApiController]
-[Route("api")]
-public partial class RecordingController : ControllerBase
-{
-    private readonly IRecordingService _recordingService;
-
-    public RecordingController(IRecordingService recordingService)
-    {
-        _recordingService = recordingService;
-    }
-}
-```
-
-**Endpoints:**
-- `GET /api/meetings/{meetingId}/recording` → `GetRecordingEndpoint.cs` (route: `meetings/{meetingId:guid}/recording`)
-- `GET /api/organizations/{orgId}/recordings` → `ListRecordingsEndpoint.cs` (route: `organizations/{orgId:guid}/recordings`)
+> **No controllers / endpoints in v3.6.** Participant audio tracks are
+> internal pipeline artifacts. Future phases may expose admin/debug
+> endpoints for track inspection if needed.
 
 ## Storage Service
 
-- MinIO typed client
-- Upload service (for any non-Egress uploads)
-- Presigned URL generation (time-limited secure access)
-- Recording metadata stored in DB
-- Egress completion webhook → enqueue `DownloadRecordingJob`
+- MinIO typed client (unchanged shape)
+- Presigned URL generation (reserved for future admin access — no public exposure in v3.6)
+- Egress completion webhook → enqueue `DownloadParticipantAudioJob`
 
 ## Domain Events
 
-- `RecordingAvailableEvent`
+- `ParticipantAudioReadyEvent` — fires once when all tracks for a `MeetingId` reach `Status=Available`
 
 ## Tests (Phase 5)
 
 - Unit: download job with mocked LiveKit Cloud storage
-- Integration: presigned URL generation and expiry
-- Integration: webhook → download → MinIO storage flow
+- Unit: join-barrier logic — event fires exactly once when all tracks complete
+- Integration: webhook → per-track download → MinIO storage → ready event
 
 Deliverable:
-- Meeting recording stored in MinIO (via LiveKit Cloud Egress → download pipeline)
-- Retrievable via secure presigned URL
-- Works with both local Docker and future cloud deployments
-- 1 controller, 2 endpoint files
+- Per-participant audio stored in MinIO via LiveKit Cloud Egress track-based pipeline
+- `ParticipantAudioReadyEvent` drives the downstream STT pipeline (Phase 5.5)
+- 0 controllers, 0 endpoint files (internal only)
 
 ---
 
-# Phase 6 — Post-Meeting AI Pipeline + Meeting Memory (Weeks 8.5–11) (refactor require by chat gpt)
+# Phase 5.5 — Post-Meeting STT (Weeks 8.5–9.5) (new in v3.6)
+
+> This phase converts per-participant audio into speaker-attributed
+> `TranscriptSegment` rows. It runs entirely as Hangfire background jobs.
+> No endpoints, no user-facing surface.
+
+## Pipeline Architecture
+
+```
+ParticipantAudioReadyEvent(meetingId)
+  │
+  ├──→ [Orchestrator] Query ParticipantAudioTrack WHERE MeetingId=X AND Status=Available
+  │       For each track → enqueue TranscribeParticipantAudioJob(trackId)
+  │       Register join barrier keyed on MeetingId with N expected completions
+  │
+  └──→ [Hangfire] TranscribeParticipantAudioJob(trackId) × N (parallel)
+          │
+          ├── Fetch track from MinIO via LocalFilePath
+          ├── Call ISpeechToTextService.TranscribeAsync(audioStream)
+          ├── Write TranscriptSegment rows with:
+          │     SpeakerUserId = ParticipantAudioTrack.ParticipantUserId (trivial attribution)
+          │     StartTime / EndTime from STT output
+          │     Text from STT output
+          │     SequenceNumber within this track
+          ├── Signal join barrier: completed = completed + 1
+          └── If completed == N → emit MeetingTranscriptReadyEvent(meetingId)
+```
+
+## ISpeechToTextService Abstraction
+
+```csharp
+public interface ISpeechToTextService
+{
+    Task<SttResult> TranscribeAsync(Stream audio, SttRequest request, CancellationToken ct);
+}
+
+public sealed record SttRequest(string LanguageHint, string? Prompt = null);
+public sealed record SttSegment(TimeSpan Start, TimeSpan End, string Text);
+public sealed record SttResult(IReadOnlyList<SttSegment> Segments);
+```
+
+- Follows the **OpenAI `/v1/audio/transcriptions` contract** (Whisper-compatible).
+- Default implementation: `OpenAiSpeechToTextService` (model: `whisper-1`).
+- Any Whisper-compatible provider can be swapped via configuration — no code changes.
+- Polly resiliency policies (retry, circuit-breaker) at `HttpClient` level.
+- Registered via DI alongside `ILLMService` / `IEmbeddingService`.
+
+## Folder Structure
+
+```text
+Features/
+└── PostMeetingStt/
+    ├── Jobs/
+    │   ├── SttOrchestratorJob.cs           ← fan-out + join barrier
+    │   └── TranscribeParticipantAudioJob.cs
+    │
+    ├── Services/
+    │   ├── ISpeechToTextService.cs
+    │   └── OpenAiSpeechToTextService.cs
+    │
+    └── (no endpoints)
+```
+
+> **Speaker attribution is trivial** — each `ParticipantAudioTrack` row
+> identifies its speaker by `ParticipantUserId`. STT only needs to produce
+> timed text; the speaker mapping is 1:1 from the track. No diarization.
+
+## Entity Impact
+
+- Writes `TranscriptSegment` rows (entity defined in Phase 4, schema unchanged).
+- No new entities.
+
+## Domain Events
+
+- `ParticipantTranscriptReadyEvent(meetingId, participantUserId)` — per-track
+- `MeetingTranscriptReadyEvent(meetingId)` — fires once when all tracks for a meeting are transcribed
+
+> **No `MergeTranscriptJob`.** There is no merged transcript artifact.
+> `SummarizeTranscriptJob` (Phase 6) does `ORDER BY StartTime` on the persisted
+> segments at prompt-assembly time — a single indexed SELECT, microseconds even
+> for hours-long meetings. Using an LLM to merge would cost tokens, introduce
+> nondeterminism, and produce an intermediate artifact nobody consumes.
+
+## SignalR AI Status Updates (tenant-scoped per v3.1)
+
+All events below MUST be sent to `Clients.Group($"org:{organizationId}")` only.
+
+- `TranscriptionStarted`
+- `TranscriptionProgress` (optional — count of completed tracks / total)
+- `TranscriptionCompleted`
+- `TranscriptionFailed`
+
+## Tests (Phase 5.5)
+
+- Unit: `TranscribeParticipantAudioJob` with mocked `ISpeechToTextService`
+- Unit: STT output → `TranscriptSegment` persistence with correct `SpeakerUserId`
+- Unit: join-barrier completes event exactly once when N tracks finish
+- Unit: retry/failure state transitions on STT provider errors
+- Integration: `ParticipantAudioReadyEvent` → N parallel jobs → `MeetingTranscriptReadyEvent`
+- Integration: SignalR tenant isolation (correct org group only)
+
+Deliverable:
+- `ISpeechToTextService` registered and swappable
+- Per-participant audio → speaker-attributed `TranscriptSegment` rows
+- `MeetingTranscriptReadyEvent` drives Phase 6 summarization
+- 0 controllers, 0 endpoint files (background jobs only)
+
+---
+
+# Phase 6 — Post-Meeting AI Pipeline + Meeting Memory (Weeks 9.5–12) (refactor in v3.6)
 
 > This is the **asynchronous post-meeting pipeline**. It runs entirely via
 > Hangfire background jobs after a meeting ends. No AI processing occurs
@@ -1272,11 +1411,10 @@ Deliverable:
 ## AI Pipeline Architecture
 
 ```
-MeetingEndedEvent
+MeetingTranscriptReadyEvent (from Phase 5.5)
   │
   ├──→ [Hangfire] SummarizeTranscriptJob
-  │       → ⏱ Transcription Flush Ready-Check (v3.1 — see below)
-  │       → Collect TranscriptSegments from DB
+  │       → Collect TranscriptSegments from DB (ORDER BY StartTime)
   │       → Retrieve Member Context from UserOrgMembership.Context
   │       → Call ILLMService for summarization
   │       → Store Summary entity
@@ -1303,43 +1441,13 @@ MeetingEndedEvent
 
 All LLM calls go through `ILLMService`, all embedding calls through `IEmbeddingService` — both provider-agnostic.
 
-## Transcription Flush Ready-Check (v3.1 hardening)
+## Transcript Completeness (v3.6)
 
-**Risk**: When a meeting ends, `MeetingEndedEvent` fires immediately. However,
-LiveKit Cloud may still be delivering the final transcription segments via
-webhooks. If `SummarizeTranscriptJob` starts before all segments are persisted,
-the summary will be generated from incomplete data.
-
-**Mitigation**: The `SummarizeTranscriptJob` MUST perform a ready-check before
-proceeding with summarization:
-
-```csharp
-// Inside SummarizeTranscriptJob.ExecuteAsync()
-async Task WaitForTranscriptionFlush(Guid meetingId, CancellationToken ct)
-{
-    // Step 1: Initial 10-second delay — allows in-flight webhooks to arrive
-    await Task.Delay(TimeSpan.FromSeconds(10), ct);
-
-    // Step 2: Stability check — verify no new segments arrived in last 5 seconds
-    var lastSegment = await _db.TranscriptSegments
-        .Where(s => s.MeetingId == meetingId)
-        .OrderByDescending(s => s.CreatedAtUtc)
-        .Select(s => s.CreatedAtUtc)
-        .FirstOrDefaultAsync(ct);
-
-    if (lastSegment > DateTime.UtcNow.AddSeconds(-5))
-    {
-        // Segments still arriving — wait another 5 seconds
-        await Task.Delay(TimeSpan.FromSeconds(5), ct);
-    }
-}
-```
-
-> **Why this matters**: Without the flush delay, the LLM may summarize only
-> 90% of the transcript, missing final decisions or action items spoken in the
-> last seconds of the meeting. The 10-second initial delay covers typical
-> LiveKit Cloud webhook delivery latency. The stability check handles edge
-> cases where delivery is slower than expected.
+With post-meeting STT (Phase 5.5), `SummarizeTranscriptJob` is triggered by
+`MeetingTranscriptReadyEvent`, which fires only after all per-participant STT
+jobs have completed. The transcript is therefore complete by construction
+before summarization starts. The v3.1 "Transcription Flush Ready-Check" is no
+longer applicable and has been removed.
 
 ## Member Context in Prompts (unchanged from v2)
 
@@ -1728,9 +1836,12 @@ Features/
     │   │   ├── CompleteTaskEndpoint.cs
     │   │   └── DeleteTaskEndpoint.cs
     │   │
-    │   └── Reminder/
+    │   └── Reminder/                        ← v3.7: user-scoped reminder endpoints
     │       ├── ReminderController.cs
-    │       └── CreateReminderEndpoint.cs
+    │       ├── CreateMyReminderEndpoint.cs        ← POST /api/me/reminders
+    │       ├── ListMyRemindersEndpoint.cs         ← GET  /api/me/reminders
+    │       ├── MarkMyReminderDeliveredEndpoint.cs ← POST /api/me/reminders/{id}/mark-delivered
+    │       └── CancelMyReminderEndpoint.cs        ← DELETE /api/me/reminders/{id}
     │
     ├── Models/
     │   ├── Requests/
@@ -1738,7 +1849,7 @@ Features/
     │   │   ├── RejectTaskRequest.cs
     │   │   ├── EditAndApproveTaskRequest.cs
     │   │   ├── UpdateTaskRequest.cs
-    │   │   └── CreateReminderRequest.cs
+    │   │   └── CreateMyReminderRequest.cs
     │   └── Responses/
     │       ├── TaskResponse.cs
     │       ├── TaskListResponse.cs
@@ -1753,16 +1864,17 @@ Features/
     │   ├── IReminderService.cs
     │   └── ReminderService.cs
     │
-    ├── Jobs/
-    │   └── TriggerReminderJob.cs
-    │
     └── Validators/
         ├── ApproveTaskRequestValidator.cs
         ├── RejectTaskRequestValidator.cs
         ├── EditAndApproveTaskRequestValidator.cs
         ├── UpdateTaskRequestValidator.cs
-        └── CreateReminderRequestValidator.cs
+        └── CreateMyReminderRequestValidator.cs
 ```
+
+> **v3.7 changes**: `TriggerReminderJob` removed (no Hangfire firing — reminders
+> are pure data, fetched via endpoints). `IReminderService` is shared by user-
+> facing endpoints here and the agent-facing endpoints in Phase 7.5.
 
 ## Controller Definitions
 
@@ -1816,13 +1928,14 @@ public partial class TaskController : ControllerBase
 - `POST /api/tasks/{id}/complete` → `CompleteTaskEndpoint.cs` (route: `tasks/{id:guid}/complete`)
 - `DELETE /api/tasks/{id}` → `DeleteTaskEndpoint.cs` (route: `tasks/{id:guid}`)
 
-### ReminderController — `api/tasks/{taskId}/reminders`
+### ReminderController — `api/me/reminders` (v3.7)
 
 ```csharp
 namespace MeetingAssistant.Features.Tasks.Endpoints.Reminder;
 
 [ApiController]
-[Route("api/tasks/{taskId:guid}/reminders")]
+[Route("api/me/reminders")]
+[Authorize]
 public partial class ReminderController : ControllerBase
 {
     private readonly IReminderService _reminderService;
@@ -1834,8 +1947,16 @@ public partial class ReminderController : ControllerBase
 }
 ```
 
-**Endpoints:**
-- `POST /api/tasks/{taskId}/reminders` → `CreateReminderEndpoint.cs`
+> **v3.7 change**: route changed from `api/tasks/{taskId}/reminders` to
+> `api/me/reminders`. Reminders are no longer linked to `TaskItem`. The thing
+> to be reminded about is captured in the `Text` field on the `Reminder`
+> entity (free string).
+
+**Endpoints (all user-JWT scoped):**
+- `POST   /api/me/reminders`                      → `CreateMyReminderEndpoint.cs` — creates `Scope=Personal, Channel=User, TargetUserId=me, MeetingId=null`
+- `GET    /api/me/reminders`                      → `ListMyRemindersEndpoint.cs` — returns reminders affecting me: `(TargetUserId=me) OR (Scope=Public AND MeetingId IN <meetings I participate in>)`, filtered by `Status=Active`
+- `POST   /api/me/reminders/{id}/mark-delivered`  → `MarkMyReminderDeliveredEndpoint.cs` — sets `Status=Delivered` (only the user's own Personal reminders)
+- `DELETE /api/me/reminders/{id}`                 → `CancelMyReminderEndpoint.cs` — soft-cancel (`Status=Cancelled`), only the user's own Personal reminders
 
 ## Review Flow
 
@@ -1857,16 +1978,46 @@ TaskItem created (Status=Draft, ReviewStatus=PendingReview)
 
 ## Entities
 
-- **`Reminder`**:
-  - `Id`, `TaskItemId`, `OrganizationId`, `UserId`
-  - `ReminderAtUtc`
-  - `Status` (Pending / Sent / Failed)
-  - `CreatedAtUtc`
+- **`Reminder`** (refactored in v3.7):
+  - `Id`, `OrganizationId`
+  - `Text` (free string — the thing to be reminded about; no `TaskItem` linkage)
+  - `Scope` (enum: `Personal` | `Public`)
+  - `Channel` (enum: `User` | `Agent` — provenance of the reminder)
+  - `CreatedByUserId` (who originated the intent)
+  - `TargetUserId` (nullable — required when `Scope=Personal`; null when `Scope=Public`. Public reminders target all participants of `MeetingId`, derived at fetch time from `MeetingParticipant`.)
+  - `MeetingId` (nullable — required when `Scope=Public` or when `Channel=Agent`. Always null when `Channel=User` because user-created personal reminders are standalone.)
+  - `ReminderAtUtc` (when the reminder is "due"; used by fetch endpoints as a filter — see Reminder Fetch Semantics below. No firing.)
+  - `Status` (enum: `Active` | `Delivered` | `Cancelled`)
+  - `DeliveredAtUtc` (nullable)
+  - `OriginalText` (nullable — raw agent input, audit only)
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+  - **DB Indexes**: `(TargetUserId, Status)` for the user's "my reminders" query; `(MeetingId, Scope, Status)` for the agent's "this meeting's public reminders" query.
 
-## Reminder System
+> **v3.7 changes**: removed `TaskItemId` linkage, removed `Pending/Sent/Failed`
+> states, removed Hangfire `TriggerReminderJob`, removed SignalR push. Reminders
+> are pure data, fetched via endpoints. Status lifecycle is now `Active →
+> Delivered` (after fetch + acknowledgement) or `Active → Cancelled` (soft delete).
 
-- Hangfire delayed job fires at `ReminderAtUtc`
-- Push via SignalR — MUST use `Clients.Group($"org:{organizationId}")` (tenant-scoped, never `Clients.All`)
+## Reminder System (v3.7)
+
+- **No Hangfire firing**, **no SignalR push**. Reminders are pure data.
+- Personal reminders are surfaced to the user via the `GET /api/me/reminders` poll endpoint. The user marks delivery via `POST /api/me/reminders/{id}/mark-delivered`.
+- Public reminders are surfaced to the agent via `GET /api/agent/meetings/{meetingId}/reminders` (Phase 7.5) at meeting start. The agent speaks them and marks delivery via `POST /api/agent/reminders/{id}/mark-delivered`.
+
+## Reminder Fetch Semantics (v3.7)
+
+`ReminderAtUtc` acts as a **timing gate** in fetch queries:
+
+| Endpoint | Filter |
+|---|---|
+| `GET /api/me/reminders` (user) | `Status=Active AND ReminderAtUtc <= now AND ((TargetUserId=me) OR (Scope=Public AND MeetingId IN <my meetings>))` |
+| `GET /api/agent/meetings/{meetingId}/reminders` (agent — Phase 7.5) | `Status=Active AND Scope=Public AND MeetingId=X AND ReminderAtUtc <= meeting.scheduledStartUtc` |
+
+For Public reminders bound to a recurring meeting (one row per series, Model A), the agent query `ReminderAtUtc <= meeting.scheduledStartUtc` ensures the reminder fires at the first occurrence whose start time is on or after `ReminderAtUtc`. This lets agents express "remind us in 2 weeks at the standup" by setting `ReminderAtUtc` to the target date — earlier occurrences will not return the reminder. After the agent speaks it and marks `Delivered`, it never returns again.
+
+> **No per-occurrence targeting** (`OccurrenceDateUtc` is intentionally not modeled).
+> Each reminder fires at exactly one occurrence: the first one whose start time
+> is on or after `ReminderAtUtc`. After delivery, the reminder is closed.
 
 ## Domain Events
 
@@ -1874,20 +2025,249 @@ TaskItem created (Status=Draft, ReviewStatus=PendingReview)
 - `TaskRejectedEvent`
 - `TaskCompletedEvent`
 - `ReminderCreatedEvent`
-- `ReminderTriggeredEvent`
+- `ReminderDeliveredEvent` (v3.7 — replaces `ReminderTriggeredEvent`)
+- `ReminderCancelledEvent` (v3.7)
 
 ## Tests (Phase 7)
 
 - Unit: review state machine (Draft → Approved/Rejected/Edited)
 - Unit: bulk approve logic
-- Unit: reminder scheduling
-- Integration: full review flow, reminder firing
+- Unit: reminder fetch semantics — `ReminderAtUtc` timing gate for Personal and Public
+- Unit: `mark-delivered` and `cancel` state transitions
+- Integration: full review flow
+- Integration: user creates personal reminder → polls → marks delivered → no longer returned
+- Integration: tenant isolation — user cannot see/mark/cancel another user's or another org's reminders
 
 Deliverable:
 - Review Queue functional
 - Tasks only become active after human approval
-- Reminders work for approved tasks
-- 3 controllers, 11 endpoint files
+- User-facing reminder lifecycle works (create / list / mark-delivered / cancel)
+- 3 controllers, 14 endpoint files (was 11; +4 user reminder endpoints, –1 task reminder endpoint)
+
+---
+
+# Phase 7.5 — Agent-Callable API Surface (Week 13–14) (new in v3.7)
+
+> **Scope**: this phase defines all endpoints that the **LiveKit live agent**
+> (STT → LLM → TTS loop) calls during a meeting. The agent itself is
+> **external to this backend** and is not a deliverable of this repo. The
+> backend's only contract with the agent is the endpoint surface defined
+> below + the dedicated auth scheme.
+
+## Agent Service-Identity Auth
+
+A separate JWT issuer (HMAC-signed bearer) for LiveKit agent calls. Distinct
+from the user JWT.
+
+**Claims:**
+- `agent` = `true`
+- `organizationId` (required — tenant binding)
+- `meetingId` (required — bound to a single meeting room for the token's lifetime)
+
+**Policy:** `[Authorize(Policy="AgentOnly")]`. Agents cannot access user-JWT
+endpoints; users cannot access agent-only endpoints. Tenant isolation is
+enforced via the `organizationId` claim, identical to the user-JWT flow.
+
+**Issuance:** the agent token is minted by the backend at meeting-room creation
+time (when LiveKit Cloud's webhook fires `room_started`) and delivered to the
+agent worker via the same channel it uses for room access. Token lifetime
+matches the expected meeting duration + a buffer (e.g., 4 hours max).
+
+> **Constitution alignment**: extends §V Authentication with a separate JWT
+> issuer for service identities. Same key-rotation discipline as user JWTs.
+> No hardcoded keys.
+
+## Folder Structure
+
+```text
+Features/
+└── AgentApi/
+    ├── Endpoints/
+    │   ├── Reminder/
+    │   │   ├── AgentReminderController.cs
+    │   │   ├── CreateReminderEndpoint.cs           ← POST /api/agent/meetings/{meetingId}/reminders
+    │   │   ├── ListMeetingRemindersEndpoint.cs     ← GET  /api/agent/meetings/{meetingId}/reminders
+    │   │   └── MarkReminderDeliveredEndpoint.cs    ← POST /api/agent/reminders/{id}/mark-delivered
+    │   │
+    │   └── Context/
+    │       ├── AgentContextController.cs
+    │       ├── GetOrganizationEndpoint.cs          ← GET /api/agent/organization
+    │       ├── GetMeetingMembersEndpoint.cs        ← GET /api/agent/meetings/{meetingId}/members
+    │       ├── ListMeetingsEndpoint.cs             ← GET /api/agent/meetings?status=upcoming|past&limit=N
+    │       ├── GetMeetingDetailEndpoint.cs         ← GET /api/agent/meetings/{meetingId}
+    │       ├── ListRecurringMeetingsEndpoint.cs    ← GET /api/agent/meetings/recurring
+    │       └── ListMeetingTagsEndpoint.cs          ← GET /api/agent/meeting-tags
+    │
+    ├── Models/
+    │   ├── Requests/
+    │   │   └── CreateAgentReminderRequest.cs
+    │   └── Responses/
+    │       ├── AgentMemberResponse.cs              ← { userId, displayName, jobRole, context }
+    │       ├── AgentMeetingResponse.cs             ← { id, title, scheduledStartUtc, status, recurrenceConfig?, tagIds }
+    │       ├── AgentMeetingDetailResponse.cs       ← + participants, recurrenceConfig
+    │       ├── AgentReminderResponse.cs            ← { id, text, scope, targetUserId?, reminderAtUtc, status }
+    │       └── AgentOrganizationResponse.cs        ← { id, name, slug, memberCount }
+    │
+    ├── Services/
+    │   ├── IAgentAuthService.cs                    ← mints + validates agent tokens
+    │   ├── AgentAuthService.cs
+    │   ├── IAgentContextService.cs                 ← read-only views over Meetings/Members/Tags
+    │   └── AgentContextService.cs
+    │
+    └── Validators/
+        └── CreateAgentReminderRequestValidator.cs
+```
+
+> **No new entities.** Phase 7.5 is purely an alternate API surface over
+> existing data: `Reminder` (Phase 7), `Meeting`/`MeetingParticipant` (Phase 3),
+> `UserOrgMembership.Context` (Phase 2), `MeetingTag` (Phase 2).
+
+## Controller Definitions
+
+### AgentReminderController — `api/agent`
+
+```csharp
+namespace MeetingAssistant.Features.AgentApi.Endpoints.Reminder;
+
+[ApiController]
+[Route("api/agent")]
+[Authorize(Policy = "AgentOnly")]
+public partial class AgentReminderController : ControllerBase
+{
+    private readonly IReminderService _reminderService;          // shared with Phase 7
+    private readonly IAgentContextProvider _agentContext;        // resolves orgId/meetingId from token
+
+    public AgentReminderController(IReminderService reminderService, IAgentContextProvider agentContext)
+    {
+        _reminderService = reminderService;
+        _agentContext = agentContext;
+    }
+}
+```
+
+**Endpoints (all agent-policy):**
+- `POST /api/agent/meetings/{meetingId}/reminders` → `CreateReminderEndpoint.cs`
+  - Body: `{ text, scope ("Personal"|"Public"), targetUserId? (required if Personal), reminderAtUtc }`
+  - `meetingId` route param MUST match the agent token's `meetingId` claim
+  - Sets `Channel=Agent`, `CreatedByUserId` = the user the agent is assisting (passed in token claims or body), `MeetingId=meetingId`, `OriginalText` = raw user utterance
+- `GET /api/agent/meetings/{meetingId}/reminders` → `ListMeetingRemindersEndpoint.cs`
+  - Returns `Scope=Public AND MeetingId=X AND Status=Active AND ReminderAtUtc <= meeting.scheduledStartUtc`
+  - **Never returns Personal reminders** (defence-in-depth at the service layer; agent must not speak personal data publicly)
+- `POST /api/agent/reminders/{id}/mark-delivered` → `MarkReminderDeliveredEndpoint.cs`
+  - Sets `Status=Delivered`, `DeliveredAtUtc=now`
+  - Allowed only on `Scope=Public` reminders. Personal reminders are marked delivered by the user via their own endpoint (Phase 7) — the agent never sees them.
+
+### AgentContextController — `api/agent`
+
+```csharp
+namespace MeetingAssistant.Features.AgentApi.Endpoints.Context;
+
+[ApiController]
+[Route("api/agent")]
+[Authorize(Policy = "AgentOnly")]
+public partial class AgentContextController : ControllerBase
+{
+    private readonly IAgentContextService _agentContext;
+
+    public AgentContextController(IAgentContextService agentContext)
+    {
+        _agentContext = agentContext;
+    }
+}
+```
+
+**Endpoints (all agent-policy, all org-scoped via token claim):**
+- `GET /api/agent/organization` → `GetOrganizationEndpoint.cs`
+  - Returns: `{ id, name, slug, memberCount }`
+- `GET /api/agent/meetings/{meetingId}/members` → `GetMeetingMembersEndpoint.cs`
+  - **Filtered to current meeting participants only** (not the whole org roster)
+  - Returns: `[{ userId, displayName, jobRole, context }]` for each `MeetingParticipant` of the meeting whose `UserOrgMembership.IsEnabled=true`
+  - `meetingId` MUST match the agent token's `meetingId` claim
+  - This is the agent's primary "who's-who" lookup for the people in the room
+- `GET /api/agent/meetings?status=upcoming|past&limit=N&offset=M` → `ListMeetingsEndpoint.cs`
+  - Paginated meeting list across the org
+  - Each row: `{ id, title, scheduledStartUtc, scheduledEndUtc, status, recurrenceConfig?, tagIds }`
+- `GET /api/agent/meetings/{meetingId}` → `GetMeetingDetailEndpoint.cs`
+  - Single meeting detail: `{ ...summary fields, participants[], recurrenceConfig }` so the agent can detect recurring + compute next-occurrence dates from `RecurrenceConfig`
+- `GET /api/agent/meetings/recurring` → `ListRecurringMeetingsEndpoint.cs`
+  - Recurring series only (`RecurrenceConfig IS NOT NULL`), shortcut for the agent
+- `GET /api/agent/meeting-tags` → `ListMeetingTagsEndpoint.cs`
+  - Tag catalog: `[{ id, name, color }]` for active tags
+
+> **Past-meeting summaries (RAG)**: deferred. The agent will use the existing
+> Phase 6.5 `/api/organizations/{orgId}/meetings/ask` endpoint when access is
+> opened to it (with an agent-policy variant). Out of scope for v3.7.
+
+## Tool-Use Mapping (informational)
+
+Each endpoint corresponds to one **tool** in the agent's LLM tool catalog.
+Example mapping:
+
+| Endpoint | Agent tool name | When LLM calls it |
+|---|---|---|
+| `GET /api/agent/meetings/{meetingId}/members` | `get_meeting_members` | "Who's in this meeting?" / "Remind Ahmed to..." |
+| `GET /api/agent/meetings?status=upcoming` | `get_upcoming_meetings` | "Remind me at next meeting" → look up next meeting |
+| `GET /api/agent/meetings/{meetingId}` | `get_meeting_detail` | Need to check if meeting is recurring |
+| `POST /api/agent/meetings/{meetingId}/reminders` | `create_reminder` | User asks for a reminder |
+| `GET /api/agent/meetings/{meetingId}/reminders` | `get_meeting_reminders` | At meeting start: anything to surface? |
+| `POST /api/agent/reminders/{id}/mark-delivered` | `mark_reminder_delivered` | After speaking the reminder |
+
+## Recurring Meeting + Reminder Semantics (agent guidance)
+
+The backend models recurring meetings as **one row per series** (`Meeting` with
+`RecurrenceConfig`). Reminders link to the series `MeetingId`; `ReminderAtUtc`
+gates which occurrence first delivers the reminder.
+
+**Agent decision tree for "remind us at next meeting":**
+1. Call `get_meeting_detail(currentMeetingId)` → check `recurrenceConfig`.
+2. If recurring → compute next occurrence's `scheduledStartUtc` from
+   `RecurrenceConfig`; create reminder with `Scope=Public, MeetingId=<series>,
+   ReminderAtUtc=<next occurrence start>`.
+3. If not recurring → ask user to clarify: *"This is a one-off meeting. Did
+   you mean a specific upcoming meeting?"* Then `get_upcoming_meetings()` and
+   match by user's choice.
+
+**Agent decision tree for "remind me at next meeting" (Personal):**
+1. Call `get_upcoming_meetings(forUser=me)` → take the first row.
+2. Confirm with user, then `create_reminder` with `Scope=Personal,
+   TargetUserId=<user>, MeetingId=<that meeting>, ReminderAtUtc=<that
+   meeting's start>`.
+
+## Tenant Isolation Rules
+
+- Every agent endpoint MUST verify `meetingId` route param (when present)
+  matches the agent token's `meetingId` claim. Mismatch → 403.
+- Every read query MUST filter by `OrganizationId` (inherits global query
+  filter from `AppDbContext`).
+- `ListMeetingRemindersEndpoint` MUST hard-filter `Scope=Public` at the
+  service layer — even if a query string requests Personal, return empty.
+  Defence-in-depth against future refactors.
+
+## Tests (Phase 7.5)
+
+- Unit: agent token issuance + validation; mismatched `meetingId` claim → 403
+- Unit: `get_meeting_members` filters to current meeting participants only
+- Unit: `ListMeetingRemindersEndpoint` never returns Personal reminders
+- Unit: reminder fetch timing gate (`ReminderAtUtc <= meeting.scheduledStartUtc`)
+- Integration: agent creates Public reminder → Public reminder surfaces at
+  matching occurrence → mark-delivered → no longer surfaces
+- Integration: tenant isolation — agent token for org A cannot read org B's
+  meetings/members/reminders
+- Integration: agent cannot reach user-JWT endpoints; user JWT cannot reach
+  agent endpoints
+
+## Domain Events
+
+- `AgentReminderCreatedEvent` — emitted alongside `ReminderCreatedEvent` when
+  `Channel=Agent`, for audit/observability
+- `AgentReminderDeliveredEvent` — emitted alongside `ReminderDeliveredEvent`
+  when an agent marks delivered
+
+Deliverable:
+- Agent service-identity auth scheme working
+- Three reminder endpoints + six context endpoints under `/api/agent/*`
+- Tenant isolation verified across agents and users
+- 2 controllers, 9 endpoint files
 
 ---
 
@@ -2026,8 +2406,15 @@ Deliverable:
 - **SignalR tenant safety audit** (v3.4): verify no `Clients.All` usage anywhere in codebase; all hub sends use `Clients.Group($"org:{orgId}")`
 - **SignalR group membership audit**: verify on-connect logic reads `organizationId` from JWT and adds to exactly one group
 - **Membership constraint audit**: verify `UNIQUE(user_id) WHERE is_enabled = true` on `UserOrgMembership`
-- Secrets audit: no hardcoded keys (JWT, LiveKit Cloud, Trello OAuth, MinIO)
-- JWT key rotation verification
+- **Agent surface audit (v3.7)**:
+  - Agent JWT issuer key rotation
+  - Every `/api/agent/*` endpoint enforces `[Authorize(Policy="AgentOnly")]`
+  - Every agent endpoint with a `meetingId` route param verifies it matches the token claim
+  - `ListMeetingRemindersEndpoint` hard-filters `Scope=Public` at the service layer (Personal reminders never returned)
+  - User-JWT endpoints reject agent tokens; agent endpoints reject user tokens
+  - `GetMeetingMembersEndpoint` returns only current meeting participants, never the whole org roster
+- Secrets audit: no hardcoded keys (JWT, agent JWT, LiveKit Cloud, Trello OAuth, MinIO)
+- JWT key rotation verification (user JWT + agent JWT)
 - Refresh token rotation verification
 - LiveKit Cloud API key rotation verification
 
@@ -2105,12 +2492,15 @@ Deliverable:
 | 2 | Organizations | 4 (Organization, Member, Invitation, MeetingTag) | 11 | 11 |
 | 3 | Meetings | 4 (Meeting, Recurring, Participant, Calendar) | 7 | 7 |
 | 4 | LiveSession | 3 (Session, Webhook, Transcript) | 3 | 3 |
-| 5 | Recordings | 1 (Recording) | 2 | 2 |
+| 4.5 | Realtime Amendment (docs) | 0 | 0 | 0 |
+| 5 | Participant Audio | 0 (internal only) | 0 | 0 |
+| 5.5 | Post-Meeting STT | 0 (background jobs only) | 0 | 0 |
 | 6 | AI Pipeline | 0 (background jobs only) | 0 | 0 |
 | 6.5 | Meeting Memory | 1 (MeetingMemory) | 1 | 1 |
-| 7 | Tasks | 3 (ReviewQueue, Task, Reminder) | 11 | 11 |
+| 7 | Tasks | 3 (ReviewQueue, Task, Reminder) | 14 | 14 |
+| 7.5 | Agent API Surface | 2 (AgentReminder, AgentContext) | 9 | 9 |
 | 8 | Integrations | 1 (Trello) | 4 | 4 |
-| **Total** | | **20 controllers** | **47 endpoint files** | **47 actions** |
+| **Total** | | **21 controllers** | **57 endpoint files** | **57 actions** |
 
 Deliverable:
 - Complete runnable demo via API
@@ -2145,7 +2535,7 @@ This section verifies the plan's compliance with constitution v1.3.5.
 | Operational — <300ms API responses | ✅ Compliant | Phase 9 load tests target <300ms p95. RAG hybrid has explicit 3s max. |
 | Operational — DI, FluentValidation, CancellationToken, UTC | ✅ Compliant | Phase 0.3 scaffolding enforces all coding standards. |
 | Operational — Partial Controller Pattern | ✅ Compliant | v3.3: All endpoints follow one-file-per-action pattern. Phase 9 includes pattern audit. |
-| Data pipeline integrity | ✅ Compliant | v3.1: Transcription flush ready-check ensures complete data before AI processing. |
+| Data pipeline integrity | ✅ Compliant | v3.6: bounded file-based STT (Phase 5.5) guarantees complete transcript before summarization. Flush ready-check removed — no longer applicable. |
 
 > **No violations found**. v3.3 applies the Partial Controller Pattern across all phases.
 
@@ -2159,16 +2549,19 @@ This section verifies the plan's compliance with constitution v1.3.5.
 | 1. Identity | 1 week | 2–3 |
 | 2. Organizations (+ Member Context) | 1 week | 3–4 |
 | 3. Meetings | 2 weeks | 4–6 |
-| 4. LiveKit Cloud & Realtime Pipeline (+ Live Transcription) | 1.5 weeks | 6–7.5 |
-| 5. Recording & Storage | 1 week | 7.5–8.5 |
-| 6. Post-Meeting AI Pipeline + Meeting Memory | 2.5 weeks | 8.5–11 |
-| 6.5. Meeting Memory Query (RAG) | 0.5 weeks | 11–11.5 |
-| 7. Task Review Queue & Management | 1.5 weeks | 11.5–13 |
-| 8. Trello Integration | 1 week | 13–14 |
-| 9. Testing & Hardening | 1 week | 14–15 |
-| 10. Demo Preparation | 1 week | 15–16 |
+| 4. LiveKit Cloud & Realtime Pipeline | 1 week | 6–7 |
+| 4.5. Realtime Pipeline Amendment (v3.6, docs) | 0 weeks | — |
+| 5. Participant Audio Egress & Storage | 1 week | 7–8 |
+| 5.5. Post-Meeting STT (new in v3.6) | 1 week | 8–9 |
+| 6. Post-Meeting AI Pipeline + Meeting Memory | 2.5 weeks | 9–11.5 |
+| 6.5. Meeting Memory Query (RAG) | 0.5 weeks | 11.5–12 |
+| 7. Task Review Queue & Management | 1.5 weeks | 12–13.5 |
+| 7.5. Agent-Callable API Surface (new in v3.7) | 1 week | 13.5–14.5 |
+| 8. Trello Integration | 1 week | 14.5–15.5 |
+| 9. Testing & Hardening | 1 week | 15.5–16.5 |
+| 10. Demo Preparation | 1 week | 16.5–17.5 |
 
-**Total estimated duration: 15–16 weeks** (unchanged — Partial Controller Pattern is a structural change, not a scope change)
+**Total estimated duration: 17–18 weeks** (v3.7: +1 week for Phase 7.5 agent surface; +1 from v3.6 STT.)
 
 ---
 
@@ -2223,6 +2616,55 @@ Tests/
 ---
 
 # Decisions & Changes
+
+## v3.7 Changes — Flow-2: Agent-Callable API Surface + Reminder Refactor (2026-04-24)
+
+| # | Change | Detail |
+|---|--------|--------|
+| 113 | LiveKit live agent declared external | The STT→LLM→TTS agent runs as a LiveKit Agents Framework worker hosted outside this backend. The backend's only contract is the endpoint surface defined in Phase 7.5 + the agent service-identity auth scheme. |
+| 114 | New Phase 7.5 — Agent-Callable API Surface | New phase between Phase 7 and Phase 8. 2 controllers (AgentReminder, AgentContext), 9 endpoint files. All under `/api/agent/*` with `[Authorize(Policy="AgentOnly")]`. |
+| 115 | Agent service-identity JWT scheme added | Separate JWT issuer with claims `agent=true`, `organizationId`, `meetingId`. Minted at meeting-room creation time. Distinct from user JWT — agents and users cannot cross-access each other's endpoints. |
+| 116 | `Reminder` entity refactored | Removed `TaskItemId` linkage; `Text` is now a free string (the thing to be reminded about). Added `Scope` (Personal/Public), `Channel` (User/Agent), `TargetUserId`, `MeetingId` (nullable), `OriginalText`, `DeliveredAtUtc`. Status simplified to `Active/Delivered/Cancelled`. |
+| 117 | `Group` scope dropped | Reminder targeting is binary: Personal (one user) or Public (all participants of a meeting). If an agent needs to target a subset, it creates N personal reminders. |
+| 118 | `OccurrenceDateUtc` rejected | Reminders cannot target a specific occurrence of a recurring meeting. `ReminderAtUtc` acts as a timing gate — the reminder fires at the first occurrence whose `scheduledStartUtc >= ReminderAtUtc`. After delivery, the reminder is closed. |
+| 119 | No Hangfire firing for reminders | `TriggerReminderJob` removed. Reminders are pure data, fetched via endpoints. No SignalR push. |
+| 120 | Phase 7 `POST /api/tasks/{taskId}/reminders` removed | Reminders no longer linked to TaskItems. Replaced by `POST /api/me/reminders` (user-created, standalone Personal). |
+| 121 | New user-facing reminder endpoints (Phase 7) | `POST /api/me/reminders`, `GET /api/me/reminders`, `POST /api/me/reminders/{id}/mark-delivered`, `DELETE /api/me/reminders/{id}`. All `[Authorize]` user-JWT. User-created reminders have `MeetingId=null` always (standalone). |
+| 122 | New agent-facing reminder endpoints (Phase 7.5) | `POST /api/agent/meetings/{meetingId}/reminders`, `GET /api/agent/meetings/{meetingId}/reminders`, `POST /api/agent/reminders/{id}/mark-delivered`. Agent can create Personal or Public; can fetch only Public; can mark delivered only on Public. |
+| 123 | Reminder fetch semantics — `ReminderAtUtc` timing gate | User query: `Status=Active AND ReminderAtUtc <= now`. Agent query: `Status=Active AND Scope=Public AND ReminderAtUtc <= meeting.scheduledStartUtc`. Lets agent express "remind us in 2 weeks at the standup" without per-occurrence targeting. |
+| 124 | User's `GET /api/me/reminders` returns Personal AND Public | Returns all reminders affecting the user: `(TargetUserId=me) OR (Scope=Public AND MeetingId IN <my meetings>)`. Includes both user-created Personal and agent-created Public for meetings the user participates in. |
+| 125 | Agent context endpoints — focused, not mega | Six focused endpoints: `/api/agent/organization`, `/api/agent/meetings/{id}/members`, `/api/agent/meetings`, `/api/agent/meetings/{id}`, `/api/agent/meetings/recurring`, `/api/agent/meeting-tags`. Each maps 1:1 to an LLM tool — better for token efficiency than one mega-endpoint. |
+| 126 | `GET /api/agent/meetings/{meetingId}/members` scoped to current participants | Returns only `MeetingParticipant` of the meeting, not the whole org roster. Each row: `{ userId, displayName, jobRole, context }`. |
+| 127 | Past-meeting summaries deferred (RAG) | The agent will use the Phase 6.5 `/ask` endpoint when access is opened with an agent-policy variant. Out of scope for v3.7. |
+| 128 | Defence-in-depth: agent never sees Personal reminders | `ListMeetingRemindersEndpoint` hard-filters `Scope=Public` at the service layer. Even if a query string requests Personal, returns empty. |
+| 129 | Recurring meeting model: Model A confirmed | One `Meeting` row per series with `RecurrenceConfig` JSONB. Reminders link to the series MeetingId; `ReminderAtUtc` resolves the target occurrence. Matches Google Calendar / Outlook semantics. |
+| 130 | Domain events updated | `ReminderTriggeredEvent` removed. Added `ReminderDeliveredEvent`, `ReminderCancelledEvent`, plus `AgentReminderCreatedEvent` and `AgentReminderDeliveredEvent` for audit observability. |
+| 131 | Phase 9 audit expanded | Added agent surface audit checklist: agent JWT key rotation, every agent endpoint enforces policy, `meetingId` claim verification, hard-filter on Personal reminders, cross-token rejection, member endpoint scope verification. |
+| 132 | Timeline +1 week | Phase 7.5 adds 1 week. Total: 17–18 weeks (was 16–17). |
+| 133 | Endpoint summary updated | Phase 7 grows from 11 to 14 endpoint files (+4 user reminder, –1 task reminder). Phase 7.5 adds 2 controllers / 9 endpoint files. New totals: 21 controllers, 57 endpoint files. |
+
+## v3.6 Changes — Flow-1 Realignment: Post-Meeting STT Direction (2026-04-24)
+
+| # | Change | Detail |
+|---|--------|--------|
+| 95 | Live STT removed from Phase 4 | LiveKit Cloud's built-in transcription agent is no longer used. Live captions are out of scope in v3.6. All transcription is post-meeting. Documented in new Phase 4.5 (amendment). Phase 4 proper remains frozen per the phase-edit rule. |
+| 96 | New Phase 4.5 — Realtime Pipeline Amendment | Documentation-only phase that supersedes the live-transcription portion of Phase 4. Restricts `TranscriptController` access to OrgAdmin / debug policy. Removes live-transcription SignalR status events. No new entities, endpoints, or jobs. |
+| 97 | Phase 5 refactored to "Participant Audio Egress & Storage" | `Recording` entity removed entirely. Replaced with `ParticipantAudioTrack` (per-participant audio track, bound by `MeetingId`). Video recording out of scope. |
+| 98 | `ParticipantAudioTrack` entity added | Fields: `Id, MeetingId, OrganizationId, ParticipantUserId, CloudStorageUrl, LocalFilePath, DurationSeconds, SizeBytes, Status, CreatedAtUtc, UpdatedAtUtc`. Indexed on `(MeetingId, Status)` for join-barrier checks. |
+| 99 | `DownloadRecordingJob` → `DownloadParticipantAudioJob` | Fans out: one job per participant track. Join-barrier logic emits `ParticipantAudioReadyEvent` once when all tracks for a `MeetingId` reach `Status=Available`. |
+| 100 | LiveKit Egress configured in track-based mode | Per-participant audio track egress (not room-composite). |
+| 101 | Phase 5 endpoints removed | `RecordingController`, `GetRecordingEndpoint`, `ListRecordingsEndpoint` deleted. Participant audio tracks are internal pipeline artifacts with no user-facing surface in v3.6. |
+| 102 | New Phase 5.5 — Post-Meeting STT | Converts per-participant audio to speaker-attributed `TranscriptSegment` rows via Hangfire. 0 endpoints. |
+| 103 | `ISpeechToTextService` abstraction added | Provider-agnostic STT interface (OpenAI `/v1/audio/transcriptions` / Whisper-compatible standard). Registered via DI alongside `ILLMService` / `IEmbeddingService`. |
+| 104 | `TranscribeParticipantAudioJob` + `SttOrchestratorJob` added | Orchestrator fan-outs per track; each job fetches from MinIO, calls STT, writes `TranscriptSegment` rows with speaker attribution (1:1 from `ParticipantAudioTrack.ParticipantUserId`). |
+| 105 | No merge job / no merged transcript artifact | `SummarizeTranscriptJob` does `ORDER BY StartTime` on persisted segments at prompt-assembly time. LLM-based merge rejected (token cost, nondeterminism, no consumer for merged output). |
+| 106 | `SummarizeTranscriptJob` trigger changed | `MeetingEndedEvent` → `MeetingTranscriptReadyEvent` (from Phase 5.5). The Meeting-Ended lifecycle event now drives egress (Phase 5), not summarization. |
+| 107 | Transcription Flush Ready-Check removed | Was a v3.1 mitigation for late-arriving live-STT webhooks. No longer applicable — bounded file-based STT produces a complete transcript by construction before summarization runs. |
+| 108 | Speaker attribution trivial | Each `ParticipantAudioTrack` row identifies its speaker via `ParticipantUserId`. No diarization. 1:1 mapping to `TranscriptSegment.SpeakerUserId`. |
+| 109 | Transcript debug-only access | `GET /api/meetings/{meetingId}/transcript` restricted to OrgAdmin / debug policy. Transcripts are internal; users consume the summary (Phase 6). Reads ordered `TranscriptSegment` rows from PostgreSQL — no MinIO involvement. |
+| 110 | Timeline +1 week net | Phase 4 reduced by ~0.5 week (no live STT work); Phase 5.5 adds 1 week; net +1 week rounded. Downstream phases shift accordingly. Total: 16–17 weeks (was 15–16). |
+| 111 | Compliance row updated | Removed "Transcription flush ready-check" as the data-pipeline-integrity mechanism. Replaced with "bounded file-based STT". |
+| 112 | Endpoint summary updated | Phase 5 drops 1 controller / 2 endpoints (Recording removed). Phase 4.5 and 5.5 add 0 endpoints. New totals: 19 controllers, 45 endpoint files. |
 
 ## v3.5 Changes — Meeting Tags in Phase 2 (2026-04-07)
 
@@ -2383,4 +2825,4 @@ Tests/
 
 ---
 
-# End of Revised Implementation Plan (v3.4)
+# End of Revised Implementation Plan (v3.7)
