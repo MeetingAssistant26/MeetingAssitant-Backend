@@ -23,6 +23,8 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<ISummarizerService, SummarizerService>();
             services.AddScoped<ILiveSessionNotifier, LiveSessionNotifier>();
             services.AddScoped<IngestParticipantAudioJob>();
+            services.AddScoped<GenerateMeetingTranscriptJob>();
+            services.AddScoped<GenerateMeetingSummaryJob>();
             services.AddHttpClient("openai-stt");
             services.AddHttpClient("openai-llm");
 
