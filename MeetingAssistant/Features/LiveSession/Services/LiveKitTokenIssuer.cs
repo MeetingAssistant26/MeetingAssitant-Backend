@@ -8,9 +8,12 @@ using Microsoft.Extensions.Options;
 
 namespace MeetingAssistant.Features.LiveSession.Services
 {
-    public class LiveKitTokenIssuer(IOptions<LiveKitOptions> options) : ILiveKitTokenIssuer
+    public class LiveKitTokenIssuer(
+        IOptions<LiveKitOptions> options,
+        ILogger<LiveKitTokenIssuer> logger) : ILiveKitTokenIssuer
     {
         private readonly LiveKitOptions _options = options.Value;
+        private readonly ILogger<LiveKitTokenIssuer> _logger = logger;
 
         public Result<IssuedJoinToken> Issue(
             Guid meetingId,
@@ -53,10 +56,22 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
                 var jwt = accessToken.ToJwt();
 
+                _logger.LogInformation(
+                    "Issued LiveKit token. MeetingId={MeetingId} UserId={UserId} RoleAtIssuance={RoleAtIssuance} ExpiresAtUtc={ExpiresAtUtc}",
+                    meetingId,
+                    userId,
+                    role,
+                    expiresAtUtc);
+
                 return Result.Success(new IssuedJoinToken(jwt, roomName, _options.ServerUrl, expiresAtUtc));
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogWarning(
+                    ex,
+                    "LiveKit token issuance failed. MeetingId={MeetingId} UserId={UserId}",
+                    meetingId,
+                    userId);
                 return Result.Failure<IssuedJoinToken>(LiveSessionErrors.LiveKitCallFailed);
             }
         }
