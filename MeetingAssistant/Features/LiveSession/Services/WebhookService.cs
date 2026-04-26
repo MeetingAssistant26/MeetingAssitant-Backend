@@ -48,6 +48,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
             }
 
             var meeting = await _dbContext.Meetings
+                .IgnoreQueryFilters()
+                .AsNoTracking()
                 .FirstOrDefaultAsync(m => m.Id == meetingId, cancellationToken);
 
             if (meeting == null)
@@ -61,6 +63,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             var externalEventId = ResolveExternalEventId(webhookEvent, eventType, meetingId);
             var alreadyProcessed = await _dbContext.SessionEvents
+                .IgnoreQueryFilters()
                 .AnyAsync(x => x.ExternalEventId == externalEventId, cancellationToken);
 
             if (alreadyProcessed)
@@ -248,6 +251,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         {
             var track = await _dbContext.ParticipantAudioTracks
                 .IgnoreQueryFilters()
+                .AsNoTracking()
                 .FirstOrDefaultAsync(
                     x => x.MeetingId == meetingId && x.ParticipantUserId == participantUserId,
                     cancellationToken);
@@ -401,6 +405,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             }
 
             var exists = await _dbContext.MeetingParticipants
+                .IgnoreQueryFilters()
                 .AnyAsync(x => x.MeetingId == meetingId && x.UserId == userId, cancellationToken);
 
             return exists ? userId : null;

@@ -1,4 +1,5 @@
 using MeetingAssistant.Shared.Abstractions;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 
@@ -6,6 +7,7 @@ namespace MeetingAssistant.Features.LiveSession.Endpoints.Webhook
 {
     public partial class WebhookController
     {
+        [AllowAnonymous]
         [HttpPost("livekit")]
         public async Task<IActionResult> LiveKitWebhook(CancellationToken cancellationToken)
         {
