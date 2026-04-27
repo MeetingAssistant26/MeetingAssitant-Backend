@@ -1149,56 +1149,6 @@ Deliverable:
 
 ---
 
-# Phase 4.5 — Realtime Pipeline Amendment (Post-Meeting STT Direction) (v3.6)
-
-> This phase **supersedes the live-transcription portion of Phase 4**. Phase 4's
-> infrastructure sections (LiveKit Cloud join tokens, webhooks, permissions) remain
-> in force. Only the transcription delivery path is changed.
-
-## What Changes
-
-- **Live STT is removed.** LiveKit Cloud's built-in transcription agent is no
-  longer used for writing `TranscriptSegment` rows during the meeting.
-- **No live captions.** Real-time captions are out of scope in v3.6.
-- **All transcription is post-meeting** (see Phase 5.5). `TranscriptSegment` rows
-  are written after the meeting ends, from per-participant audio processed
-  through the STT pipeline.
-- **LiveKit Cloud webhooks still fire** for room lifecycle (room started/ended,
-  participant joined/left) — unchanged. Only the transcription path is gone.
-
-## Entity Impact
-
-- `TranscriptSegment` schema is unchanged. Its write path moves from live
-  webhook delivery (Phase 4) to `TranscribeParticipantAudioJob` (Phase 5.5).
-- A transcript "readiness" flag can be inferred from whether segments exist
-  for a meeting; no new column is required.
-
-## TranscriptController Access Policy (updated)
-
-- `GET /api/meetings/{meetingId}/transcript` is retained from Phase 4 but is
-  **restricted to OrgAdmin / debug policy** only. Transcripts are internal
-  pipeline data, not a general participant-facing resource.
-- The endpoint reads ordered `TranscriptSegment` rows directly from PostgreSQL
-  (indexed `ORDER BY StartTime`). No MinIO involvement.
-- Before post-meeting processing completes, the endpoint returns an empty
-  segment list. Clients should rely on the `SummaryGenerated` SignalR event
-  (Phase 6) to know when post-meeting data is ready.
-
-## SignalR Impact
-
-- Remove `Live transcription status (active / paused / error)` notifications
-  from the Phase 4 list — no longer meaningful without live STT.
-- Room lifecycle and participant join/leave SignalR notifications are
-  unchanged.
-
-## Deliverables
-
-- Documentation-only phase (amendment). No new entities, endpoints, or jobs.
-- Signals that `SummarizeTranscriptJob`'s trigger moves from `MeetingEndedEvent`
-  to `MeetingTranscriptReadyEvent` (see Phase 6 amendment).
-
----
-
 # Phase 5 — Participant Audio Egress & Storage (Weeks 7.5–8.5) (refactor in v3.6)
 
 > **v3.6 direction change**: the recording concept is replaced by

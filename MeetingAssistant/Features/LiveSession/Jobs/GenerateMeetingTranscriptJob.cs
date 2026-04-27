@@ -26,7 +26,9 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             CancellationToken cancellationToken = default)
         {
             var tracks = await _dbContext.ParticipantAudioTracks
+                .IgnoreQueryFilters()
                 .Where(x => x.MeetingId == meetingId
+                            && x.OrganizationId == organizationId
                             && x.Status == ParticipantAudioTrackStatus.Available
                             && x.StorageObjectKey != null)
                 .Select(x => new
@@ -98,7 +100,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .ToList();
 
             var participantProfiles = await _dbContext.MeetingParticipants
-                .Where(x => x.MeetingId == meetingId && participantIds.Contains(x.UserId))
+                .IgnoreQueryFilters()
+                .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId && participantIds.Contains(x.UserId))
                 .Select(x => new
                 {
                     x.UserId,
@@ -131,7 +134,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     segment.AvgLogProb)));
 
             var transcript = await _dbContext.MeetingTranscripts
-                .FirstOrDefaultAsync(x => x.MeetingId == meetingId, cancellationToken);
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.MeetingId == meetingId && x.OrganizationId == organizationId, cancellationToken);
 
             if (transcript == null)
             {

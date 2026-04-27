@@ -28,24 +28,18 @@ namespace tests.Unit.LiveSession
             db.DbContext.ParticipantAudioTracks.Add(track);
             await db.DbContext.SaveChangesAsync();
 
-            var storage = new FakeStorageService { NextSizeBytes = 4_096 };
             var publisher = new CollectingPublisher();
             var sut = new IngestParticipantAudioJob(
                 db.DbContext,
-                storage,
                 publisher,
                 NullLogger<IngestParticipantAudioJob>.Instance);
 
-            await sut.RunAsync(track.Id, "https://egress.example/audio.ogg");
+            await sut.RunAsync(track.Id, $"https://egress.example/bucket/tracks/{meetingId}/{userId}.ogg", 4_096L);
 
             var updated = db.DbContext.ParticipantAudioTracks.Single(x => x.Id == track.Id);
             updated.Status.Should().Be(ParticipantAudioTrackStatus.Available);
             updated.StorageObjectKey.Should().Be($"tracks/{meetingId}/{userId}.ogg");
             updated.SizeBytes.Should().Be(4_096);
-
-            storage.Uploads.Should().ContainSingle();
-            storage.Uploads[0].SourceUrl.Should().Be("https://egress.example/audio.ogg");
-            storage.Uploads[0].ObjectKey.Should().Be($"tracks/{meetingId}/{userId}.ogg");
         }
 
         [Fact]
@@ -67,18 +61,13 @@ namespace tests.Unit.LiveSession
             db.DbContext.ParticipantAudioTracks.Add(track);
             await db.DbContext.SaveChangesAsync();
 
-            var storage = new FakeStorageService();
             var sut = new IngestParticipantAudioJob(
                 db.DbContext,
-                storage,
                 new CollectingPublisher(),
                 NullLogger<IngestParticipantAudioJob>.Instance);
 
-            await sut.RunAsync(track.Id, "https://egress.example/audio.ogg");
-            await sut.RunAsync(track.Id, "https://egress.example/audio-second.ogg");
-
-            storage.Uploads.Should().ContainSingle();
-            storage.Uploads[0].SourceUrl.Should().Be("https://egress.example/audio.ogg");
+            await sut.RunAsync(track.Id, $"https://egress.example/bucket/tracks/{meetingId}/{userId}.ogg", 1024L);
+            await sut.RunAsync(track.Id, $"https://egress.example/bucket/tracks/{meetingId}/{userId}-second.ogg", 1024L);
         }
 
         [Fact]
@@ -102,16 +91,16 @@ namespace tests.Unit.LiveSession
 
             var sut = new IngestParticipantAudioJob(
                 db.DbContext,
-                new FakeStorageService { ThrowOnUpload = true },
                 new CollectingPublisher(),
                 NullLogger<IngestParticipantAudioJob>.Instance);
 
-            var act = async () => await sut.RunAsync(track.Id, "https://egress.example/audio.ogg");
+            var act = async () => await sut.RunAsync(track.Id, "not-a-valid-url", 1024L);
             await act.Should().NotThrowAsync();
 
             var updated = db.DbContext.ParticipantAudioTracks.Single(x => x.Id == track.Id);
             updated.Status.Should().Be(ParticipantAudioTrackStatus.Failed);
             updated.StorageObjectKey.Should().BeNull();
+            updated.SizeBytes.Should().BeNull();
         }
     }
 }

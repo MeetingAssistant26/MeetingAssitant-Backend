@@ -5,7 +5,6 @@ using Livekit.Server.Sdk.Dotnet;
 using MediatR;
 using MeetingAssistant.Api.Infrastructure.Services;
 using MeetingAssistant.Features.Identity.Entites;
-using MeetingAssistant.Features.LiveSession.Hubs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Services;
@@ -75,36 +74,10 @@ namespace tests.Integration.LiveSession
             => true;
     }
 
-    internal sealed class FakeLiveSessionNotifier : ILiveSessionNotifier
+    internal sealed class FakeEgressService : IEgressService
     {
-        public List<Guid> SessionStartedOrgIds { get; } = new();
-        public List<Guid> SessionEndedOrgIds { get; } = new();
-        public List<(Guid OrgId, Guid UserId)> ParticipantJoined { get; } = new();
-        public List<(Guid OrgId, Guid UserId)> ParticipantLeft { get; } = new();
-
-        public Task NotifySessionStartedAsync(Guid organizationId, Guid meetingId, DateTime occurredAtUtc, CancellationToken cancellationToken = default)
-        {
-            SessionStartedOrgIds.Add(organizationId);
-            return Task.CompletedTask;
-        }
-
-        public Task NotifySessionEndedAsync(Guid organizationId, Guid meetingId, DateTime occurredAtUtc, CancellationToken cancellationToken = default)
-        {
-            SessionEndedOrgIds.Add(organizationId);
-            return Task.CompletedTask;
-        }
-
-        public Task NotifyParticipantJoinedAsync(Guid organizationId, Guid meetingId, Guid participantUserId, DateTime occurredAtUtc, CancellationToken cancellationToken = default)
-        {
-            ParticipantJoined.Add((organizationId, participantUserId));
-            return Task.CompletedTask;
-        }
-
-        public Task NotifyParticipantLeftAsync(Guid organizationId, Guid meetingId, Guid participantUserId, DateTime occurredAtUtc, CancellationToken cancellationToken = default)
-        {
-            ParticipantLeft.Add((organizationId, participantUserId));
-            return Task.CompletedTask;
-        }
+        public Task StartTrackEgressAsync(Guid meetingId, string roomName, string trackId, string participantIdentity, CancellationToken ct = default)
+            => Task.CompletedTask;
     }
 
     internal sealed class FakeStorageService : MeetingAssistant.Features.LiveSession.Services.IStorageService
@@ -123,6 +96,9 @@ namespace tests.Integration.LiveSession
             Uploads.Add((sourceUrl, objectKey));
             return Task.FromResult(NextSizeBytes);
         }
+
+        public Task EnsureBucketExistsAsync(CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
     }
 
     internal sealed class StubSttService(
@@ -296,7 +272,7 @@ namespace tests.Integration.LiveSession
 
             evt.EgressInfo.FileResults.Add(new Livekit.Server.Sdk.Dotnet.FileInfo
             {
-                Filename = participantUserId.HasValue ? $"user:{participantUserId.Value}" : string.Empty,
+                Filename = participantUserId.HasValue ? $"tracks/mtg-{meetingId}/user:{participantUserId.Value}/file.ogg" : string.Empty,
                 Location = sourceUrl ?? string.Empty,
             });
 

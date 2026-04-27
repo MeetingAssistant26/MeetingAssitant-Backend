@@ -20,7 +20,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             CancellationToken cancellationToken = default)
         {
             var transcript = await _dbContext.MeetingTranscripts
-                .FirstOrDefaultAsync(x => x.MeetingId == meetingId, cancellationToken);
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.MeetingId == meetingId && x.OrganizationId == organizationId, cancellationToken);
 
             if (transcript == null || string.IsNullOrWhiteSpace(transcript.FullText))
             {
@@ -33,7 +34,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             var summaryResult = await _summarizerService.SummarizeAsync(transcript.FullText, cancellationToken);
 
             var summary = await _dbContext.MeetingSummaries
-                .FirstOrDefaultAsync(x => x.MeetingId == meetingId, cancellationToken);
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(x => x.MeetingId == meetingId && x.OrganizationId == organizationId, cancellationToken);
 
             if (summary == null)
             {

@@ -1,8 +1,10 @@
 using FluentAssertions;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.Meetings.Models;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace tests.Integration.LiveSession
@@ -19,8 +21,12 @@ namespace tests.Integration.LiveSession
             db.AddParticipant(meetingId, orgId, userId);
 
             var jobs = new FakeBackgroundJobClient();
-            var notifier = new FakeLiveSessionNotifier();
-            var sut = new WebhookService(db.DbContext, jobs, notifier, NullLogger<WebhookService>.Instance);
+            var sut = new WebhookService(
+                db.DbContext,
+                jobs,
+                Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
+                new FakeEgressService(),
+                NullLogger<WebhookService>.Instance);
 
             await sut.ProcessAsync(WebhookEventFactory.RoomStarted(meetingId, "evt-room-start"), "{}");
             await sut.ProcessAsync(WebhookEventFactory.ParticipantJoined(meetingId, "evt-join", userId), "{}");

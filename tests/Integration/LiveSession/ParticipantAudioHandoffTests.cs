@@ -1,11 +1,13 @@
 using System.Text.Json;
 using FluentAssertions;
 using Livekit.Server.Sdk.Dotnet;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Services;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace tests.Integration.LiveSession
@@ -28,51 +30,51 @@ namespace tests.Integration.LiveSession
             }
 
             var webhookJobs = new FakeBackgroundJobClient();
-            var notifier = new FakeLiveSessionNotifier();
             var webhookService = new WebhookService(
                 db.DbContext,
                 webhookJobs,
-                notifier,
+                Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
+                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
-            var evt = new WebhookEvent
-            {
-                Event = "egress_ended",
-                Id = "evt-egress-ended-multi",
-                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                EgressInfo = new EgressInfo
-                {
-                    RoomName = $"mtg:{meetingId}",
-                    Status = EgressStatus.EgressComplete
-                }
-            };
-
-            var filePayloads = new List<object>();
             foreach (var participantId in participantIds)
             {
-                var sourceUrl = $"https://egress.example/{participantId}.ogg";
+                var sourceUrl = $"https://egress.example/bucket/tracks/{meetingId}/{participantId}.ogg";
+                var evt = new WebhookEvent
+                {
+                    Event = "egress_ended",
+                    Id = $"evt-egress-ended-{participantId}",
+                    CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    EgressInfo = new EgressInfo
+                    {
+                        RoomName = $"mtg:{meetingId}",
+                        Status = EgressStatus.EgressComplete
+                    }
+                };
+
                 evt.EgressInfo.FileResults.Add(new Livekit.Server.Sdk.Dotnet.FileInfo
                 {
-                    Filename = $"user:{participantId}",
+                    Filename = $"tracks/mtg-{meetingId}/user:{participantId}/file.ogg",
                     Location = sourceUrl
                 });
 
-                filePayloads.Add(new
+                var rawPayload = JsonSerializer.Serialize(new
                 {
-                    participantIdentity = $"user:{participantId}",
-                    location = sourceUrl
+                    egressInfo = new
+                    {
+                        fileResults = new[]
+                        {
+                            new
+                            {
+                                filename = $"tracks/mtg-{meetingId}/user:{participantId}/file.ogg",
+                                location = sourceUrl
+                            }
+                        }
+                    }
                 });
+
+                await webhookService.ProcessAsync(evt, rawPayload);
             }
-
-            var rawPayload = JsonSerializer.Serialize(new
-            {
-                egressInfo = new
-                {
-                    fileResults = filePayloads
-                }
-            });
-
-            await webhookService.ProcessAsync(evt, rawPayload);
 
             var pendingTracks = db.DbContext.ParticipantAudioTracks
                 .Where(x => x.MeetingId == meetingId)
@@ -82,11 +84,9 @@ namespace tests.Integration.LiveSession
             pendingTracks.Should().OnlyContain(x => x.Status == ParticipantAudioTrackStatus.Pending);
             webhookJobs.CreatedJobs.Should().HaveCount(participantIds.Count);
 
-            var ingestStorage = new FakeStorageService();
             var ingestPublisher = new CollectingPublisher();
             var ingestJob = new IngestParticipantAudioJob(
                 db.DbContext,
-                ingestStorage,
                 ingestPublisher,
                 NullLogger<IngestParticipantAudioJob>.Instance);
 
@@ -94,7 +94,8 @@ namespace tests.Integration.LiveSession
             {
                 var trackId = (Guid)job.Args[0];
                 var sourceUrl = (string)job.Args[1];
-                await ingestJob.RunAsync(trackId, sourceUrl);
+                var sizeBytes = (long?)job.Args[2];
+                await ingestJob.RunAsync(trackId, sourceUrl, sizeBytes);
             }
 
             var completedTracks = db.DbContext.ParticipantAudioTracks
@@ -103,7 +104,6 @@ namespace tests.Integration.LiveSession
 
             completedTracks.Should().HaveCount(participantIds.Count);
             completedTracks.Should().OnlyContain(x => x.Status == ParticipantAudioTrackStatus.Available);
-            ingestStorage.Uploads.Should().HaveCount(participantIds.Count);
 
             db.DbContext.SessionEvents
                 .Count(x => x.MeetingId == meetingId && x.EventType == SessionEventType.ParticipantAudioReady)

@@ -1,4 +1,3 @@
-using MeetingAssistant.Features.LiveSession.Hubs;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Services;
@@ -23,7 +22,6 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddSingleton<IPromptProvider, PromptProvider>();
             services.AddScoped<ISttService, SttService>();
             services.AddScoped<ISummarizerService, SummarizerService>();
-            services.AddScoped<ILiveSessionNotifier, LiveSessionNotifier>();
             services.AddScoped<IngestParticipantAudioJob>();
             services.AddScoped<GenerateMeetingTranscriptJob>();
             services.AddScoped<GenerateMeetingSummaryJob>();

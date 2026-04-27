@@ -1,6 +1,5 @@
 using Hangfire;
 using Livekit.Server.Sdk.Dotnet;
-using MeetingAssistant.Features.LiveSession.Hubs;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
@@ -17,7 +16,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
     public class WebhookService(
         ApplicationDbContext dbContext,
         IBackgroundJobClient backgroundJobClient,
-        ILiveSessionNotifier liveSessionNotifier,
         IOptions<LiveKitOptions> options,
         IEgressService egressService,
         ILogger<WebhookService> logger) : IWebhookService
@@ -26,7 +24,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly IBackgroundJobClient _backgroundJobClient = backgroundJobClient;
-        private readonly ILiveSessionNotifier _liveSessionNotifier = liveSessionNotifier;
         private readonly LiveKitOptions _options = options.Value;
         private readonly IEgressService _egressService = egressService;
         private readonly ILogger<WebhookService> _logger = logger;
@@ -49,7 +46,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             var meeting = await _dbContext.Meetings
                 .IgnoreQueryFilters()
-                .AsNoTracking()
                 .FirstOrDefaultAsync(m => m.Id == meetingId, cancellationToken);
 
             if (meeting == null)
@@ -91,7 +87,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             _dbContext.SessionEvents.Add(sessionEvent);
 
-            var notifications = new List<Func<CancellationToken, Task>>();
             var ingestEnqueues = new List<(Guid TrackId, string S3LocationUrl, long? SizeBytes)>();
 
             switch (eventType)
@@ -100,44 +95,13 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     if (meeting.Status == Features.Meetings.Models.MeetingStatus.Scheduled)
                     {
                         meeting.Status = Features.Meetings.Models.MeetingStatus.InProgress;
-                        meeting.RaiseDomainEvent(new SessionStartedEvent(meeting.Id, meeting.OrganizationId, occurredAtUtc));
-                        notifications.Add(ct => _liveSessionNotifier.NotifySessionStartedAsync(meeting.OrganizationId, meeting.Id, occurredAtUtc, ct));
                     }
-
                     break;
 
                 case SessionEventType.RoomFinished:
                     if (meeting.Status != Features.Meetings.Models.MeetingStatus.Completed)
                     {
                         meeting.Status = Features.Meetings.Models.MeetingStatus.Completed;
-                        meeting.RaiseDomainEvent(new SessionEndedEvent(meeting.Id, meeting.OrganizationId, occurredAtUtc));
-                        notifications.Add(ct => _liveSessionNotifier.NotifySessionEndedAsync(meeting.OrganizationId, meeting.Id, occurredAtUtc, ct));
-                    }
-                    break;
-
-                case SessionEventType.ParticipantJoined:
-                    if (participantUserId.HasValue)
-                    {
-                        var joinedUserId = participantUserId.Value;
-                        notifications.Add(ct => _liveSessionNotifier.NotifyParticipantJoinedAsync(
-                            meeting.OrganizationId,
-                            meeting.Id,
-                            joinedUserId,
-                            occurredAtUtc,
-                            ct));
-                    }
-                    break;
-
-                case SessionEventType.ParticipantLeft:
-                    if (participantUserId.HasValue)
-                    {
-                        var leftUserId = participantUserId.Value;
-                        notifications.Add(ct => _liveSessionNotifier.NotifyParticipantLeftAsync(
-                            meeting.OrganizationId,
-                            meeting.Id,
-                            leftUserId,
-                            occurredAtUtc,
-                            ct));
                     }
                     break;
 
@@ -168,6 +132,17 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
                     foreach (var file in fileResults)
                     {
+                        if (!string.IsNullOrWhiteSpace(file.Location)
+                            && !file.Location.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _logger.LogWarning(
+                                "Skipping non-audio file in egress payload. MeetingId={MeetingId} ParticipantUserId={ParticipantUserId} FileLocation={FileLocation}",
+                                meeting.Id,
+                                resolvedParticipantUserId.Value,
+                                file.Location);
+                            continue;
+                        }
+
                         var status = egressOk && !string.IsNullOrWhiteSpace(file.Location)
                             ? ParticipantAudioTrackStatus.Pending
                             : ParticipantAudioTrackStatus.Failed;
@@ -186,6 +161,11 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     }
                     break;
                 }
+
+                case SessionEventType.ParticipantJoined:
+                case SessionEventType.ParticipantLeft:
+                    // SessionEvent already persisted before the switch; no additional side effects.
+                    break;
 
                 case SessionEventType.TrackPublished:
                     if (webhookEvent.Track?.Type == TrackType.Audio &&
@@ -226,19 +206,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     job => job.RunAsync(trackId, s3LocationUrl, sizeBytes, CancellationToken.None));
             }
 
-            try
-            {
-                await Task.WhenAll(notifications.Select(notify => notify(cancellationToken)));
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "Live session notification dispatch failed for MeetingId={MeetingId} EventType={EventType}",
-                    meeting.Id,
-                    eventType);
-            }
-
             return Result.Success();
         }
 
@@ -251,7 +218,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
         {
             var track = await _dbContext.ParticipantAudioTracks
                 .IgnoreQueryFilters()
-                .AsNoTracking()
                 .FirstOrDefaultAsync(
                     x => x.MeetingId == meetingId && x.ParticipantUserId == participantUserId,
                     cancellationToken);

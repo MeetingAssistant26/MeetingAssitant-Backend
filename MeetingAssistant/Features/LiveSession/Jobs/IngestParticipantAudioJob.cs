@@ -1,3 +1,4 @@
+using Hangfire;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
@@ -18,6 +19,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         private readonly IPublisher _publisher = publisher;
         private readonly ILogger<IngestParticipantAudioJob> _logger = logger;
 
+        [AutomaticRetry(Attempts = 3)]
         public async Task RunAsync(
             Guid trackId,
             string s3LocationUrl,
@@ -49,6 +51,27 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
 
             var previousStatus = track.Status;
+
+            var age = DateTime.UtcNow - track.CreatedAtUtc;
+            if (age > TimeSpan.FromMinutes(8))
+            {
+                track.Status = ParticipantAudioTrackStatus.Failed;
+                var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
+
+                _logger.LogWarning(
+                    "Participant audio ingest abandoned after 8-minute ceiling. TrackId={TrackId} MeetingId={MeetingId} AgeMinutes={AgeMinutes} StatusTransition={StatusTransition}",
+                    trackId,
+                    track.MeetingId,
+                    age.TotalMinutes,
+                    $"{previousStatus}->{track.Status}");
+
+                if (readyEvent is not null)
+                {
+                    await _publisher.Publish(readyEvent, cancellationToken);
+                }
+
+                return;
+            }
             var objectKey = ExtractObjectKeyFromS3Url(s3LocationUrl);
 
             if (string.IsNullOrWhiteSpace(objectKey))

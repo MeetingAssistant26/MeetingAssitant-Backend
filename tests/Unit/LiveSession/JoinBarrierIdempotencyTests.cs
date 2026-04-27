@@ -37,8 +37,8 @@ namespace tests.Unit.LiveSession
 
                 var ingestTasks = new[]
                 {
-                    RunIngestAsync(databasePath, organizationId, participantA, "https://egress.example/a.ogg", publisher),
-                    RunIngestAsync(databasePath, organizationId, participantB, "https://egress.example/b.ogg", publisher)
+                    RunIngestAsync(databasePath, organizationId, participantA, $"https://egress.example/bucket/tracks/{meetingId}/{participantA}.ogg", publisher),
+                    RunIngestAsync(databasePath, organizationId, participantB, $"https://egress.example/bucket/tracks/{meetingId}/{participantB}.ogg", publisher)
                 };
 
                 await Task.WhenAll(ingestTasks);
@@ -85,11 +85,10 @@ namespace tests.Unit.LiveSession
 
             var job = new IngestParticipantAudioJob(
                 dbContext,
-                new FakeStorageService(),
                 publisher,
                 NullLogger<IngestParticipantAudioJob>.Instance);
 
-            await job.RunAsync(trackId, sourceUrl);
+            await job.RunAsync(trackId, sourceUrl, 1024L);
         }
 
         private static async Task SeedAsync(
