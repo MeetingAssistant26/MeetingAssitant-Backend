@@ -1349,7 +1349,362 @@ Deliverable:
 
 ---
 
-# Phase 6 — Post-Meeting AI Pipeline + Meeting Memory (Weeks 9.5–12) (refactor in v3.6)
+# Phase 5.6 — Reminders — User-Facing (Weeks 9.5–10.5)
+
+> Extracted from Phase 7 (v3.7). Reminders are now built before the post-meeting AI pipeline so that both user-facing and agent-facing surfaces are available for the Task Review Queue and Agent API phases.
+
+## Folder Structure
+
+```text
+Features/
+└── Tasks/
+    ├── Endpoints/
+    │   └── Reminder/
+    │       ├── ReminderController.cs
+    │       ├── CreateMyReminderEndpoint.cs        ← POST /api/me/reminders
+    │       ├── ListMyRemindersEndpoint.cs         ← GET  /api/me/reminders
+    │       ├── MarkMyReminderDeliveredEndpoint.cs ← POST /api/me/reminders/{id}/mark-delivered
+    │       └── CancelMyReminderEndpoint.cs        ← DELETE /api/me/reminders/{id}
+    │
+    ├── Models/
+    │   ├── Requests/
+    │   │   └── CreateMyReminderRequest.cs
+    │   └── Responses/
+    │       └── ReminderResponse.cs
+    │
+    ├── Services/
+    │   ├── IReminderService.cs
+    │   └── ReminderService.cs
+    │
+    └── Validators/
+        └── CreateMyReminderRequestValidator.cs
+```
+
+## Controller Definitions
+
+### ReminderController — `api/me/reminders` (v3.7)
+
+```csharp
+namespace MeetingAssistant.Features.Tasks.Endpoints.Reminder;
+
+[ApiController]
+[Route("api/me/reminders")]
+[Authorize]
+public partial class ReminderController : ControllerBase
+{
+    private readonly IReminderService _reminderService;
+
+    public ReminderController(IReminderService reminderService)
+    {
+        _reminderService = reminderService;
+    }
+}
+```
+
+> **v3.7 change**: route changed from `api/tasks/{taskId}/reminders` to
+> `api/me/reminders`. Reminders are no longer linked to `TaskItem`. The thing
+> to be reminded about is captured in the `Text` field on the `Reminder`
+> entity (free string).
+
+**Endpoints (all user-JWT scoped):**
+- `POST   /api/me/reminders`                      → `CreateMyReminderEndpoint.cs` — creates `Scope=Personal, Channel=User, TargetUserId=me, MeetingId=null`
+- `GET    /api/me/reminders`                      → `ListMyRemindersEndpoint.cs` — returns reminders affecting me: `(TargetUserId=me) OR (Scope=Public AND MeetingId IN <meetings I participate in>)`, filtered by `Status=Active`
+- `POST   /api/me/reminders/{id}/mark-delivered`  → `MarkMyReminderDeliveredEndpoint.cs` — sets `Status=Delivered` (only the user's own Personal reminders)
+- `DELETE /api/me/reminders/{id}`                 → `CancelMyReminderEndpoint.cs` — soft-cancel (`Status=Cancelled`), only the user's own Personal reminders
+
+## Entities
+
+- **`Reminder`** (refactored in v3.7):
+  - `Id`, `OrganizationId`
+  - `Text` (free string — the thing to be reminded about; no `TaskItem` linkage)
+  - `Scope` (enum: `Personal` | `Public`)
+  - `Channel` (enum: `User` | `Agent` — provenance of the reminder)
+  - `CreatedByUserId` (who originated the intent)
+  - `TargetUserId` (nullable — required when `Scope=Personal`; null when `Scope=Public`. Public reminders target all participants of `MeetingId`, derived at fetch time from `MeetingParticipant`.)
+  - `MeetingId` (nullable — required when `Scope=Public` or when `Channel=Agent`. Always null when `Channel=User` because user-created personal reminders are standalone.)
+  - `ReminderAtUtc` (when the reminder is "due"; used by fetch endpoints as a filter — see Reminder Fetch Semantics below. No firing.)
+  - `Status` (enum: `Active` | `Delivered` | `Cancelled`)
+  - `DeliveredAtUtc` (nullable)
+  - `OriginalText` (nullable — raw agent input, audit only)
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+  - **DB Indexes**: `(TargetUserId, Status)` for the user's "my reminders" query; `(MeetingId, Scope, Status)` for the agent's "this meeting's public reminders" query.
+
+> **v3.7 changes**: removed `TaskItemId` linkage, removed `Pending/Sent/Failed`
+> states, removed Hangfire `TriggerReminderJob`, removed SignalR push. Reminders
+> are pure data, fetched via endpoints. Status lifecycle is now `Active →
+> Delivered` (after fetch + acknowledgement) or `Active → Cancelled` (soft delete).
+
+## Reminder System (v3.7)
+
+- **No Hangfire firing**, **no SignalR push**. Reminders are pure data.
+- Personal reminders are surfaced to the user via the `GET /api/me/reminders` poll endpoint. The user marks delivery via `POST /api/me/reminders/{id}/mark-delivered`.
+- Public reminders are surfaced to the agent via `GET /api/agent/meetings/{meetingId}/reminders` (Phase 5.7) at meeting start. The agent speaks them and marks delivery via `POST /api/agent/reminders/{id}/mark-delivered`.
+
+## Reminder Fetch Semantics (v3.7)
+
+`ReminderAtUtc` acts as a **timing gate** in fetch queries:
+
+| Endpoint | Filter |
+|---|---|
+| `GET /api/me/reminders` (user) | `Status=Active AND ReminderAtUtc <= now AND ((TargetUserId=me) OR (Scope=Public AND MeetingId IN <my meetings>))` |
+| `GET /api/agent/meetings/{meetingId}/reminders` (agent — Phase 5.7) | `Status=Active AND Scope=Public AND MeetingId=X AND ReminderAtUtc <= meeting.scheduledStartUtc` |
+
+For Public reminders bound to a recurring meeting (one row per series, Model A), the agent query `ReminderAtUtc <= meeting.scheduledStartUtc` ensures the reminder fires at the first occurrence whose start time is on or after `ReminderAtUtc`. This lets agents express "remind us in 2 weeks at the standup" by setting `ReminderAtUtc` to the target date — earlier occurrences will not return the reminder. After the agent speaks it and marks `Delivered`, it never returns again.
+
+> **No per-occurrence targeting** (`OccurrenceDateUtc` is intentionally not modeled).
+> Each reminder fires at exactly one occurrence: the first one whose start time
+> is on or after `ReminderAtUtc`. After delivery, the reminder is closed.
+
+## Domain Events
+
+- `ReminderCreatedEvent`
+- `ReminderDeliveredEvent` (v3.7 — replaces `ReminderTriggeredEvent`)
+- `ReminderCancelledEvent` (v3.7)
+
+## Tests (Phase 5.6)
+
+- Unit: reminder fetch semantics — `ReminderAtUtc` timing gate for Personal and Public
+- Unit: `mark-delivered` and `cancel` state transitions
+- Integration: user creates personal reminder → polls → marks delivered → no longer returned
+- Integration: tenant isolation — user cannot see/mark/cancel another user's or another org's reminders
+
+Deliverable:
+- User-facing reminder lifecycle works (create / list / mark-delivered / cancel)
+- 1 controller, 4 endpoint files
+
+
+---
+
+# Phase 5.7 — Agent-Callable API Surface (Weeks 10.5–11.5) (new in v3.7)
+
+> **Scope**: this phase defines all endpoints that the **LiveKit live agent**
+> (STT → LLM → TTS loop) calls during a meeting. The agent itself is
+> **external to this backend** and is not a deliverable of this repo. The
+> backend's only contract with the agent is the endpoint surface defined
+> below + the dedicated auth scheme.
+
+## Agent Service-Identity Auth
+
+A separate JWT issuer (HMAC-signed bearer) for LiveKit agent calls. Distinct
+from the user JWT.
+
+**Claims:**
+- `agent` = `true`
+- `organizationId` (required — tenant binding)
+- `meetingId` (required — bound to a single meeting room for the token's lifetime)
+
+**Policy:** `[Authorize(Policy="AgentOnly")]`. Agents cannot access user-JWT
+endpoints; users cannot access agent-only endpoints. Tenant isolation is
+enforced via the `organizationId` claim, identical to the user-JWT flow.
+
+**Issuance:** the agent token is minted by the backend at meeting-room creation
+time (when LiveKit Cloud's webhook fires `room_started`) and delivered to the
+agent worker via the same channel it uses for room access. Token lifetime
+matches the expected meeting duration + a buffer (e.g., 4 hours max).
+
+> **Constitution alignment**: extends §V Authentication with a separate JWT
+> issuer for service identities. Same key-rotation discipline as user JWTs.
+> No hardcoded keys.
+
+## Folder Structure
+
+```text
+Features/
+└── AgentApi/
+    ├── Endpoints/
+    │   ├── Reminder/
+    │   │   ├── AgentReminderController.cs
+    │   │   ├── CreateReminderEndpoint.cs           ← POST /api/agent/meetings/{meetingId}/reminders
+    │   │   ├── ListMeetingRemindersEndpoint.cs     ← GET  /api/agent/meetings/{meetingId}/reminders
+    │   │   └── MarkReminderDeliveredEndpoint.cs    ← POST /api/agent/reminders/{id}/mark-delivered
+    │   │
+    │   └── Context/
+    │       ├── AgentContextController.cs
+    │       ├── GetOrganizationEndpoint.cs          ← GET /api/agent/organization
+    │       ├── GetMeetingMembersEndpoint.cs        ← GET /api/agent/meetings/{meetingId}/members
+    │       ├── ListMeetingsEndpoint.cs             ← GET /api/agent/meetings?status=upcoming|past&limit=N
+    │       ├── GetMeetingDetailEndpoint.cs         ← GET /api/agent/meetings/{meetingId}
+    │       ├── ListRecurringMeetingsEndpoint.cs    ← GET /api/agent/meetings/recurring
+    │       └── ListMeetingTagsEndpoint.cs          ← GET /api/agent/meeting-tags
+    │
+    ├── Models/
+    │   ├── Requests/
+    │   │   └── CreateAgentReminderRequest.cs
+    │   └── Responses/
+    │       ├── AgentMemberResponse.cs              ← { userId, displayName, jobRole, context }
+    │       ├── AgentMeetingResponse.cs             ← { id, title, scheduledStartUtc, status, recurrenceConfig?, tagIds }
+    │       ├── AgentMeetingDetailResponse.cs       ← + participants, recurrenceConfig
+    │       ├── AgentReminderResponse.cs            ← { id, text, scope, targetUserId?, reminderAtUtc, status }
+    │       └── AgentOrganizationResponse.cs        ← { id, name, slug, memberCount }
+    │
+    ├── Services/
+    │   ├── IAgentAuthService.cs                    ← mints + validates agent tokens
+    │   ├── AgentAuthService.cs
+    │   ├── IAgentContextService.cs                 ← read-only views over Meetings/Members/Tags
+    │   └── AgentContextService.cs
+    │
+    └── Validators/
+        └── CreateAgentReminderRequestValidator.cs
+```
+
+> **No new entities.** Phase 5.7 is purely an alternate API surface over
+> existing data: `Reminder` (Phase 5.6), `Meeting`/`MeetingParticipant` (Phase 3),
+> `UserOrgMembership.Context` (Phase 2), `MeetingTag` (Phase 2).
+
+## Controller Definitions
+
+### AgentReminderController — `api/agent`
+
+```csharp
+namespace MeetingAssistant.Features.AgentApi.Endpoints.Reminder;
+
+[ApiController]
+[Route("api/agent")]
+[Authorize(Policy = "AgentOnly")]
+public partial class AgentReminderController : ControllerBase
+{
+    private readonly IReminderService _reminderService;          // shared with Phase 5.6
+    private readonly IAgentContextProvider _agentContext;        // resolves orgId/meetingId from token
+
+    public AgentReminderController(IReminderService reminderService, IAgentContextProvider agentContext)
+    {
+        _reminderService = reminderService;
+        _agentContext = agentContext;
+    }
+}
+```
+
+**Endpoints (all agent-policy):**
+- `POST /api/agent/meetings/{meetingId}/reminders` → `CreateReminderEndpoint.cs`
+  - Body: `{ text, scope ("Personal"|"Public"), targetUserId? (required if Personal), reminderAtUtc }`
+  - `meetingId` route param MUST match the agent token's `meetingId` claim
+  - Sets `Channel=Agent`, `CreatedByUserId` = the user the agent is assisting (passed in token claims or body), `MeetingId=meetingId`, `OriginalText` = raw user utterance
+- `GET /api/agent/meetings/{meetingId}/reminders` → `ListMeetingRemindersEndpoint.cs`
+  - Returns `Scope=Public AND MeetingId=X AND Status=Active AND ReminderAtUtc <= meeting.scheduledStartUtc`
+  - **Never returns Personal reminders** (defence-in-depth at the service layer; agent must not speak personal data publicly)
+- `POST /api/agent/reminders/{id}/mark-delivered` → `MarkReminderDeliveredEndpoint.cs`
+  - Sets `Status=Delivered`, `DeliveredAtUtc=now`
+  - Allowed only on `Scope=Public` reminders. Personal reminders are marked delivered by the user via their own endpoint (Phase 5.6) — the agent never sees them.
+
+### AgentContextController — `api/agent`
+
+```csharp
+namespace MeetingAssistant.Features.AgentApi.Endpoints.Context;
+
+[ApiController]
+[Route("api/agent")]
+[Authorize(Policy = "AgentOnly")]
+public partial class AgentContextController : ControllerBase
+{
+    private readonly IAgentContextService _agentContext;
+
+    public AgentContextController(IAgentContextService agentContext)
+    {
+        _agentContext = agentContext;
+    }
+}
+```
+
+**Endpoints (all agent-policy, all org-scoped via token claim):**
+- `GET /api/agent/organization` → `GetOrganizationEndpoint.cs`
+  - Returns: `{ id, name, slug, memberCount }`
+- `GET /api/agent/meetings/{meetingId}/members` → `GetMeetingMembersEndpoint.cs`
+  - **Filtered to current meeting participants only** (not the whole org roster)
+  - Returns: `[{ userId, displayName, jobRole, context }]` for each `MeetingParticipant` of the meeting whose `UserOrgMembership.IsEnabled=true`
+  - `meetingId` MUST match the agent token's `meetingId` claim
+  - This is the agent's primary "who's-who" lookup for the people in the room
+- `GET /api/agent/meetings?status=upcoming|past&limit=N&offset=M` → `ListMeetingsEndpoint.cs`
+  - Paginated meeting list across the org
+  - Each row: `{ id, title, scheduledStartUtc, scheduledEndUtc, status, recurrenceConfig?, tagIds }`
+- `GET /api/agent/meetings/{meetingId}` → `GetMeetingDetailEndpoint.cs`
+  - Single meeting detail: `{ ...summary fields, participants[], recurrenceConfig }` so the agent can detect recurring + compute next-occurrence dates from `RecurrenceConfig`
+- `GET /api/agent/meetings/recurring` → `ListRecurringMeetingsEndpoint.cs`
+  - Recurring series only (`RecurrenceConfig IS NOT NULL`), shortcut for the agent
+- `GET /api/agent/meeting-tags` → `ListMeetingTagsEndpoint.cs`
+  - Tag catalog: `[{ id, name, color }]` for active tags
+
+> **Past-meeting summaries (RAG)**: deferred. The agent will use the existing
+> Phase 6.5 `/api/organizations/{orgId}/meetings/ask` endpoint when access is
+> opened to it (with an agent-policy variant). Out of scope for v3.7.
+
+## Tool-Use Mapping (informational)
+
+Each endpoint corresponds to one **tool** in the agent's LLM tool catalog.
+Example mapping:
+
+| Endpoint | Agent tool name | When LLM calls it |
+|---|---|---|
+| `GET /api/agent/meetings/{meetingId}/members` | `get_meeting_members` | "Who's in this meeting?" / "Remind Ahmed to..." |
+| `GET /api/agent/meetings?status=upcoming` | `get_upcoming_meetings` | "Remind me at next meeting" → look up next meeting |
+| `GET /api/agent/meetings/{meetingId}` | `get_meeting_detail` | Need to check if meeting is recurring |
+| `POST /api/agent/meetings/{meetingId}/reminders` | `create_reminder` | User asks for a reminder |
+| `GET /api/agent/meetings/{meetingId}/reminders` | `get_meeting_reminders` | At meeting start: anything to surface? |
+| `POST /api/agent/reminders/{id}/mark-delivered` | `mark_reminder_delivered` | After speaking the reminder |
+
+## Recurring Meeting + Reminder Semantics (agent guidance)
+
+The backend models recurring meetings as **one row per series** (`Meeting` with
+`RecurrenceConfig`). Reminders link to the series `MeetingId`; `ReminderAtUtc`
+gates which occurrence first delivers the reminder.
+
+**Agent decision tree for "remind us at next meeting":**
+1. Call `get_meeting_detail(currentMeetingId)` → check `recurrenceConfig`.
+2. If recurring → compute next occurrence's `scheduledStartUtc` from
+   `RecurrenceConfig`; create reminder with `Scope=Public, MeetingId=<series>,
+   ReminderAtUtc=<next occurrence start>`.
+3. If not recurring → ask user to clarify: *"This is a one-off meeting. Did
+   you mean a specific upcoming meeting?"* Then `get_upcoming_meetings()` and
+   match by user's choice.
+
+**Agent decision tree for "remind me at next meeting" (Personal):**
+1. Call `get_upcoming_meetings(forUser=me)` → take the first row.
+2. Confirm with user, then `create_reminder` with `Scope=Personal,
+   TargetUserId=<user>, MeetingId=<that meeting>, ReminderAtUtc=<that
+   meeting's start>`.
+
+## Tenant Isolation Rules
+
+- Every agent endpoint MUST verify `meetingId` route param (when present)
+  matches the agent token's `meetingId` claim. Mismatch → 403.
+- Every read query MUST filter by `OrganizationId` (inherits global query
+  filter from `AppDbContext`).
+- `ListMeetingRemindersEndpoint` MUST hard-filter `Scope=Public` at the
+  service layer — even if a query string requests Personal, return empty.
+  Defence-in-depth against future refactors.
+
+## Tests (Phase 5.7)
+
+- Unit: agent token issuance + validation; mismatched `meetingId` claim → 403
+- Unit: `get_meeting_members` filters to current meeting participants only
+- Unit: `ListMeetingRemindersEndpoint` never returns Personal reminders
+- Unit: reminder fetch timing gate (`ReminderAtUtc <= meeting.scheduledStartUtc`)
+- Integration: agent creates Public reminder → Public reminder surfaces at
+  matching occurrence → mark-delivered → no longer surfaces
+- Integration: tenant isolation — agent token for org A cannot read org B's
+  meetings/members/reminders
+- Integration: agent cannot reach user-JWT endpoints; user JWT cannot reach
+  agent endpoints
+
+## Domain Events
+
+- `AgentReminderCreatedEvent` — emitted alongside `ReminderCreatedEvent` when
+  `Channel=Agent`, for audit/observability
+- `AgentReminderDeliveredEvent` — emitted alongside `ReminderDeliveredEvent`
+  when an agent marks delivered
+
+Deliverable:
+- Agent service-identity auth scheme working
+- Three reminder endpoints + six context endpoints under `/api/agent/*`
+- Tenant isolation verified across agents and users
+- 2 controllers, 9 endpoint files
+
+---
+
+
+
+---
+
+# Phase 6 — Post-Meeting AI Pipeline + Meeting Memory (Weeks 11.5–14) (refactor in v3.6)
 
 > This is the **asynchronous post-meeting pipeline**. It runs entirely via
 > Hangfire background jobs after a meeting ends. No AI processing occurs
@@ -1543,7 +1898,7 @@ Deliverable:
 
 ---
 
-# Phase 6.5 — Meeting Memory Query: RAG Endpoint (Week 11–11.5) (refactor require by chat gpt)
+# Phase 6.5 — Meeting Memory Query: RAG Endpoint (Week 14–14.5) (refactor require by chat gpt)
 
 > This phase implements the **query side** of Meeting Memory. The embedding
 > pipeline (write side) was built in Phase 6. This endpoint uses the **hybrid
@@ -1759,7 +2114,7 @@ Deliverable:
 
 ---
 
-# Phase 7 — Task Review Queue & Management (Weeks 11.5–13)
+# Phase 7 — Task Review Queue & Task Management (Weeks 14–15.5)
 
 > **Human-in-the-loop**: AI-generated tasks are NOT automatically synced.
 > Users review, edit, approve, or reject tasks before any external integration.
@@ -1785,46 +2140,33 @@ Features/
     │   │   ├── UpdateTaskEndpoint.cs
     │   │   ├── CompleteTaskEndpoint.cs
     │   │   └── DeleteTaskEndpoint.cs
-    │   │
-    │   └── Reminder/                        ← v3.7: user-scoped reminder endpoints
-    │       ├── ReminderController.cs
-    │       ├── CreateMyReminderEndpoint.cs        ← POST /api/me/reminders
-    │       ├── ListMyRemindersEndpoint.cs         ← GET  /api/me/reminders
-    │       ├── MarkMyReminderDeliveredEndpoint.cs ← POST /api/me/reminders/{id}/mark-delivered
-    │       └── CancelMyReminderEndpoint.cs        ← DELETE /api/me/reminders/{id}
     │
     ├── Models/
     │   ├── Requests/
     │   │   ├── ApproveTaskRequest.cs
     │   │   ├── RejectTaskRequest.cs
     │   │   ├── EditAndApproveTaskRequest.cs
-    │   │   ├── UpdateTaskRequest.cs
-    │   │   └── CreateMyReminderRequest.cs
+    │   │   └── UpdateTaskRequest.cs
     │   └── Responses/
     │       ├── TaskResponse.cs
     │       ├── TaskListResponse.cs
-    │       ├── ReviewQueueResponse.cs
-    │       └── ReminderResponse.cs
+    │       └── ReviewQueueResponse.cs
     │
     ├── Services/
     │   ├── IReviewQueueService.cs
     │   ├── ReviewQueueService.cs
     │   ├── ITaskService.cs
-    │   ├── TaskService.cs
-    │   ├── IReminderService.cs
-    │   └── ReminderService.cs
+    │   └── TaskService.cs
     │
     └── Validators/
         ├── ApproveTaskRequestValidator.cs
         ├── RejectTaskRequestValidator.cs
         ├── EditAndApproveTaskRequestValidator.cs
         ├── UpdateTaskRequestValidator.cs
-        └── CreateMyReminderRequestValidator.cs
+
 ```
 
-> **v3.7 changes**: `TriggerReminderJob` removed (no Hangfire firing — reminders
-> are pure data, fetched via endpoints). `IReminderService` is shared by user-
-> facing endpoints here and the agent-facing endpoints in Phase 7.5.
+
 
 ## Controller Definitions
 
@@ -1878,35 +2220,6 @@ public partial class TaskController : ControllerBase
 - `POST /api/tasks/{id}/complete` → `CompleteTaskEndpoint.cs` (route: `tasks/{id:guid}/complete`)
 - `DELETE /api/tasks/{id}` → `DeleteTaskEndpoint.cs` (route: `tasks/{id:guid}`)
 
-### ReminderController — `api/me/reminders` (v3.7)
-
-```csharp
-namespace MeetingAssistant.Features.Tasks.Endpoints.Reminder;
-
-[ApiController]
-[Route("api/me/reminders")]
-[Authorize]
-public partial class ReminderController : ControllerBase
-{
-    private readonly IReminderService _reminderService;
-
-    public ReminderController(IReminderService reminderService)
-    {
-        _reminderService = reminderService;
-    }
-}
-```
-
-> **v3.7 change**: route changed from `api/tasks/{taskId}/reminders` to
-> `api/me/reminders`. Reminders are no longer linked to `TaskItem`. The thing
-> to be reminded about is captured in the `Text` field on the `Reminder`
-> entity (free string).
-
-**Endpoints (all user-JWT scoped):**
-- `POST   /api/me/reminders`                      → `CreateMyReminderEndpoint.cs` — creates `Scope=Personal, Channel=User, TargetUserId=me, MeetingId=null`
-- `GET    /api/me/reminders`                      → `ListMyRemindersEndpoint.cs` — returns reminders affecting me: `(TargetUserId=me) OR (Scope=Public AND MeetingId IN <meetings I participate in>)`, filtered by `Status=Active`
-- `POST   /api/me/reminders/{id}/mark-delivered`  → `MarkMyReminderDeliveredEndpoint.cs` — sets `Status=Delivered` (only the user's own Personal reminders)
-- `DELETE /api/me/reminders/{id}`                 → `CancelMyReminderEndpoint.cs` — soft-cancel (`Status=Cancelled`), only the user's own Personal reminders
 
 ## Review Flow
 
@@ -1926,302 +2239,27 @@ TaskItem created (Status=Draft, ReviewStatus=PendingReview)
           → Task retained for audit but excluded from active lists
 ```
 
-## Entities
-
-- **`Reminder`** (refactored in v3.7):
-  - `Id`, `OrganizationId`
-  - `Text` (free string — the thing to be reminded about; no `TaskItem` linkage)
-  - `Scope` (enum: `Personal` | `Public`)
-  - `Channel` (enum: `User` | `Agent` — provenance of the reminder)
-  - `CreatedByUserId` (who originated the intent)
-  - `TargetUserId` (nullable — required when `Scope=Personal`; null when `Scope=Public`. Public reminders target all participants of `MeetingId`, derived at fetch time from `MeetingParticipant`.)
-  - `MeetingId` (nullable — required when `Scope=Public` or when `Channel=Agent`. Always null when `Channel=User` because user-created personal reminders are standalone.)
-  - `ReminderAtUtc` (when the reminder is "due"; used by fetch endpoints as a filter — see Reminder Fetch Semantics below. No firing.)
-  - `Status` (enum: `Active` | `Delivered` | `Cancelled`)
-  - `DeliveredAtUtc` (nullable)
-  - `OriginalText` (nullable — raw agent input, audit only)
-  - `CreatedAtUtc`, `UpdatedAtUtc`
-  - **DB Indexes**: `(TargetUserId, Status)` for the user's "my reminders" query; `(MeetingId, Scope, Status)` for the agent's "this meeting's public reminders" query.
-
-> **v3.7 changes**: removed `TaskItemId` linkage, removed `Pending/Sent/Failed`
-> states, removed Hangfire `TriggerReminderJob`, removed SignalR push. Reminders
-> are pure data, fetched via endpoints. Status lifecycle is now `Active →
-> Delivered` (after fetch + acknowledgement) or `Active → Cancelled` (soft delete).
-
-## Reminder System (v3.7)
-
-- **No Hangfire firing**, **no SignalR push**. Reminders are pure data.
-- Personal reminders are surfaced to the user via the `GET /api/me/reminders` poll endpoint. The user marks delivery via `POST /api/me/reminders/{id}/mark-delivered`.
-- Public reminders are surfaced to the agent via `GET /api/agent/meetings/{meetingId}/reminders` (Phase 7.5) at meeting start. The agent speaks them and marks delivery via `POST /api/agent/reminders/{id}/mark-delivered`.
-
-## Reminder Fetch Semantics (v3.7)
-
-`ReminderAtUtc` acts as a **timing gate** in fetch queries:
-
-| Endpoint | Filter |
-|---|---|
-| `GET /api/me/reminders` (user) | `Status=Active AND ReminderAtUtc <= now AND ((TargetUserId=me) OR (Scope=Public AND MeetingId IN <my meetings>))` |
-| `GET /api/agent/meetings/{meetingId}/reminders` (agent — Phase 7.5) | `Status=Active AND Scope=Public AND MeetingId=X AND ReminderAtUtc <= meeting.scheduledStartUtc` |
-
-For Public reminders bound to a recurring meeting (one row per series, Model A), the agent query `ReminderAtUtc <= meeting.scheduledStartUtc` ensures the reminder fires at the first occurrence whose start time is on or after `ReminderAtUtc`. This lets agents express "remind us in 2 weeks at the standup" by setting `ReminderAtUtc` to the target date — earlier occurrences will not return the reminder. After the agent speaks it and marks `Delivered`, it never returns again.
-
-> **No per-occurrence targeting** (`OccurrenceDateUtc` is intentionally not modeled).
-> Each reminder fires at exactly one occurrence: the first one whose start time
-> is on or after `ReminderAtUtc`. After delivery, the reminder is closed.
 
 ## Domain Events
 
 - `TaskApprovedEvent`
 - `TaskRejectedEvent`
 - `TaskCompletedEvent`
-- `ReminderCreatedEvent`
-- `ReminderDeliveredEvent` (v3.7 — replaces `ReminderTriggeredEvent`)
-- `ReminderCancelledEvent` (v3.7)
 
 ## Tests (Phase 7)
 
 - Unit: review state machine (Draft → Approved/Rejected/Edited)
 - Unit: bulk approve logic
-- Unit: reminder fetch semantics — `ReminderAtUtc` timing gate for Personal and Public
-- Unit: `mark-delivered` and `cancel` state transitions
 - Integration: full review flow
-- Integration: user creates personal reminder → polls → marks delivered → no longer returned
-- Integration: tenant isolation — user cannot see/mark/cancel another user's or another org's reminders
 
 Deliverable:
 - Review Queue functional
 - Tasks only become active after human approval
-- User-facing reminder lifecycle works (create / list / mark-delivered / cancel)
-- 3 controllers, 14 endpoint files (was 11; +4 user reminder endpoints, –1 task reminder endpoint)
+- 2 controllers, 10 endpoint files
 
 ---
 
-# Phase 7.5 — Agent-Callable API Surface (Week 13–14) (new in v3.7)
-
-> **Scope**: this phase defines all endpoints that the **LiveKit live agent**
-> (STT → LLM → TTS loop) calls during a meeting. The agent itself is
-> **external to this backend** and is not a deliverable of this repo. The
-> backend's only contract with the agent is the endpoint surface defined
-> below + the dedicated auth scheme.
-
-## Agent Service-Identity Auth
-
-A separate JWT issuer (HMAC-signed bearer) for LiveKit agent calls. Distinct
-from the user JWT.
-
-**Claims:**
-- `agent` = `true`
-- `organizationId` (required — tenant binding)
-- `meetingId` (required — bound to a single meeting room for the token's lifetime)
-
-**Policy:** `[Authorize(Policy="AgentOnly")]`. Agents cannot access user-JWT
-endpoints; users cannot access agent-only endpoints. Tenant isolation is
-enforced via the `organizationId` claim, identical to the user-JWT flow.
-
-**Issuance:** the agent token is minted by the backend at meeting-room creation
-time (when LiveKit Cloud's webhook fires `room_started`) and delivered to the
-agent worker via the same channel it uses for room access. Token lifetime
-matches the expected meeting duration + a buffer (e.g., 4 hours max).
-
-> **Constitution alignment**: extends §V Authentication with a separate JWT
-> issuer for service identities. Same key-rotation discipline as user JWTs.
-> No hardcoded keys.
-
-## Folder Structure
-
-```text
-Features/
-└── AgentApi/
-    ├── Endpoints/
-    │   ├── Reminder/
-    │   │   ├── AgentReminderController.cs
-    │   │   ├── CreateReminderEndpoint.cs           ← POST /api/agent/meetings/{meetingId}/reminders
-    │   │   ├── ListMeetingRemindersEndpoint.cs     ← GET  /api/agent/meetings/{meetingId}/reminders
-    │   │   └── MarkReminderDeliveredEndpoint.cs    ← POST /api/agent/reminders/{id}/mark-delivered
-    │   │
-    │   └── Context/
-    │       ├── AgentContextController.cs
-    │       ├── GetOrganizationEndpoint.cs          ← GET /api/agent/organization
-    │       ├── GetMeetingMembersEndpoint.cs        ← GET /api/agent/meetings/{meetingId}/members
-    │       ├── ListMeetingsEndpoint.cs             ← GET /api/agent/meetings?status=upcoming|past&limit=N
-    │       ├── GetMeetingDetailEndpoint.cs         ← GET /api/agent/meetings/{meetingId}
-    │       ├── ListRecurringMeetingsEndpoint.cs    ← GET /api/agent/meetings/recurring
-    │       └── ListMeetingTagsEndpoint.cs          ← GET /api/agent/meeting-tags
-    │
-    ├── Models/
-    │   ├── Requests/
-    │   │   └── CreateAgentReminderRequest.cs
-    │   └── Responses/
-    │       ├── AgentMemberResponse.cs              ← { userId, displayName, jobRole, context }
-    │       ├── AgentMeetingResponse.cs             ← { id, title, scheduledStartUtc, status, recurrenceConfig?, tagIds }
-    │       ├── AgentMeetingDetailResponse.cs       ← + participants, recurrenceConfig
-    │       ├── AgentReminderResponse.cs            ← { id, text, scope, targetUserId?, reminderAtUtc, status }
-    │       └── AgentOrganizationResponse.cs        ← { id, name, slug, memberCount }
-    │
-    ├── Services/
-    │   ├── IAgentAuthService.cs                    ← mints + validates agent tokens
-    │   ├── AgentAuthService.cs
-    │   ├── IAgentContextService.cs                 ← read-only views over Meetings/Members/Tags
-    │   └── AgentContextService.cs
-    │
-    └── Validators/
-        └── CreateAgentReminderRequestValidator.cs
-```
-
-> **No new entities.** Phase 7.5 is purely an alternate API surface over
-> existing data: `Reminder` (Phase 7), `Meeting`/`MeetingParticipant` (Phase 3),
-> `UserOrgMembership.Context` (Phase 2), `MeetingTag` (Phase 2).
-
-## Controller Definitions
-
-### AgentReminderController — `api/agent`
-
-```csharp
-namespace MeetingAssistant.Features.AgentApi.Endpoints.Reminder;
-
-[ApiController]
-[Route("api/agent")]
-[Authorize(Policy = "AgentOnly")]
-public partial class AgentReminderController : ControllerBase
-{
-    private readonly IReminderService _reminderService;          // shared with Phase 7
-    private readonly IAgentContextProvider _agentContext;        // resolves orgId/meetingId from token
-
-    public AgentReminderController(IReminderService reminderService, IAgentContextProvider agentContext)
-    {
-        _reminderService = reminderService;
-        _agentContext = agentContext;
-    }
-}
-```
-
-**Endpoints (all agent-policy):**
-- `POST /api/agent/meetings/{meetingId}/reminders` → `CreateReminderEndpoint.cs`
-  - Body: `{ text, scope ("Personal"|"Public"), targetUserId? (required if Personal), reminderAtUtc }`
-  - `meetingId` route param MUST match the agent token's `meetingId` claim
-  - Sets `Channel=Agent`, `CreatedByUserId` = the user the agent is assisting (passed in token claims or body), `MeetingId=meetingId`, `OriginalText` = raw user utterance
-- `GET /api/agent/meetings/{meetingId}/reminders` → `ListMeetingRemindersEndpoint.cs`
-  - Returns `Scope=Public AND MeetingId=X AND Status=Active AND ReminderAtUtc <= meeting.scheduledStartUtc`
-  - **Never returns Personal reminders** (defence-in-depth at the service layer; agent must not speak personal data publicly)
-- `POST /api/agent/reminders/{id}/mark-delivered` → `MarkReminderDeliveredEndpoint.cs`
-  - Sets `Status=Delivered`, `DeliveredAtUtc=now`
-  - Allowed only on `Scope=Public` reminders. Personal reminders are marked delivered by the user via their own endpoint (Phase 7) — the agent never sees them.
-
-### AgentContextController — `api/agent`
-
-```csharp
-namespace MeetingAssistant.Features.AgentApi.Endpoints.Context;
-
-[ApiController]
-[Route("api/agent")]
-[Authorize(Policy = "AgentOnly")]
-public partial class AgentContextController : ControllerBase
-{
-    private readonly IAgentContextService _agentContext;
-
-    public AgentContextController(IAgentContextService agentContext)
-    {
-        _agentContext = agentContext;
-    }
-}
-```
-
-**Endpoints (all agent-policy, all org-scoped via token claim):**
-- `GET /api/agent/organization` → `GetOrganizationEndpoint.cs`
-  - Returns: `{ id, name, slug, memberCount }`
-- `GET /api/agent/meetings/{meetingId}/members` → `GetMeetingMembersEndpoint.cs`
-  - **Filtered to current meeting participants only** (not the whole org roster)
-  - Returns: `[{ userId, displayName, jobRole, context }]` for each `MeetingParticipant` of the meeting whose `UserOrgMembership.IsEnabled=true`
-  - `meetingId` MUST match the agent token's `meetingId` claim
-  - This is the agent's primary "who's-who" lookup for the people in the room
-- `GET /api/agent/meetings?status=upcoming|past&limit=N&offset=M` → `ListMeetingsEndpoint.cs`
-  - Paginated meeting list across the org
-  - Each row: `{ id, title, scheduledStartUtc, scheduledEndUtc, status, recurrenceConfig?, tagIds }`
-- `GET /api/agent/meetings/{meetingId}` → `GetMeetingDetailEndpoint.cs`
-  - Single meeting detail: `{ ...summary fields, participants[], recurrenceConfig }` so the agent can detect recurring + compute next-occurrence dates from `RecurrenceConfig`
-- `GET /api/agent/meetings/recurring` → `ListRecurringMeetingsEndpoint.cs`
-  - Recurring series only (`RecurrenceConfig IS NOT NULL`), shortcut for the agent
-- `GET /api/agent/meeting-tags` → `ListMeetingTagsEndpoint.cs`
-  - Tag catalog: `[{ id, name, color }]` for active tags
-
-> **Past-meeting summaries (RAG)**: deferred. The agent will use the existing
-> Phase 6.5 `/api/organizations/{orgId}/meetings/ask` endpoint when access is
-> opened to it (with an agent-policy variant). Out of scope for v3.7.
-
-## Tool-Use Mapping (informational)
-
-Each endpoint corresponds to one **tool** in the agent's LLM tool catalog.
-Example mapping:
-
-| Endpoint | Agent tool name | When LLM calls it |
-|---|---|---|
-| `GET /api/agent/meetings/{meetingId}/members` | `get_meeting_members` | "Who's in this meeting?" / "Remind Ahmed to..." |
-| `GET /api/agent/meetings?status=upcoming` | `get_upcoming_meetings` | "Remind me at next meeting" → look up next meeting |
-| `GET /api/agent/meetings/{meetingId}` | `get_meeting_detail` | Need to check if meeting is recurring |
-| `POST /api/agent/meetings/{meetingId}/reminders` | `create_reminder` | User asks for a reminder |
-| `GET /api/agent/meetings/{meetingId}/reminders` | `get_meeting_reminders` | At meeting start: anything to surface? |
-| `POST /api/agent/reminders/{id}/mark-delivered` | `mark_reminder_delivered` | After speaking the reminder |
-
-## Recurring Meeting + Reminder Semantics (agent guidance)
-
-The backend models recurring meetings as **one row per series** (`Meeting` with
-`RecurrenceConfig`). Reminders link to the series `MeetingId`; `ReminderAtUtc`
-gates which occurrence first delivers the reminder.
-
-**Agent decision tree for "remind us at next meeting":**
-1. Call `get_meeting_detail(currentMeetingId)` → check `recurrenceConfig`.
-2. If recurring → compute next occurrence's `scheduledStartUtc` from
-   `RecurrenceConfig`; create reminder with `Scope=Public, MeetingId=<series>,
-   ReminderAtUtc=<next occurrence start>`.
-3. If not recurring → ask user to clarify: *"This is a one-off meeting. Did
-   you mean a specific upcoming meeting?"* Then `get_upcoming_meetings()` and
-   match by user's choice.
-
-**Agent decision tree for "remind me at next meeting" (Personal):**
-1. Call `get_upcoming_meetings(forUser=me)` → take the first row.
-2. Confirm with user, then `create_reminder` with `Scope=Personal,
-   TargetUserId=<user>, MeetingId=<that meeting>, ReminderAtUtc=<that
-   meeting's start>`.
-
-## Tenant Isolation Rules
-
-- Every agent endpoint MUST verify `meetingId` route param (when present)
-  matches the agent token's `meetingId` claim. Mismatch → 403.
-- Every read query MUST filter by `OrganizationId` (inherits global query
-  filter from `AppDbContext`).
-- `ListMeetingRemindersEndpoint` MUST hard-filter `Scope=Public` at the
-  service layer — even if a query string requests Personal, return empty.
-  Defence-in-depth against future refactors.
-
-## Tests (Phase 7.5)
-
-- Unit: agent token issuance + validation; mismatched `meetingId` claim → 403
-- Unit: `get_meeting_members` filters to current meeting participants only
-- Unit: `ListMeetingRemindersEndpoint` never returns Personal reminders
-- Unit: reminder fetch timing gate (`ReminderAtUtc <= meeting.scheduledStartUtc`)
-- Integration: agent creates Public reminder → Public reminder surfaces at
-  matching occurrence → mark-delivered → no longer surfaces
-- Integration: tenant isolation — agent token for org A cannot read org B's
-  meetings/members/reminders
-- Integration: agent cannot reach user-JWT endpoints; user JWT cannot reach
-  agent endpoints
-
-## Domain Events
-
-- `AgentReminderCreatedEvent` — emitted alongside `ReminderCreatedEvent` when
-  `Channel=Agent`, for audit/observability
-- `AgentReminderDeliveredEvent` — emitted alongside `ReminderDeliveredEvent`
-  when an agent marks delivered
-
-Deliverable:
-- Agent service-identity auth scheme working
-- Three reminder endpoints + six context endpoints under `/api/agent/*`
-- Tenant isolation verified across agents and users
-- 2 controllers, 9 endpoint files
-
----
-
-# Phase 8 — Trello Integration (Weeks 13–14)
+# Phase 8 — Trello Integration (Weeks 15.5–16.5)
 
 > Sync only triggers for **approved** tasks. Draft/PendingReview tasks are never
 > pushed to external platforms.
@@ -2338,7 +2376,7 @@ Deliverable:
 
 ---
 
-# Phase 9 — Integration Testing & Hardening (Weeks 14–15)
+# Phase 9 — Integration Testing & Hardening (Weeks 16.5–17.5)
 
 ## End-to-End Flow Tests
 
@@ -2398,7 +2436,7 @@ Deliverable:
 
 ---
 
-# Phase 10 — Demo Preparation (Weeks 15–16)
+# Phase 10 — Demo Preparation (Weeks 17.5–18.5)
 
 ## Demo Flow (API-only — Postman/HTTP collection)
 
@@ -2416,7 +2454,7 @@ Deliverable:
 12. **Meeting Memory query**: ask *"What did we say about Flutter?"* → RAG answer
 13. Review Queue: approve/edit/reject tasks
 14. Approved task synced to Trello
-15. Reminder scheduled → reminder triggers (SignalR)
+15. User creates personal reminder → polls → marks delivered
 
 ## Documentation
 
@@ -2445,10 +2483,12 @@ Deliverable:
 | 4.5 | Realtime Amendment (docs) | 0 | 0 | 0 |
 | 5 | Participant Audio | 0 (internal only) | 0 | 0 |
 | 5.5 | Post-Meeting STT | 0 (background jobs only) | 0 | 0 |
+| 5.5 | Post-Meeting STT | 0 (background jobs only) | 0 | 0 |
+| 5.6 | Reminders | 1 (Reminder) | 4 | 4 |
+| 5.7 | Agent API Surface | 2 (AgentReminder, AgentContext) | 9 | 9 |
 | 6 | AI Pipeline | 0 (background jobs only) | 0 | 0 |
 | 6.5 | Meeting Memory | 1 (MeetingMemory) | 1 | 1 |
-| 7 | Tasks | 3 (ReviewQueue, Task, Reminder) | 14 | 14 |
-| 7.5 | Agent API Surface | 2 (AgentReminder, AgentContext) | 9 | 9 |
+| 7 | Tasks | 2 (ReviewQueue, Task) | 10 | 10 |
 | 8 | Integrations | 1 (Trello) | 4 | 4 |
 | **Total** | | **21 controllers** | **57 endpoint files** | **57 actions** |
 
@@ -2469,7 +2509,7 @@ This section verifies the plan's compliance with constitution v1.3.5.
 | §I Tech stack (non-negotiable) | ✅ Compliant | All technologies match constitution. pgvector active for Meeting Memory. |
 | §I Endpoint architecture | ✅ Compliant | v3.3: ASP.NET Controllers with Partial Controller Pattern. One endpoint per file via partial classes. No Minimal APIs. |
 | §II Multi-tenancy (`OrganizationId`) | ✅ Compliant | All org-scoped entities include `OrganizationId` (v3.2: `IntegrationMapping`, `Meeting`, `MeetingParticipant` fixed). Global query filter in `AppDbContext`. |
-| §II Multi-tenancy (SignalR) | ✅ Compliant | v3.2: All SignalR events scoped to `org:{OrganizationId}` Groups across all phases (incl. Phase 7 reminders, Phase 8 sync status). No `Clients.All` usage. |
+| §II Multi-tenancy (SignalR) | ✅ Compliant | v3.2: All SignalR events scoped to `org:{OrganizationId}` Groups across all phases (incl. Phase 5.6 reminders, Phase 8 sync status). No `Clients.All` usage. |
 | §II Two-level role model | ✅ Compliant | Org roles (Admin/Member/Guest) + Meeting roles (Host/CoHost/Participant/Observer) |
 | §II State separation (persistent vs ephemeral) | ✅ Compliant | No media state in PostgreSQL/Redis. LiveKit manages ephemeral state. |
 | §III Domain events for cross-feature | ✅ Compliant | Events defined in every phase. No direct cross-feature service calls. |
@@ -2503,15 +2543,16 @@ This section verifies the plan's compliance with constitution v1.3.5.
 | 4.5. Realtime Pipeline Amendment (v3.6, docs) | 0 weeks | — |
 | 5. Participant Audio Egress & Storage | 1 week | 7–8 |
 | 5.5. Post-Meeting STT (new in v3.6) | 1 week | 8–9 |
-| 6. Post-Meeting AI Pipeline + Meeting Memory | 2.5 weeks | 9–11.5 |
-| 6.5. Meeting Memory Query (RAG) | 0.5 weeks | 11.5–12 |
-| 7. Task Review Queue & Management | 1.5 weeks | 12–13.5 |
-| 7.5. Agent-Callable API Surface (new in v3.7) | 1 week | 13.5–14.5 |
-| 8. Trello Integration | 1 week | 14.5–15.5 |
-| 9. Testing & Hardening | 1 week | 15.5–16.5 |
-| 10. Demo Preparation | 1 week | 16.5–17.5 |
+| 5.6. Reminders — User-Facing | 1 week | 9.5–10.5 |
+| 5.7. Agent-Callable API Surface | 1 week | 10.5–11.5 |
+| 6. Post-Meeting AI Pipeline + Meeting Memory | 2.5 weeks | 11.5–14 |
+| 6.5. Meeting Memory Query (RAG) | 0.5 weeks | 14–14.5 |
+| 7. Task Review Queue & Management | 1.5 weeks | 14.5–16 |
+| 8. Trello Integration | 1 week | 16–17 |
+| 9. Testing & Hardening | 1 week | 17–18 |
+| 10. Demo Preparation | 1 week | 18–19 |
 
-**Total estimated duration: 17–18 weeks** (v3.7: +1 week for Phase 7.5 agent surface; +1 from v3.6 STT.)
+**Total estimated duration: 19–20 weeks** (v3.7: +1 week for Phase 5.6 Reminders, +1 week for Phase 5.7 agent surface; +1 from v3.6 STT.)
 
 ---
 
@@ -2567,20 +2608,30 @@ Tests/
 
 # Decisions & Changes
 
+## v3.8 Changes — Reminders Extracted to Independent Phases 5.6 / 5.7 (2026-04-27)
+
+| # | Change | Detail |
+|---|---|--------|
+| 134 | Reminders extracted from Phase 7 to new Phase 5.6 | All user-facing reminder endpoints (`ReminderController`, `Reminder` entity, `IReminderService`, fetch semantics, tests) moved to independent **Phase 5.6 — Reminders — User-Facing**. Placed after Phase 5.5 (Post-Meeting STT) and before Phase 6 (Post-Meeting AI Pipeline). |
+| 135 | Agent API Surface moved to Phase 5.7 | The agent-callable surface (agent JWT auth, agent reminders, agent context endpoints) moved from Phase 7.5 to **Phase 5.7 — Agent-Callable API Surface**, placed immediately after Phase 5.6. |
+| 136 | Phase 7 trimmed | Phase 7 renamed to **Task Review Queue & Task Management** and stripped of all reminder content. Reduced from 3 controllers / 14 endpoints to 2 controllers / 10 endpoints. |
+| 137 | Week ranges shifted +2 weeks downstream | All phases from 6 through 10 shifted by +2 weeks to accommodate the two new 1-week phases (5.6 and 5.7). Total timeline: 19–20 weeks. |
+| 138 | Cross-references updated | All internal references to reminder placement updated: Phase 5.6 for user reminders, Phase 5.7 for agent surface. Historical changelog entries annotated with restructure notes. |
+
 ## v3.7 Changes — Flow-2: Agent-Callable API Surface + Reminder Refactor (2026-04-24)
 
 | # | Change | Detail |
 |---|--------|--------|
-| 113 | LiveKit live agent declared external | The STT→LLM→TTS agent runs as a LiveKit Agents Framework worker hosted outside this backend. The backend's only contract is the endpoint surface defined in Phase 7.5 + the agent service-identity auth scheme. |
-| 114 | New Phase 7.5 — Agent-Callable API Surface | New phase between Phase 7 and Phase 8. 2 controllers (AgentReminder, AgentContext), 9 endpoint files. All under `/api/agent/*` with `[Authorize(Policy="AgentOnly")]`. |
+| 113 | LiveKit live agent declared external | The STT→LLM→TTS agent runs as a LiveKit Agents Framework worker hosted outside this backend. The backend's only contract is the endpoint surface defined in Phase 5.7 + the agent service-identity auth scheme. |
+| 114 | New Phase 5.7 — Agent-Callable API Surface | New phase after Phase 5.6 (Reminders) and before Phase 6 (AI Pipeline). 2 controllers (AgentReminder, AgentContext), 9 endpoint files. All under `/api/agent/*` with `[Authorize(Policy="AgentOnly")]`. |
 | 115 | Agent service-identity JWT scheme added | Separate JWT issuer with claims `agent=true`, `organizationId`, `meetingId`. Minted at meeting-room creation time. Distinct from user JWT — agents and users cannot cross-access each other's endpoints. |
 | 116 | `Reminder` entity refactored | Removed `TaskItemId` linkage; `Text` is now a free string (the thing to be reminded about). Added `Scope` (Personal/Public), `Channel` (User/Agent), `TargetUserId`, `MeetingId` (nullable), `OriginalText`, `DeliveredAtUtc`. Status simplified to `Active/Delivered/Cancelled`. |
 | 117 | `Group` scope dropped | Reminder targeting is binary: Personal (one user) or Public (all participants of a meeting). If an agent needs to target a subset, it creates N personal reminders. |
 | 118 | `OccurrenceDateUtc` rejected | Reminders cannot target a specific occurrence of a recurring meeting. `ReminderAtUtc` acts as a timing gate — the reminder fires at the first occurrence whose `scheduledStartUtc >= ReminderAtUtc`. After delivery, the reminder is closed. |
 | 119 | No Hangfire firing for reminders | `TriggerReminderJob` removed. Reminders are pure data, fetched via endpoints. No SignalR push. |
 | 120 | Phase 7 `POST /api/tasks/{taskId}/reminders` removed | Reminders no longer linked to TaskItems. Replaced by `POST /api/me/reminders` (user-created, standalone Personal). |
-| 121 | New user-facing reminder endpoints (Phase 7) | `POST /api/me/reminders`, `GET /api/me/reminders`, `POST /api/me/reminders/{id}/mark-delivered`, `DELETE /api/me/reminders/{id}`. All `[Authorize]` user-JWT. User-created reminders have `MeetingId=null` always (standalone). |
-| 122 | New agent-facing reminder endpoints (Phase 7.5) | `POST /api/agent/meetings/{meetingId}/reminders`, `GET /api/agent/meetings/{meetingId}/reminders`, `POST /api/agent/reminders/{id}/mark-delivered`. Agent can create Personal or Public; can fetch only Public; can mark delivered only on Public. |
+| 121 | New user-facing reminder endpoints (Phase 5.6) | `POST /api/me/reminders`, `GET /api/me/reminders`, `POST /api/me/reminders/{id}/mark-delivered`, `DELETE /api/me/reminders/{id}`. All `[Authorize]` user-JWT. User-created reminders have `MeetingId=null` always (standalone). |
+| 122 | New agent-facing reminder endpoints (Phase 5.7) | `POST /api/agent/meetings/{meetingId}/reminders`, `GET /api/agent/meetings/{meetingId}/reminders`, `POST /api/agent/reminders/{id}/mark-delivered`. Agent can create Personal or Public; can fetch only Public; can mark delivered only on Public. |
 | 123 | Reminder fetch semantics — `ReminderAtUtc` timing gate | User query: `Status=Active AND ReminderAtUtc <= now`. Agent query: `Status=Active AND Scope=Public AND ReminderAtUtc <= meeting.scheduledStartUtc`. Lets agent express "remind us in 2 weeks at the standup" without per-occurrence targeting. |
 | 124 | User's `GET /api/me/reminders` returns Personal AND Public | Returns all reminders affecting the user: `(TargetUserId=me) OR (Scope=Public AND MeetingId IN <my meetings>)`. Includes both user-created Personal and agent-created Public for meetings the user participates in. |
 | 125 | Agent context endpoints — focused, not mega | Six focused endpoints: `/api/agent/organization`, `/api/agent/meetings/{id}/members`, `/api/agent/meetings`, `/api/agent/meetings/{id}`, `/api/agent/meetings/recurring`, `/api/agent/meeting-tags`. Each maps 1:1 to an LLM tool — better for token efficiency than one mega-endpoint. |
@@ -2590,8 +2641,8 @@ Tests/
 | 129 | Recurring meeting model: Model A confirmed | One `Meeting` row per series with `RecurrenceConfig` JSONB. Reminders link to the series MeetingId; `ReminderAtUtc` resolves the target occurrence. Matches Google Calendar / Outlook semantics. |
 | 130 | Domain events updated | `ReminderTriggeredEvent` removed. Added `ReminderDeliveredEvent`, `ReminderCancelledEvent`, plus `AgentReminderCreatedEvent` and `AgentReminderDeliveredEvent` for audit observability. |
 | 131 | Phase 9 audit expanded | Added agent surface audit checklist: agent JWT key rotation, every agent endpoint enforces policy, `meetingId` claim verification, hard-filter on Personal reminders, cross-token rejection, member endpoint scope verification. |
-| 132 | Timeline +1 week | Phase 7.5 adds 1 week. Total: 17–18 weeks (was 16–17). |
-| 133 | Endpoint summary updated | Phase 7 grows from 11 to 14 endpoint files (+4 user reminder, –1 task reminder). Phase 7.5 adds 2 controllers / 9 endpoint files. New totals: 21 controllers, 57 endpoint files. |
+| 132 | Timeline +2 weeks | Phase 5.6 (+1 week) and Phase 5.7 (+1 week) inserted before Phase 6. Total: 19–20 weeks (was 17–18). |
+| 133 | Endpoint summary updated | Phase 5.6 adds 1 controller / 4 endpoint files (user reminders). Phase 5.7 adds 2 controllers / 9 endpoint files (agent surface). Phase 7 reduced to 2 controllers / 10 endpoint files (reminders moved out). New totals: 21 controllers, 57 endpoint files. |
 
 ## v3.6 Changes — Flow-1 Realignment: Post-Meeting STT Direction (2026-04-24)
 
@@ -2658,7 +2709,7 @@ Tests/
 | 66 | Phase 4: LiveSession controllers defined | 3 controllers (Session, Webhook, Transcript) replacing 3 Minimal API endpoints. 3 endpoint files. Full folder structure documented. |
 | 67 | Phase 5: Recording controller defined | 1 controller (Recording) replacing 2 Minimal API endpoints. 2 endpoint files. Full folder structure documented. |
 | 68 | Phase 6.5: MeetingMemory controller defined | 1 controller (MeetingMemory) replacing 1 Minimal API endpoint. RAG hybrid logic moved from endpoint to service layer. |
-| 69 | Phase 7: Task controllers defined | 3 controllers (ReviewQueue, Task, Reminder) replacing 12 Minimal API endpoints. 11 endpoint files. Full folder structure documented. |
+| 69 | Phase 7: Task controllers defined | 3 controllers (ReviewQueue, Task, Reminder) replacing 12 Minimal API endpoints. 11 endpoint files. Full folder structure documented. Later restructured: Reminder split to independent Phase 5.6 in v3.8. |
 | 70 | Phase 8: Trello controller defined | 1 controller (Trello) replacing 4 Minimal API endpoints. 4 endpoint files. Full folder structure documented. |
 | 71 | Phase 9: Partial Controller audit added | New audit checklist verifying pattern compliance: one action per file, no duplicate attributes, namespace matching, controller size limits. |
 | 72 | Phase 10: endpoint summary table added | Summary table showing 19 controllers and 41 endpoint files across all phases. |
@@ -2672,7 +2723,7 @@ Tests/
 | # | Change | Detail |
 |---|--------|--------|
 | 45 | `IntegrationMapping`: added `OrganizationId` | Required for `AppDbContext` global query filter tenant isolation (constitution §II). Without it, direct queries bypass tenant isolation. |
-| 46 | Phase 7 Reminder: explicit SignalR tenant scoping | Reminder push notifications MUST use `Clients.Group($"org:{organizationId}")`. Made explicit for consistency with v3.1 mandate across all phases. |
+| 46 | Phase 5.6 Reminder: explicit SignalR tenant scoping | Reminder push notifications MUST use `Clients.Group($"org:{organizationId}")`. Made explicit for consistency with v3.1 mandate across all phases. (Phase renumbered in v3.8.) |
 | 47 | Phase 6.5 header: week range corrected | `(Week 11)` → `(Week 11–11.5)` to match timeline table. |
 | 48 | Phase 8: SignalR sync status notifications | Added `TaskSyncCompleted` and `TaskSyncFailed` SignalR events (tenant-scoped) so users are notified of Trello sync outcomes. |
 | 49 | `Organization` entity: fields documented | Added `Id`, `Name`, `Slug`, `CreatedAtUtc` to Phase 2 entity definition. Previously the only undocumented entity. |
@@ -2739,7 +2790,7 @@ Tests/
 | 6 | No secrets management | Added user-secrets / env-var strategy in Phase 0.3 |
 | 7 | Testing deferred to Phase 8 | Distributed across every phase |
 | 8 | Missing `Summary` entity | Added to Phase 6 |
-| 9 | Missing `Reminder` entity | Added to Phase 7 |
+| 9 | Missing `Reminder` entity | Added to Phase 7 (renumbered to Phase 5.6 in v3.8) |
 | 10 | pgvector unused | ~~Replaced with org context in v2~~ → Re-added as Meeting Memory in v3 |
 | 11 | Domain events only for Meetings | Added events to all features |
 | 12 | No `CancellationToken` / DTO conventions | Added to Phase 0.3 scaffolding |
