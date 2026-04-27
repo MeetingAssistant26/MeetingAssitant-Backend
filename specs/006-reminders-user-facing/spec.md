@@ -36,6 +36,7 @@ As a user, I want to see all reminders that affect me (personal reminders I crea
 1. **Given** a user with 2 active personal reminders and 1 active public reminder for a meeting they participate in, **When** they GET `/api/me/reminders`, **Then** they receive all 3 reminders ordered by `ReminderAtUtc`.
 2. **Given** a user with 1 delivered reminder and 1 cancelled reminder, **When** they GET `/api/me/reminders`, **Then** neither appears in the response (only `Active` status is returned).
 3. **Given** a user with a public reminder for a meeting they do NOT participate in, **When** they GET `/api/me/reminders`, **Then** that public reminder is excluded.
+4. **Given** a reminder exists in Organization A and a user from Organization B is authenticated, **When** the Organization B user calls any reminder endpoint (`GET`, `POST mark-delivered`, or `DELETE`) with the Organization A reminder ID, **Then** the system returns 404 Not Found and no data from Organization A is leaked.
 
 ---
 
@@ -83,13 +84,13 @@ As a user, I want to cancel a personal reminder I created so that I can remove i
 - What happens if a user tries to create a Public reminder via `POST /api/me/reminders`? (Rejected with 422 validation error — Public reminders are agent-only.)
 - What happens if a user attempts to mark a Public reminder as delivered? (Return 403 Forbidden — only the agent can mark Public reminders delivered.)
 - What happens if a user attempts to cancel a Public reminder? (Return 403 Forbidden — users may only cancel their own Personal reminders.)
+- **Cross-tenant isolation (Critical)**: What happens when a user from Organization B attempts to access, mark-delivered, or cancel a reminder in Organization A? (Return 404 Not Found for all endpoints — the global `OrganizationId` query filter makes the reminder invisible to users outside its organization. No cross-tenant leakage.)
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: Authenticated users MUST be able to create personal reminders via `POST /api/me/reminders` with `text` and `reminderAtUtc` fields. Reminders created through this endpoint MUST have `Scope=Personal`, `Channel=User`, `TargetUserId=me`, and `MeetingId=null`.
-- **FR-001a**: The system MUST reject any request to `POST /api/me/reminders` that attempts to set `Scope=Public` (return 422 validation error).
+- **FR-001**: Authenticated users MUST be able to create personal reminders via `POST /api/me/reminders` with `text` and `reminderAtUtc` fields. Reminders created through this endpoint MUST have `Scope=Personal`, `Channel=User`, `TargetUserId=me`, and `MeetingId=null`. Any `scope` value present in the request body MUST be ignored; the server unconditionally sets `Scope=Personal` and returns 422 if the body explicitly attempts to override this behavior with validation rules.
 - **FR-002**: The system MUST validate that `text` is non-empty and `reminderAtUtc` is a valid future or present UTC timestamp.
 - **FR-003**: Authenticated users MUST be able to fetch all reminders affecting them via `GET /api/me/reminders`, returning only reminders with `Status=Active` and `ReminderAtUtc <= now`.
 - **FR-003a**: The list endpoint MUST support pagination via `page` (1-based) and `pageSize` query parameters, with a server-enforced maximum `pageSize` of 50 and a default of 20.
@@ -124,7 +125,7 @@ As a user, I want to cancel a personal reminder I created so that I can remove i
 
 ### Measurable Outcomes
 
-- **SC-001**: Users can create a personal reminder in under 30 seconds via the API endpoint.
+- **SC-001**: The create-reminder endpoint responds in under 300ms p95 under normal load with a valid JWT and proper request body.
 - **SC-002**: 100% of fetched reminders are scoped to the requesting user's organization (zero cross-tenant leakage).
 - **SC-003**: Reminder fetch queries return paginated results in under 200 milliseconds for users with up to 100 active reminders, with page sizes between 1 and 50.
 - **SC-004**: Users can mark reminders as delivered or cancel them with 100% consistency — no reminder remains in `Active` state after a successful mark-delivered or cancel operation.
@@ -149,3 +150,4 @@ As a user, I want to cancel a personal reminder I created so that I can remove i
 - Soft delete via `Status=Cancelled` is preferred over hard deletion for audit purposes.
 - Mobile and desktop clients will poll `GET /api/me/reminders` at appropriate intervals rather than relying on push notifications.
 - The system does not need to support recurring reminders; each reminder row targets exactly one occurrence.
+- Domain event reliability (100% emission) is inherited from the existing MediatR + EF Core Unit of Work pattern established in Phase 0.3: events are published in-process after the database transaction commits. Out-of-process event bus failure does not rollback the transaction, but event loss is mitigated by the in-process dispatch within the same request/background job scope.

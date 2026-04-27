@@ -30,9 +30,13 @@
 
 - [ ] T006 Configure EF Core entity mapping for `Reminder` in `src/Infrastructure/Persistence/Configurations/ReminderConfiguration.cs` (depends on T001, T002)
 - [ ] T007 Add `DbSet<Reminder>` to `AppDbContext` and wire `ReminderConfiguration` (depends on T006)
-- [ ] T008 [P] Create `IReminderService.cs` interface in `src/Features/Tasks/Services/` (depends on T003)
+- [ ] T008 [P] Create `IReminderService.cs` interface in `src/Features/Tasks/Services/` with exact method signatures:
+  - `Task<Result<ReminderResponse>> CreateReminderAsync(CreateMyReminderRequest request, Guid userId, Guid organizationId, CancellationToken ct)`
+  - `Task<Result<PaginatedList<ReminderResponse>>> GetMyRemindersAsync(Guid userId, Guid organizationId, int page, int pageSize, CancellationToken ct)`
+  - `Task<Result<ReminderResponse>> MarkDeliveredAsync(Guid reminderId, Guid userId, Guid organizationId, CancellationToken ct)`
+  - `Task<Result> CancelReminderAsync(Guid reminderId, Guid userId, Guid organizationId, CancellationToken ct)`
 - [ ] T009 Generate and apply EF Core migration `AddRemindersTable` (depends on T007)
-- [ ] T010 Create `ReminderService.cs` implementation skeleton in `src/Features/Tasks/Services/` (depends on T008)
+- [ ] T010 Create `ReminderService.cs` stub class implementing `IReminderService` in `src/Features/Tasks/Services/` (depends on T008). All methods MUST throw `NotImplementedException` until implemented in their respective user story phases.
 
 **Checkpoint**: Foundation ready — database schema exists, service interface is defined, controller definition is in place. User story implementation can now begin.
 
@@ -44,13 +48,17 @@
 
 **Independent Test**: Call `POST /api/me/reminders` with valid JWT → receive `201 Created` with `Scope=Personal`, `Channel=User`, `MeetingId=null`
 
+### Tests for User Story 1 (MANDATORY per Constitution §Development Constraints)
+
+- [ ] T011a [US1] Add integration test for create-reminder success + validation error (422) in `tests/Features/Tasks/Endpoints/Reminder/CreateMyReminderEndpointTests.cs`
+
 ### Implementation for User Story 1
 
 - [ ] T011 [US1] Implement `ReminderService.CreateReminderAsync` in `src/Features/Tasks/Services/ReminderService.cs` (depends on T010)
 - [ ] T012 [US1] Implement `CreateMyReminderEndpoint.cs` in `src/Features/Tasks/Endpoints/Reminder/` (depends on T005, T011)
 - [ ] T013 [US1] Add MediatR domain event dispatch (`ReminderCreatedEvent`) in `ReminderService.CreateReminderAsync` (depends on T011)
 
-**Checkpoint**: `POST /api/me/reminders` is fully functional. Creating a reminder returns the correct entity with all user-facing fields.
+**Checkpoint**: `POST /api/me/reminders` is fully functional. T011a integration test passes before story is considered complete.
 
 ---
 
@@ -60,13 +68,17 @@
 
 **Independent Test**: Create reminders → call `GET /api/me/reminders?page=1&pageSize=20` → receive paginated list with correct `totalCount`, `totalPages`, and `items` ordered by `ReminderAtUtc` ascending
 
+### Tests for User Story 2 (MANDATORY per Constitution §Development Constraints)
+
+- [ ] T016a [US2] Add integration test for list reminders pagination + tenant isolation (cross-org leakage = 403/empty) in `tests/Features/Tasks/Endpoints/Reminder/ListMyRemindersEndpointTests.cs`
+
 ### Implementation for User Story 2
 
 - [ ] T014 [US2] Implement `ReminderService.GetMyRemindersAsync` with pagination, tenant isolation, and `ReminderAtUtc` filter in `src/Features/Tasks/Services/ReminderService.cs` (depends on T010)
-- [ ] T015 [US2] Create `PaginatedList<T>` response wrapper (if not already existing) in `src/Shared/Models/PaginatedList.cs`
+- [ ] T015 [US2] Verify `PaginatedList<T>` exists in `src/Shared/Models/` (may already exist from Phase 3 — Meetings). If absent, create it with fields: `Items`, `Page`, `PageSize`, `TotalCount`, `TotalPages`.
 - [ ] T016 [US2] Implement `ListMyRemindersEndpoint.cs` in `src/Features/Tasks/Endpoints/Reminder/` (depends on T005, T014, T015)
 
-**Checkpoint**: `GET /api/me/reminders` returns paginated active reminders. Personal + public reminders for meetings the user participates in are both returned. Delivered/cancelled reminders are excluded.
+**Checkpoint**: `GET /api/me/reminders` returns paginated active reminders. T016a integration test passes before story is considered complete.
 
 ---
 
@@ -76,13 +88,17 @@
 
 **Independent Test**: Create a reminder → call `POST /api/me/reminders/{id}/mark-delivered` → status changes to `Delivered` with `DeliveredAtUtc` set. Re-calling returns `200 OK` idempotently.
 
+### Tests for User Story 3 (MANDATORY per Constitution §Development Constraints)
+
+- [ ] T018a [US3] Add integration test for mark-delivered success + idempotency + 403 on public reminder in `tests/Features/Tasks/Endpoints/Reminder/MarkMyReminderDeliveredEndpointTests.cs`
+
 ### Implementation for User Story 3
 
 - [ ] T017 [US3] Implement `ReminderService.MarkDeliveredAsync` with ownership/scope checks and idempotency in `src/Features/Tasks/Services/ReminderService.cs` (depends on T010)
 - [ ] T018 [US3] Implement `MarkMyReminderDeliveredEndpoint.cs` in `src/Features/Tasks/Endpoints/Reminder/` (depends on T005, T017)
 - [ ] T019 [US3] Add MediatR domain event dispatch (`ReminderDeliveredEvent`) in `ReminderService.MarkDeliveredAsync` (depends on T017)
 
-**Checkpoint**: `POST /api/me/reminders/{id}/mark-delivered` marks personal reminders as delivered. Idempotent on re-invocation. Returns 403 for public reminders or other users' reminders.
+**Checkpoint**: `POST /api/me/reminders/{id}/mark-delivered` marks personal reminders as delivered. T018a integration test passes before story is considered complete.
 
 ---
 
@@ -92,25 +108,29 @@
 
 **Independent Test**: Create a reminder → call `DELETE /api/me/reminders/{id}` → status changes to `Cancelled`. Attempting to cancel an already-delivered reminder returns `409 Conflict`.
 
+### Tests for User Story 4 (MANDATORY per Constitution §Development Constraints)
+
+- [ ] T021a [US4] Add integration test for cancel success + 409 on delivered + 403 on public/other-user reminder in `tests/Features/Tasks/Endpoints/Reminder/CancelMyReminderEndpointTests.cs`
+
 ### Implementation for User Story 4
 
 - [ ] T020 [US4] Implement `ReminderService.CancelReminderAsync` with ownership checks and terminal-state guard in `src/Features/Tasks/Services/ReminderService.cs` (depends on T010)
 - [ ] T021 [US4] Implement `CancelMyReminderEndpoint.cs` in `src/Features/Tasks/Endpoints/Reminder/` (depends on T005, T020)
 - [ ] T022 [US4] Add MediatR domain event dispatch (`ReminderCancelledEvent`) in `ReminderService.CancelReminderAsync` (depends on T020)
 
-**Checkpoint**: `DELETE /api/me/reminders/{id}` soft-cancels personal reminders. Returns 403 for public/other-user reminders. Returns 409 for already-delivered/cancelled reminders.
+**Checkpoint**: `DELETE /api/me/reminders/{id}` soft-cancels personal reminders. T021a integration test passes before story is considered complete.
 
 ---
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-**Purpose**: Integration tests, tenant isolation validation, and documentation alignment
+**Purpose**: Unit tests, contract tests, tenant isolation validation, and documentation alignment
 
 - [ ] T023 [P] Add unit tests for `ReminderService` business rules (tenant isolation, pagination logic, state transitions) in `tests/Features/Tasks/Services/ReminderServiceTests.cs`
-- [ ] T024 [P] Add integration tests for all 4 endpoints covering success + error scenarios in `tests/Features/Tasks/Endpoints/Reminder/`
-- [ ] T025 [P] Add contract tests verifying response shapes match `contracts/api-contracts.md` in `tests/Features/Tasks/Contracts/`
+- [ ] T024 [P] Add contract tests verifying response shapes match `contracts/api-contracts.md` in `tests/Features/Tasks/Contracts/`
+- [ ] T025 [P] Add cross-tenant isolation integration test: create reminder in Org A, verify user from Org B cannot access via any endpoint in `tests/Features/Tasks/Endpoints/Reminder/TenantIsolationTests.cs`
 - [ ] T026 Verify database indexes `(TargetUserId, Status)` and `(MeetingId, Scope, Status)` are present in migration
-- [ ] T027 Validate `quickstart.md` curl examples against running API
+- [ ] T027 Convert `quickstart.md` validation into automated integration test in `tests/Features/Tasks/Endpoints/Reminder/QuickstartValidationTests.cs` (exercises the same flows as curl examples programmatically)
 
 ---
 
@@ -214,4 +234,4 @@ With multiple developers:
 - Tenant isolation is enforced in the service layer (`OrganizationId` filter) AND via EF Core global query filter
 - `CancellationToken` parameter must be present on all async service methods and endpoint actions
 - All endpoints use `result.ToProblem(correlationIdProvider)` for error responses per Constitution §V
-- No test tasks are generated by default (TDD was not requested). Phase 7 includes optional integration/contract tests.
+- Per Constitution §Development Constraints, every user story MUST have at least one automated integration test covering its acceptance scenarios before the story is considered complete. Contract tests and unit tests are part of Phase 7 (Polish).
