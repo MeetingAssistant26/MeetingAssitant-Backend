@@ -17,8 +17,9 @@ As a meeting participant, I want to create personal reminders so that I can trac
 
 **Acceptance Scenarios**:
 
-1. **Given** an authenticated user with a valid JWT, **When** they POST to `/api/me/reminders` with `{ text: "Follow up with client", reminderAtUtc: "2026-05-01T09:00:00Z" }`, **Then** the system creates an `Active` reminder with `Scope=Personal`, `Channel=User`, `TargetUserId=me`, and returns the created reminder.
+1. **Given** an authenticated user with a valid JWT, **When** they POST to `/api/me/reminders` with `{ text: "Follow up with client", reminderAtUtc: "2026-05-01T09:00:00Z" }`, **Then** the system creates an `Active` reminder with `Scope=Personal`, `Channel=User`, `TargetUserId=me`, `MeetingId=null`, and returns the created reminder.
 2. **Given** an authenticated user, **When** they create a reminder without required fields (missing text or reminderAtUtc), **Then** the system returns a validation error (422) and no reminder is created.
+3. **Given** an authenticated user, **When** they POST to `/api/me/reminders` with an explicit `Scope=Public` in the body, **Then** the system returns a validation error (422) and no reminder is created.
 
 ---
 
@@ -50,7 +51,8 @@ As a user, I want to mark a reminder as delivered so that I can track which item
 
 1. **Given** a user owns an active personal reminder, **When** they POST `/api/me/reminders/{id}/mark-delivered`, **Then** the reminder's status changes to `Delivered` and `DeliveredAtUtc` is set to the current time.
 2. **Given** a user attempts to mark another user's personal reminder as delivered, **When** they POST `/api/me/reminders/{id}/mark-delivered`, **Then** the system returns a 403 forbidden error.
-3. **Given** a user attempts to mark an already-delivered reminder as delivered, **When** they POST the endpoint, **Then** the system returns a 409 conflict or idempotent success.
+3. **Given** a user attempts to mark a Public reminder (which they can see but do not own) as delivered, **When** they POST `/api/me/reminders/{id}/mark-delivered`, **Then** the system returns a 403 forbidden error.
+4. **Given** a user attempts to mark an already-delivered reminder as delivered, **When** they POST the endpoint, **Then** the system returns 200 OK idempotently with the unchanged reminder state.
 
 ---
 
@@ -77,16 +79,22 @@ As a user, I want to cancel a personal reminder I created so that I can remove i
 - What happens if a public reminder's associated meeting is deleted or the user leaves the meeting? (The public reminder is still returned if the user participates at fetch time; if they no longer participate, it is excluded via `MeetingId IN <my meetings>` filter.)
 - How does the system prevent users from seeing reminders from other organizations? (Tenant isolation enforced via `OrganizationId` and global query filters.)
 - What happens when `ReminderAtUtc` is exactly equal to `now`? (Included in fetch results, since filter is `<= now`.)
+- What happens when a user requests `pageSize` above the server maximum or `page` beyond the total pages? (Return a validation error for oversized `pageSize`; return an empty array with pagination metadata for out-of-range `page`.)
+- What happens if a user tries to create a Public reminder via `POST /api/me/reminders`? (Rejected with 422 validation error — Public reminders are agent-only.)
+- What happens if a user attempts to mark a Public reminder as delivered? (Return 403 Forbidden — only the agent can mark Public reminders delivered.)
+- What happens if a user attempts to cancel a Public reminder? (Return 403 Forbidden — users may only cancel their own Personal reminders.)
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: Authenticated users MUST be able to create personal reminders via `POST /api/me/reminders` with `text` and `reminderAtUtc` fields.
+- **FR-001**: Authenticated users MUST be able to create personal reminders via `POST /api/me/reminders` with `text` and `reminderAtUtc` fields. Reminders created through this endpoint MUST have `Scope=Personal`, `Channel=User`, `TargetUserId=me`, and `MeetingId=null`.
+- **FR-001a**: The system MUST reject any request to `POST /api/me/reminders` that attempts to set `Scope=Public` (return 422 validation error).
 - **FR-002**: The system MUST validate that `text` is non-empty and `reminderAtUtc` is a valid future or present UTC timestamp.
 - **FR-003**: Authenticated users MUST be able to fetch all reminders affecting them via `GET /api/me/reminders`, returning only reminders with `Status=Active` and `ReminderAtUtc <= now`.
+- **FR-003a**: The list endpoint MUST support pagination via `page` (1-based) and `pageSize` query parameters, with a server-enforced maximum `pageSize` of 50 and a default of 20.
 - **FR-004**: The fetch query MUST return reminders where `(TargetUserId = me AND Scope = Personal)` OR `(Scope = Public AND MeetingId IN <meetings the user participates in>)`.
-- **FR-005**: Authenticated users MUST be able to mark their own personal reminders as delivered via `POST /api/me/reminders/{id}/mark-delivered`.
+- **FR-005**: Authenticated users MUST be able to mark their own Personal reminders as delivered via `POST /api/me/reminders/{id}/mark-delivered`. Attempts to mark a Public reminder as delivered MUST return 403 Forbidden.
 - **FR-006**: Authenticated users MUST be able to soft-cancel their own personal reminders via `DELETE /api/me/reminders/{id}`.
 - **FR-007**: The system MUST enforce tenant isolation so users cannot see, mark, or cancel reminders belonging to another organization.
 - **FR-008**: The system MUST emit domain events (`ReminderCreatedEvent`, `ReminderDeliveredEvent`, `ReminderCancelledEvent`) for downstream observability.
@@ -118,9 +126,18 @@ As a user, I want to cancel a personal reminder I created so that I can remove i
 
 - **SC-001**: Users can create a personal reminder in under 30 seconds via the API endpoint.
 - **SC-002**: 100% of fetched reminders are scoped to the requesting user's organization (zero cross-tenant leakage).
-- **SC-003**: Reminder fetch queries return results in under 200 milliseconds for users with up to 100 active reminders.
+- **SC-003**: Reminder fetch queries return paginated results in under 200 milliseconds for users with up to 100 active reminders, with page sizes between 1 and 50.
 - **SC-004**: Users can mark reminders as delivered or cancel them with 100% consistency — no reminder remains in `Active` state after a successful mark-delivered or cancel operation.
 - **SC-005**: All reminder lifecycle transitions emit the correct domain event with 100% reliability for audit and downstream processing.
+
+## Clarifications
+
+### Session 2026-04-27
+
+- **Q**: Should the system enforce a maximum number of active reminders per user, and should the list endpoint support pagination? → **A**: Pagination with max limit (e.g., 20–50 per page), no hard cap on total reminders. Return all active reminders in one response only if count is below the page size; otherwise require page/cursor parameters.
+- **Q**: Should `POST /api/me/reminders` be strictly Personal-only, or should users also be able to create Public reminders? → **A**: Strictly Personal-only. The user-facing endpoint only creates Personal reminders. Public reminders are created exclusively by the agent surface (Phase 5.7) or admin functions.
+- **Q**: When a user attempts to mark a Public reminder as delivered, what should the API response be? → **A**: Return 403 Forbidden with a clear error message. Users may only mark their own Personal reminders as delivered. Public reminders are managed by the agent.
+- **Q**: Should `POST /api/me/reminders/{id}/mark-delivered` return 409 Conflict or idempotent 200 OK when called on an already-delivered reminder? → **A**: Idempotent 200 OK with the reminder state unchanged. Repeated identical requests produce the same result without side effects. 409 Conflict is reserved for true race conditions (e.g., concurrent conflicting updates from different users).
 
 ## Assumptions
 
