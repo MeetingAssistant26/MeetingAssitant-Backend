@@ -77,7 +77,7 @@ As a user, I want to cancel a personal reminder I created so that I can remove i
 
 - What happens when a user creates a reminder with `ReminderAtUtc` in the past? (Allowed — it will be immediately visible in fetches.)
 - How does the system handle a fetch when the user has no reminders? (Returns an empty array with 200 OK.)
-- What happens if a public reminder's associated meeting is deleted or the user leaves the meeting? (The public reminder is still returned if the user participates at fetch time; if they no longer participate, it is excluded via `MeetingId IN <my meetings>` filter.)
+- What happens if a public reminder's associated meeting is cancelled? (The public reminder is excluded because the join query filters `Meeting.Status != Cancelled`. The `MeetingParticipant` row may still exist, but the meeting itself is no longer active.)
 - How does the system prevent users from seeing reminders from other organizations? (Tenant isolation enforced via `OrganizationId` and global query filters.)
 - What happens when `ReminderAtUtc` is exactly equal to `now`? (Included in fetch results, since filter is `<= now`.)
 - What happens when a user requests `pageSize` above the server maximum or `page` beyond the total pages? (Return a validation error for oversized `pageSize`; return an empty array with pagination metadata for out-of-range `page`.)
@@ -94,7 +94,7 @@ As a user, I want to cancel a personal reminder I created so that I can remove i
 - **FR-002**: The system MUST validate that `text` is non-empty and `reminderAtUtc` is a valid future or present UTC timestamp.
 - **FR-003**: Authenticated users MUST be able to fetch all reminders affecting them via `GET /api/me/reminders`, returning only reminders with `Status=Active` and `ReminderAtUtc <= now`.
 - **FR-003a**: The list endpoint MUST support pagination via `page` (1-based) and `pageSize` query parameters, with a server-enforced maximum `pageSize` of 50 and a default of 20.
-- **FR-004**: The fetch query MUST return reminders where `(TargetUserId = me AND Scope = Personal)` OR `(Scope = Public AND MeetingId IN <meetings the user participates in>)`.
+- **FR-004**: The fetch query MUST return reminders where `(TargetUserId = me AND Scope = Personal)` OR `(Scope = Public AND MeetingId IN <meetings the user participates in that are NOT Cancelled>)`.
 - **FR-005**: Authenticated users MUST be able to mark their own Personal reminders as delivered via `POST /api/me/reminders/{id}/mark-delivered`. Attempts to mark a Public reminder as delivered MUST return 403 Forbidden.
 - **FR-006**: Authenticated users MUST be able to soft-cancel their own personal reminders via `DELETE /api/me/reminders/{id}`.
 - **FR-007**: The system MUST enforce tenant isolation so users cannot see, mark, or cancel reminders belonging to another organization.

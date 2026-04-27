@@ -109,7 +109,7 @@ Reminder
 └── Meeting → Meeting (via MeetingId, nullable)
 ```
 
-**Note**: No explicit navigation properties to `ApplicationUser` or `Meeting` are required. Queries use ID lookups through `MeetingParticipant` for the "affecting me" list filter.
+**Note**: No explicit navigation properties to `ApplicationUser` or `Meeting` are required. Queries use ID lookups through `MeetingParticipant` joined with `Meeting` (filtered by `Meeting.Status != Cancelled`) for the "affecting me" list filter.
 
 ## State Transitions
 
