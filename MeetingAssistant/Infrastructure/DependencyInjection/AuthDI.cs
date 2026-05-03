@@ -1,4 +1,5 @@
 using MeetingAssistant.Features.Identity.Entites;
+using MeetingAssistant.Features.AgentApi.Services;
 using MeetingAssistant.Api.Infrastructure.Configuration;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -32,10 +33,27 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                     "Jwt settings must include SigningKey (>= 32 chars), Issuer, Audience, TokenExpiryMinutes > 0, and RefreshTokenExpiryDays > 0.")
                 .ValidateOnStart();
 
+            services.AddOptions<AgentJwtSettings>()
+                .BindConfiguration("AgentJwt")
+                .Validate(settings =>
+                    !string.IsNullOrWhiteSpace(settings.SigningKey) &&
+                    settings.SigningKey.Length >= 32 &&
+                    !string.IsNullOrWhiteSpace(settings.Issuer) &&
+                    !string.IsNullOrWhiteSpace(settings.Audience) &&
+                    settings.TokenExpiryMinutes > 0,
+                    "AgentJwt settings must include SigningKey (>= 32 chars), Issuer, Audience, and TokenExpiryMinutes > 0.")
+                .ValidateOnStart();
+
             var jwtSettings = configuration.GetSection("Jwt").Get<JwtSettings>();
             if (jwtSettings is null || string.IsNullOrWhiteSpace(jwtSettings.SigningKey))
             {
                 throw new InvalidOperationException("Missing Jwt configuration. Set Jwt:SigningKey via user-secrets or environment variables.");
+            }
+
+            var agentJwtSettings = configuration.GetSection("AgentJwt").Get<AgentJwtSettings>();
+            if (agentJwtSettings is null || string.IsNullOrWhiteSpace(agentJwtSettings.SigningKey))
+            {
+                throw new InvalidOperationException("Missing AgentJwt configuration. Set AgentJwt:SigningKey via user-secrets or environment variables.");
             }
 
             var issuerSigningKeys = new List<SecurityKey>
@@ -76,7 +94,22 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                         ClockSkew = TimeSpan.Zero
                  };
 
-            });
+            })
+                .AddJwtBearer(AgentAuthenticationDefaults.Scheme, options =>
+                {
+                    options.SaveToken = true;
+                    options.TokenValidationParameters = new TokenValidationParameters
+                    {
+                        ValidateIssuerSigningKey = true,
+                        ValidateAudience = true,
+                        ValidateIssuer = true,
+                        ValidateLifetime = true,
+                        ValidIssuer = agentJwtSettings.Issuer,
+                        ValidAudience = agentJwtSettings.Audience,
+                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(agentJwtSettings.SigningKey!)),
+                        ClockSkew = TimeSpan.Zero
+                    };
+                });
 
             services.Configure<IdentityOptions>(options =>
             {
@@ -112,6 +145,11 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                 options.AddPolicy("RequireOrgAccess", policy =>
                     policy.RequireAuthenticatedUser()
                           .RequireClaim("org_role", "Admin", "Member", "Guest"));
+
+                options.AddPolicy(AgentAuthenticationDefaults.Policy, policy =>
+                    policy.RequireAuthenticatedUser()
+                          .AddAuthenticationSchemes(AgentAuthenticationDefaults.Scheme)
+                          .RequireClaim(AgentAuthenticationDefaults.AgentClaim, "true"));
             });
 
             return services;

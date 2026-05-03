@@ -46,6 +46,7 @@ public abstract class IntegrationTestBase : IClassFixture<MeetingAssistantWebFac
     private static async Task CleanDatabaseAsync(ApplicationDbContext db)
     {
         // Delete in dependency order (children before parents)
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"Reminders\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"SessionEvents\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"ParticipantAudioTracks\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingSummaries\"");
