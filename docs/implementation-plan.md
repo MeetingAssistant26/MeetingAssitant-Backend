@@ -2,7 +2,7 @@
 
 ## Revised Implementation Plan (v3.3 — Partial Controller Pattern)
 
-### .NET 10 + LiveKit Cloud + LLM Abstraction + Meeting Memory (RAG)
+### .NET 10 + LiveKit Cloud + LLM Abstraction + Action Items & Trello Integration
 
 **Constitution**: v1.3.2 → v1.4.0 (amendments applied) | **Author**: Solo Developer | **Date**: 2026-03-13
 
@@ -15,12 +15,11 @@
 
 | Term | What It Is | Where It Lives | Used For |
 |------|-----------|----------------|----------|
-| **Member Context** | Human-authored descriptions of each member's role, expertise, and responsibilities within the organization | `UserOrgMembership.Context` (text column) | Injected into LLM prompts during task extraction so the model can suggest appropriate assignees |
-| **Meeting Memory** | Vectorized embeddings of past meeting summaries and key transcript segments | `MeetingEmbedding` table (pgvector `vector(1536)`) | RAG retrieval — enables queries like *"What did we say about Flutter last time?"* by finding semantically similar past content |
+| **Member Context** | Human-authored descriptions of each member's role, expertise, and responsibilities within the organization | `UserOrgMembership.Context` (text column) | Injected into LLM prompts during action item extraction so the model can resolve assignees from the participant roster |
 
-> These serve different purposes and MUST NOT be confused. Member Context is
-> relational text managed by humans. Meeting Memory is AI-generated vector
-> data managed by the post-meeting pipeline.
+> Member Context is relational text managed by humans. It is injected into the
+> LLM prompt alongside the participant roster to improve action-item assignee
+> resolution.
 
 ### Key Architectural Decisions (v3.3)
 
@@ -32,12 +31,10 @@
 | **Pipelines** | Realtime pipeline (live transcription) separated from post-meeting AI pipeline |
 | **Task sync** | Human-in-the-loop Review Queue before any external sync |
 | **Member Context** | `UserOrgMembership.Context` text field — human-managed role/expertise descriptions |
-| **Meeting Memory** | pgvector RAG — vectorized summaries & transcript segments for cross-meeting recall (UC-M3.3-003) |
-| **RAG query pattern** | Hybrid sync/async — attempt synchronous with 3s timeout, fall back to Hangfire + SignalR (constitution §9.2 compliant) |
+| **Action Items** | Extracted from transcripts via LLM with participant roster matching; reviewed before Trello sync |
+| **Trello sync** | One-way Platform → Trello; API Key + Token model; member mapping with graceful fallback for unmapped users |
 | **Recording pipeline** | LiveKit Cloud Egress → Cloud storage → Hangfire download job → local MinIO |
-| **SignalR tenant safety** | All notifications scoped to `OrganizationId` SignalR Groups — no broadcast to all clients (v3.1) |
 | **Membership model** | Simplified: one active organization per user. `UserOrgMembership` preserved for metadata. Registration requires organization (v3.4) |
-| **Transcription flush** | 10-second ready-check delay before `SummarizeTranscriptJob` to ensure all webhook segments are persisted (v3.1) |
 | **Endpoint architecture** | Partial Controller Pattern — one endpoint per file, controller definition separated (v3.3) |
 
 ---
@@ -262,12 +259,6 @@ Implement:
 - JWT configuration (signing keys from config — never hardcoded)
 - Redis connection
 - Hangfire configuration
-- SignalR base hub with **tenant-scoped groups** (v3.4 simplified):
-  - On connection, authenticate the user via JWT, then read the `organizationId` claim from the token
-  - Add the connection to exactly **one** SignalR Group: `org:{organizationId}`
-  - On disconnect, ASP.NET Core automatically removes the connection from all groups
-  - **All background job notifications** (AI status updates, task events, RAG answers, reminders) MUST be sent to `Clients.Group($"org:{organizationId}")`, NEVER to `Clients.All`
-  - This prevents tenant data leaks in the shared multi-tenant SignalR hub (constitution §2.1)
 
 ### LLM & Embedding Abstraction Layers
 
@@ -364,7 +355,7 @@ Deliverables:
 - Partial Controller folder structure scaffolded for all features
 
 **Tests (Phase 0)**:
-- Smoke test: DB connection, Redis ping, Hangfire dashboard, SignalR connect, pgvector extension loaded
+- Smoke test: DB connection, Redis ping, Hangfire dashboard, pgvector extension loaded
 - Unit: `ILLMService` mock verifies contract compliance
 - Unit: `IEmbeddingService` mock verifies contract compliance
 
@@ -989,7 +980,7 @@ Deliverable:
 > | Pipeline | Scope | Runs |
 > |----------|-------|------|
 > | **Realtime** (this phase) | Live audio/video, live transcription, UI captions | During the meeting |
-> | **Post-meeting AI** (Phase 6) | Summarization, task extraction, insights | After meeting ends, async via Hangfire |
+> | **Post-meeting AI** (Phase 6) | Summarization, action item extraction, Trello sync | After meeting ends, async via Hangfire |
 
 ## LiveKit Cloud Integration
 
@@ -1121,15 +1112,6 @@ public partial class TranscriptController : ControllerBase
 
 > **Note**: The Meeting Memory query endpoint (RAG) has been moved to
 > Phase 6.5, after the embedding pipeline is built in Phase 6.
-
-## SignalR Notifications (tenant-scoped — v3.1)
-
-All SignalR messages in this phase MUST be sent to `Clients.Group($"org:{organizationId}")`.
-Never broadcast to `Clients.All`.
-
-- Meeting start/end signals → sent to org group
-- Participant join/leave notifications → sent to org group
-- Live transcription status (active / paused / error) → sent to org group
 
 ## Tests (Phase 4)
 
@@ -1323,15 +1305,6 @@ Features/
 > for hours-long meetings. Using an LLM to merge would cost tokens, introduce
 > nondeterminism, and produce an intermediate artifact nobody consumes.
 
-## SignalR AI Status Updates (tenant-scoped per v3.1)
-
-All events below MUST be sent to `Clients.Group($"org:{organizationId}")` only.
-
-- `TranscriptionStarted`
-- `TranscriptionProgress` (optional — count of completed tracks / total)
-- `TranscriptionCompleted`
-- `TranscriptionFailed`
-
 ## Tests (Phase 5.5)
 
 - Unit: `TranscribeParticipantAudioJob` with mocked `ISpeechToTextService`
@@ -1339,12 +1312,11 @@ All events below MUST be sent to `Clients.Group($"org:{organizationId}")` only.
 - Unit: join-barrier completes event exactly once when N tracks finish
 - Unit: retry/failure state transitions on STT provider errors
 - Integration: `ParticipantAudioReadyEvent` → N parallel jobs → `MeetingTranscriptReadyEvent`
-- Integration: SignalR tenant isolation (correct org group only)
 
 Deliverable:
 - `ISpeechToTextService` registered and swappable
 - Per-participant audio → speaker-attributed `TranscriptSegment` rows
-- `MeetingTranscriptReadyEvent` drives Phase 6 summarization
+- `MeetingTranscriptReadyEvent` drives Phase 6 summarization and action item extraction
 - 0 controllers, 0 endpoint files (background jobs only)
 
 ---
@@ -1704,675 +1676,324 @@ Deliverable:
 
 ---
 
-# Phase 6 — Post-Meeting AI Pipeline + Meeting Memory (Weeks 11.5–14) (refactor in v3.6)
+# Phase 6 — Action Items & Trello Integration (Weeks 11.5–14)
 
-> This is the **asynchronous post-meeting pipeline**. It runs entirely via
-> Hangfire background jobs after a meeting ends. No AI processing occurs
-> during the request pipeline (constitution §9.2).
+> This phase replaces the previous Phase 6 (Meeting Memory + Task Review Queue)
+> and Phase 8 (Trello Integration). It implements the complete flow from
+> post-meeting action-item extraction through human review to one-way Trello sync.
 >
-> **New in v3**: This phase now includes the **Meeting Memory** embedding
-> pipeline that powers the RAG query endpoint in Phase 6.5.
+> **Key decisions**:
+> - Action item extraction runs in parallel with summarization after transcript completion.
+> - LLM receives the full participant roster (with IDs) to resolve assignees deterministically.
+> - Sync is one-way only: Platform → Trello. No Trello webhooks or bidirectional updates.
+> - Trello auth uses API Key + Token model (OAuth 1.0a deferred).
+> - No SignalR notifications. Status updates are poll-based via API.
 
-## AI Pipeline Architecture
+## 6.1 Post-Meeting Pipeline Architecture
 
+After `GenerateMeetingTranscriptJob` persists the transcript, it publishes a
+`MeetingTranscriptReadyEvent` via MediatR. Two independent handlers listen:
+
+| Handler | Enqueues Job | Input | Output |
+|---------|--------------|-------|--------|
+| `EnqueueSummaryGenerationHandler` | `GenerateMeetingSummaryJob` | Transcript text | `MeetingSummary` |
+| `EnqueueActionItemExtractionHandler` | `ExtractActionItemsJob` | Transcript text | `List<ActionItem>` |
+
+This avoids making the summary job a bottleneck for action items.
+
+---
+
+## 6.2 Action Item Extraction (`ExtractActionItemsJob`)
+
+**Step 1: Build Participant Roster**
+Fetch all `MeetingParticipant` records for the meeting:
+
+```json
+[
+  { "participantId": "...", "userId": "...", "displayName": "Ahmed Hassan", "role": "Host" },
+  { "participantId": "...", "userId": null, "displayName": "External Guest", "role": "Participant" }
+]
 ```
-MeetingTranscriptReadyEvent (from Phase 5.5)
-  │
-  ├──→ [Hangfire] SummarizeTranscriptJob
-  │       → Collect TranscriptSegments from DB (ORDER BY StartTime)
-  │       → Retrieve Member Context from UserOrgMembership.Context
-  │       → Call ILLMService for summarization
-  │       → Store Summary entity
-  │       → Emit SummaryGeneratedEvent
-  │
-  └──→ [Hangfire] (triggered by SummaryGeneratedEvent)
-          │
-          ├──→ ExtractTasksJob
-          │       → Call ILLMService with extraction prompt
-          │       → Include Member Context for assignee suggestions
-          │       → Store TaskItem entities (Status = PendingReview)
-          │       → Emit TasksExtractedEvent
-          │
-          ├──→ GenerateMeetingMemoryJob (NEW in v3)
-          │       → Chunk summary content into segments
-          │       → Select key transcript segments (speaker changes, decisions, action items)
-          │       → Call IEmbeddingService.EmbedBatchAsync(chunks)
-          │       → Store MeetingEmbedding entities (pgvector)
-          │       → Emit MeetingMemoryGeneratedEvent
-          │
-          └──→ GenerateInsightsJob (future — placeholder)
-                  → Action item trends, participation patterns, etc.
-```
 
-All LLM calls go through `ILLMService`, all embedding calls through `IEmbeddingService` — both provider-agnostic.
+Include `UserId` where available; use `MeetingParticipant.Id` as the fallback
+identifier for participants without platform accounts.
 
-## Transcript Completeness (v3.6)
+**Step 2: LLM Prompt**
+Send the transcript + roster to the outsourced LLM with a structured system
+prompt:
 
-With post-meeting STT (Phase 5.5), `SummarizeTranscriptJob` is triggered by
-`MeetingTranscriptReadyEvent`, which fires only after all per-participant STT
-jobs have completed. The transcript is therefore complete by construction
-before summarization starts. The v3.1 "Transcription Flush Ready-Check" is no
-longer applicable and has been removed.
+> *"Given the transcript and the participant roster above, extract action items.
+> For each item, return: title, description, responsibleParticipantId (from the
+> roster), dueDate. If the responsible person is not in the roster, return null
+> for the id."*
 
-## Member Context in Prompts (unchanged from v2)
+**Step 3: Persist**
+- Deserialize response.
+- Map `responsibleParticipantId` to `AssignedToParticipantId`.
+- If `UserId` is present on the participant → set `AssignedToUserId`.
+- If `UserId` is null → leave `AssignedToUserId` empty (plain-text assignee fallback).
+- `Status = PendingReview`.
 
-During task extraction, the system:
+**Idempotency:** Before inserting, check `ActionItems.Any(x => x.MeetingId == meetingId)`. If items exist, exit.
 
-1. Loads all `UserOrgMembership` records for the meeting's org (including the `Context` field)
-2. Constructs a **Member Context** roster block for the LLM prompt:
-   ```
-   Organization Members:
-   - Ahmed (backend engineer)
-   - Sara (UI/UX lead)
-   - Ali (DevOps and infrastructure)
-   ```
-3. The LLM uses this Member Context to suggest assignees for extracted tasks
+**Edge case — LLM hallucination / bad JSON:** Wrap deserialization in try/catch. Log raw response and abort. Do not crash the job.
 
-> **Terminology**: This is **Member Context** — human-managed role descriptions.
-> It is NOT the same as Meeting Memory (see below).
+---
 
-## Meeting Memory — Embedding Pipeline (new in v3)
+## 6.3 Action Item Review & Approval Flow
 
-After summarization completes, the `GenerateMeetingMemoryJob` builds the
-vector store that powers cross-meeting RAG queries (UC-M3.3-003).
+**Permissions:** Hosts, CoHosts, and Org Admins can review.
 
-### What gets embedded
-
-| Source | Chunking Strategy | Purpose |
-|--------|------------------|---------|
-| Summary content | One embedding per summary section (key decisions, action items, discussion points) | High-level meeting recall |
-| Key transcript segments | Speaker-change boundaries + decision/action markers | Granular *"What did X say about Y?"* queries |
-
-### Embedding flow
-
-1. Chunk the `Summary.Content` JSONB into logical sections
-2. Select significant `TranscriptSegment` runs (filtered by length, speaker changes, keywords)
-3. Call `IEmbeddingService.EmbedBatchAsync(allChunks)`
-4. Store each vector as a `MeetingEmbedding` row with metadata
-
-### How RAG queries use Meeting Memory
-
-When the Phase 6.5 endpoint `POST /api/organizations/{orgId}/meetings/ask` is called:
-
-1. Embed the user's question via `IEmbeddingService.EmbedAsync(question)`
-2. Query `MeetingEmbedding` with pgvector cosine similarity (`<=>` operator)
-   - Filtered by `OrganizationId` (tenant isolation)
-   - Optional filter by date range, meeting ID, or tags
-   - Returns top-K results (default K=5)
-3. Assemble retrieved chunks + user question into an LLM prompt
-4. Call `ILLMService.CompleteAsync(ragPrompt)` for a context-aware answer
-
-## Entities
-
-- **`Summary`**:
-  - `Id`, `MeetingId`, `OrganizationId`
-  - `Content` (JSONB — structured: key decisions, action items, discussion points)
-  - `Status` (Pending / Processing / Completed / Failed)
-  - `CreatedAtUtc`
-
-- **`MeetingEmbedding`** (new in v3):
-  - `Id` (Guid)
-  - `MeetingId`, `OrganizationId`
-  - `SourceType` (enum: Summary / TranscriptSegment)
-  - `SourceId` (Guid — references either Summary.Id or TranscriptSegment.Id)
-  - `ChunkText` (text — the original text that was embedded, for display in RAG results)
-  - `Embedding` (pgvector `vector(1536)`)
-  - `CreatedAtUtc`
-  - **Index**: IVFFlat or HNSW index on `Embedding` column, partitioned by `OrganizationId`
-
-> **Base entity note**: All entities above inherit the base entity defined in
-> Phase 0.3 (`CreatedAtUtc`, `UpdatedAtUtc`). `MeetingEmbedding` rows are
-> write-once/immutable — `UpdatedAtUtc` is inherited but never modified.
-
-- **`TaskItem`**:
-  - `Id`, `MeetingId`, `OrganizationId`
-  - `Title`, `Description`
-  - `SuggestedAssigneeUserId` — LLM-suggested assignee (not confirmed)
-  - `AssigneeUserId` — confirmed assignee (set after human review)
-  - `DueDate`
-  - `ReviewStatus` (PendingReview / Approved / Rejected / Edited)
-  - `Status` (Draft / Open / InProgress / Completed / Failed)
-  - `SourceSummaryId`
-  - `ExternalId` (for Trello sync — populated only after approval + sync)
-  - `CreatedAtUtc`
-
-## Folder Structure
+**Folder Structure**
 
 ```text
 Features/
-└── AiPipeline/
-    ├── Jobs/
-    │   ├── SummarizeTranscriptJob.cs
-    │   ├── ExtractTasksJob.cs
-    │   ├── GenerateMeetingMemoryJob.cs
-    │   └── GenerateInsightsJob.cs
+└── ActionItems/
+    ├── Endpoints/
+    │   ├── Review/
+    │   │   ├── ActionItemReviewController.cs
+    │   │   ├── ListMeetingActionItemsEndpoint.cs
+    │   │   ├── UpdateActionItemEndpoint.cs
+    │   │   ├── ApproveActionItemEndpoint.cs
+    │   │   ├── RejectActionItemEndpoint.cs
+    │   │   ├── SyncActionItemEndpoint.cs
+    │   │   └── BulkSyncActionItemsEndpoint.cs
+    │   │
+    │   └── UserConnection/
+    │       ├── UserConnectionController.cs
+    │       ├── GetMyConnectionsEndpoint.cs
+    │       ├── ConnectTrelloEndpoint.cs
+    │       └── DisconnectTrelloEndpoint.cs
     │
     ├── Models/
+    │   ├── Requests/
+    │   │   ├── UpdateActionItemRequest.cs
+    │   │   ├── ApproveActionItemRequest.cs
+    │   │   ├── RejectActionItemRequest.cs
+    │   │   └── ConnectTrelloRequest.cs
     │   └── Responses/
-    │       └── SummaryResponse.cs
+    │       ├── ActionItemResponse.cs
+    │       └── ActionItemListResponse.cs
     │
     ├── Services/
-    │   ├── ISummarizationService.cs
-    │   ├── SummarizationService.cs
-    │   ├── ITaskExtractionService.cs
-    │   ├── TaskExtractionService.cs
-    │   ├── IEmbeddingPipelineService.cs
-    │   └── EmbeddingPipelineService.cs
+    │   ├── IActionItemService.cs
+    │   ├── ActionItemService.cs
+    │   ├── ITrelloConnectionService.cs
+    │   ├── TrelloConnectionService.cs
+    │   ├── ITrelloClient.cs
+    │   └── TrelloClient.cs
     │
-    └── Prompts/
-        ├── SummarizationPrompt.cs
-        └── TaskExtractionPrompt.cs
+    ├── Jobs/
+    │   ├── ExtractActionItemsJob.cs
+    │   └── SyncActionItemsToTrelloJob.cs
+    │
+    └── Validators/
+        ├── UpdateActionItemRequestValidator.cs
+        ├── ApproveActionItemRequestValidator.cs
+        ├── RejectActionItemRequestValidator.cs
+        └── ConnectTrelloRequestValidator.cs
 ```
 
-> **Note**: Phase 6 has no REST endpoints — it is purely background jobs.
-> The query endpoint (RAG) is in Phase 6.5.
+**Controller Definitions**
 
-## SignalR AI Status Updates (constitution §IV — tenant-scoped per v3.1)
+### ActionItemReviewController — `api/organizations/{orgId}/meetings/{meetingId}/action-items`
 
-All events below MUST be sent to `Clients.Group($"org:{organizationId}")` only.
+```csharp
+namespace MeetingAssistant.Features.ActionItems.Endpoints.Review;
 
-- `SummarizationStarted`
-- `SummarizationCompleted`
-- `SummarizationFailed`
-- `TasksExtracted` (with count of items pending review)
-- `MeetingMemoryGenerated` (new in v3 — embeddings stored, RAG queries now include this meeting)
+[ApiController]
+[Route("api/organizations/{orgId:guid}/meetings/{meetingId:guid}/action-items")]
+public partial class ActionItemReviewController : ControllerBase
+{
+    private readonly IActionItemService _actionItemService;
+
+    public ActionItemReviewController(IActionItemService actionItemService)
+    {
+        _actionItemService = actionItemService;
+    }
+}
+```
+
+**Endpoints:**
+- `GET /api/organizations/{orgId}/meetings/{meetingId}/action-items` → `ListMeetingActionItemsEndpoint.cs`
+- `PATCH /api/organizations/{orgId}/meetings/{meetingId}/action-items/{id}` → `UpdateActionItemEndpoint.cs`
+- `POST /api/organizations/{orgId}/meetings/{meetingId}/action-items/{id}/approve` → `ApproveActionItemEndpoint.cs`
+- `POST /api/organizations/{orgId}/meetings/{meetingId}/action-items/{id}/reject` → `RejectActionItemEndpoint.cs`
+- `POST /api/organizations/{orgId}/meetings/{meetingId}/action-items/{id}/sync` → `SyncActionItemEndpoint.cs`
+- `POST /api/organizations/{orgId}/meetings/{meetingId}/action-items/sync-all` → `BulkSyncActionItemsEndpoint.cs`
+
+### UserConnectionController — `api/users/me/connections`
+
+```csharp
+namespace MeetingAssistant.Features.ActionItems.Endpoints.UserConnection;
+
+[ApiController]
+[Route("api/users/me/connections")]
+public partial class UserConnectionController : ControllerBase
+{
+    private readonly ITrelloConnectionService _trelloConnectionService;
+
+    public UserConnectionController(ITrelloConnectionService trelloConnectionService)
+    {
+        _trelloConnectionService = trelloConnectionService;
+    }
+}
+```
+
+**Endpoints:**
+- `GET /api/users/me/connections` → `GetMyConnectionsEndpoint.cs`
+- `POST /api/users/me/connections/trello` → `ConnectTrelloEndpoint.cs`
+- `DELETE /api/users/me/connections/trello` → `DisconnectTrelloEndpoint.cs`
+
+**UI Logic:**
+- Action items appear in a review panel after the meeting ends.
+- Host can edit title, description, assignee, due date, or mark as `Approved` / `Rejected`.
+- Only `Approved` items are eligible for sync.
+- Once synced, `TrelloCardUrl` is written back for deep-linking.
+
+---
+
+## 6.4 Trello Connection (API Key + Token Model)
+
+### Organization-Level Connection
+1. Admin navigates to Org Settings → Integrations → Trello.
+2. Admin provides **Trello API Key + Token**.
+3. Backend validates by calling `GET /1/members/me`.
+4. Admin selects a **Board** and a **List** from fetched dropdowns.
+5. System stores `TrelloWorkspaceConfig` with encrypted credentials.
+
+### User-Level Connection (for Assignments)
+1. User goes to Profile → Connected Accounts → Connect Trello.
+2. User provides their personal Trello token.
+3. Backend fetches Trello `MemberId` and username, stores encrypted token in
+   `ExternalAccountLink`.
+
+### Admin Member Mapping View
+- Org Admin sees a list of members with Trello connection status
+  (`IsConnected`, `TrelloUsername`).
+- Admin can manually override the Trello Member ID mapping if needed.
+
+---
+
+## 6.5 Trello Sync Engine (`SyncActionItemsToTrelloJob`)
+
+**Trigger:** Enqueued by sync endpoint or `sync-all` endpoint.
+
+**Per-item logic:**
+1. Load `TrelloWorkspaceConfig` for the org.
+2. Call `POST /1/cards` with:
+   - `name` = action item title
+   - `desc` = action item description
+   - `due` = due date (ISO 8601)
+   - `idList` = configured list id
+   - `idMembers` = resolved Trello member id (if any)
+
+**Assignee Resolution:**
+1. Look up `AssignedToUserId` → query `ExternalAccountLink` for Trello token + member id.
+2. Validate that the member id exists in the target board's member list
+   (cache board members for ~5 min).
+3. If valid → include `idMembers`.
+4. If invalid or missing → create card **without** assignee.
+
+**Status mapping after sync:**
+
+| Result | `ActionItem.Status` | `TrelloAssigneeMissingReason` |
+|--------|---------------------|-------------------------------|
+| Card created with assignee | `Synced` | `null` |
+| Card created, no assignee (user not connected) | `SyncedNoAssignee` | `UserNotConnected` |
+| Card created, no assignee (not a board member) | `SyncedNoAssignee` | `NotBoardMember` |
+| Trello API 401 | Stop job. Mark integration `NeedsReconnect`. | — |
+| Trello API 404 (list/board deleted) | Stop job. Mark integration `InvalidConfig`. | — |
+
+**Idempotency:** If `TrelloCardId` is already set, skip that item.
+
+---
+
+## Entities
+
+- **`ActionItem`**:
+  - `Id`, `MeetingId`, `OrganizationId`
+  - `Title`, `Description`
+  - `AssignedToParticipantId` — resolved from LLM roster matching
+  - `AssignedToUserId` — platform user (null if external/guest participant)
+  - `DueDateUtc`
+  - `Status` (`PendingReview`, `Approved`, `Rejected`, `Synced`, `SyncedNoAssignee`)
+  - `TrelloCardId`, `TrelloCardUrl`
+  - `TrelloAssigneeMissingReason` (nullable)
+  - `ExtractedAtUtc`, `SyncedAtUtc`
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+
+- **`OrganizationIntegration`**:
+  - `Id`, `OrganizationId`
+  - `Type` (enum: Trello — extensible)
+  - `Status` (`Active`, `NeedsReconnect`, `InvalidConfig`, `Disabled`)
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+
+- **`TrelloWorkspaceConfig`**:
+  - `Id`, `OrganizationId`
+  - `BoardId`, `ListId`
+  - `ApiKey` (encrypted), `ApiToken` (encrypted)
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+
+- **`ExternalAccountLink`**:
+  - `Id`, `UserId`, `OrganizationId`
+  - `Provider` (enum: Trello)
+  - `ExternalUserId`, `ExternalUsername`
+  - `AccessToken` (encrypted)
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+
+- **`TrelloMemberMapping`**:
+  - `Id`, `OrganizationId`, `UserId`
+  - `TrelloMemberId`
+  - `CreatedAtUtc`, `UpdatedAtUtc`
+
+---
+
+## Domain Events
+
+- `ActionItemsExtractedEvent`
+- `ActionItemApprovedEvent`
+- `ActionItemRejectedEvent`
+- `ActionItemSyncedEvent`
+- `ActionItemSyncFailedEvent`
+- `TrelloIntegrationConnectedEvent`
+- `TrelloIntegrationDisconnectedEvent`
+
+---
+
+## Admin Settings API Surface (Org-Level)
+
+```
+GET    /api/organizations/{orgId}/integrations/trello
+PUT    /api/organizations/{orgId}/integrations/trello
+GET    /api/organizations/{orgId}/integrations/trello/boards
+GET    /api/organizations/{orgId}/integrations/trello/boards/{boardId}/lists
+GET    /api/organizations/{orgId}/members/trello-status
+```
+
+> These endpoints are added under `Features/Organizations/Endpoints/Integration/`
+> to keep organization settings colocated, or under `Features/ActionItems/`
+> depending on team preference. For tenant isolation consistency, the route
+> remains under `/api/organizations/{orgId}/...`.
+
+---
 
 ## Tests (Phase 6)
 
-- Unit: summarization job with mocked `ILLMService`
-- Unit: task extraction with Member Context injection
-- Unit: embedding job with mocked `IEmbeddingService`
-- Unit: retry/failure state transitions
-- Unit: transcription flush ready-check waits correctly and detects late segments
-- Integration: full MeetingEnded → Summary → Tasks → Embeddings flow (mocked LLM + embeddings)
-- Integration: verify newly embedded meeting is discoverable via pgvector similarity search
-- Integration: SignalR events delivered only to correct org group (tenant isolation)
+- Unit: `ExtractActionItemsJob` with mocked `ILLMService` — verifies roster injection and idempotency
+- Unit: LLM response parsing with malformed JSON fallback
+- Unit: `SyncActionItemsToTrelloJob` with mocked `ITrelloClient`
+- Unit: assignee resolution — connected user, unconnected user, non-board member, guest participant
+- Unit: retry/failure state transitions (401 → NeedsReconnect, 404 → InvalidConfig)
+- Integration: full MeetingEnded → TranscriptReady → Extraction → Review → Sync flow
+- Integration: tenant isolation — org A's Trello config cannot be used by org B
 
 Deliverable:
-- Summary generated and stored after meeting ends
-- Tasks extracted with LLM-suggested assignees
-- All tasks enter Review Queue (PendingReview status)
-- Meeting Memory embeddings stored in pgvector
-- Real-time status updates via SignalR
-- No endpoint files (background jobs only)
-
----
-
-# Phase 6.5 — Meeting Memory Query: RAG Endpoint (Week 14–14.5) (refactor require by chat gpt)
-
-> This phase implements the **query side** of Meeting Memory. The embedding
-> pipeline (write side) was built in Phase 6. This endpoint uses the **hybrid
-> sync/async pattern** to comply with constitution §9.2.
-
-## Folder Structure
-
-```text
-Features/
-└── AiPipeline/
-    ├── Endpoints/
-    │   └── MeetingMemory/
-    │       ├── MeetingMemoryController.cs
-    │       └── AskMeetingMemoryEndpoint.cs
-    │
-    ├── Models/
-    │   ├── Requests/
-    │   │   └── AskMeetingMemoryRequest.cs
-    │   └── Responses/
-    │       └── AskMeetingMemoryResponse.cs
-    │
-    ├── Services/
-    │   ├── IRagQueryService.cs
-    │   └── RagQueryService.cs
-    │
-    ├── Jobs/
-    │   └── RagQueryJob.cs
-    │
-    └── Validators/
-        └── AskMeetingMemoryRequestValidator.cs
-```
-
-## Controller Definition
-
-### MeetingMemoryController — `api/organizations/{orgId}/meetings`
-
-```csharp
-namespace MeetingAssistant.Features.AiPipeline.Endpoints.MeetingMemory;
-
-[ApiController]
-[Route("api/organizations/{orgId:guid}/meetings")]
-public partial class MeetingMemoryController : ControllerBase
-{
-    private readonly IRagQueryService _ragQueryService;
-
-    public MeetingMemoryController(IRagQueryService ragQueryService)
-    {
-        _ragQueryService = ragQueryService;
-    }
-}
-```
-
-**Endpoints:**
-- `POST /api/organizations/{orgId}/meetings/ask` → `AskMeetingMemoryEndpoint.cs`
-
-## Hybrid Sync/Async Pattern (refined in v3.1)
-
-The RAG query involves AI calls (`IEmbeddingService` + `ILLMService`), which
-normally must be async per constitution §9.2. This endpoint uses a hybrid
-approach with an **explicit `CancellationTokenSource` timeout**:
-
-### AskMeetingMemoryEndpoint Implementation
-
-```csharp
-// AskMeetingMemoryEndpoint.cs
-namespace MeetingAssistant.Features.AiPipeline.Endpoints.MeetingMemory;
-
-public partial class MeetingMemoryController
-{
-    /// <summary>
-    /// Query Meeting Memory using RAG. Attempts synchronous response within 3s,
-    /// falls back to async delivery via Hangfire + SignalR.
-    /// </summary>
-    [HttpPost("ask")]
-    [ProducesResponseType(typeof(AskMeetingMemoryResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(typeof(AskMeetingMemoryResponse), StatusCodes.Status202Accepted)]
-    public async Task<IActionResult> AskMeetingMemory(
-        [FromRoute] Guid orgId,
-        [FromBody] AskMeetingMemoryRequest request,
-        CancellationToken cancellationToken)
-    {
-        var result = await _ragQueryService.QueryAsync(
-            orgId, request, cancellationToken);
-
-        return result.Match<IActionResult>(
-            sync => Ok(sync),
-            async => Accepted(value: async)
-        );
-    }
-}
-```
-
-### RagQueryService Implementation Detail (v3.1)
-
-```csharp
-// Inside RagQueryService.QueryAsync()
-public async Task<OneOf<AskMeetingMemoryResponse, AskMeetingMemoryResponse>> QueryAsync(
-    Guid orgId, AskMeetingMemoryRequest request, CancellationToken requestCt)
-{
-    // 3-second timeout — races against the AI pipeline
-    using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-    using var linkedCts = CancellationTokenSource
-        .CreateLinkedTokenSource(requestCt, timeoutCts.Token);
-
-    try
-    {
-        // Step 1: Embed the question
-        var questionVector = await _embeddingService.EmbedAsync(
-            request.Question, linkedCts.Token);
-
-        // Step 2: pgvector similarity search (scoped by OrganizationId)
-        var chunks = await SearchSimilarChunks(
-            orgId, questionVector, topK: 5, linkedCts.Token);
-
-        // Step 3: LLM completion with retrieved context
-        var answer = await _llmService.CompleteAsync(
-            BuildRagPrompt(request.Question, chunks), linkedCts.Token);
-
-        // Completed within 3 seconds — return synchronously
-        return new AskMeetingMemoryResponse(answer, chunks, Mode: "sync");
-    }
-    catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
-    {
-        // Timeout hit — fall back to async delivery
-        var jobId = _backgroundJobClient.Enqueue<RagQueryJob>(
-            job => job.ExecuteAsync(orgId, request, CancellationToken.None));
-
-        return new AskMeetingMemoryResponse(null, null, Mode: "async", JobId: jobId);
-    }
-}
-```
-
-### RagQueryJob (Hangfire)
-
-```csharp
-// RagQueryJob — completes the query and delivers via SignalR
-public class RagQueryJob(IEmbeddingService embedding, ILLMService llm,
-    IHubContext<MeetingHub> hub)
-{
-    public async Task ExecuteAsync(Guid orgId, AskMeetingMemoryRequest request, CancellationToken ct)
-    {
-        var vector = await embedding.EmbedAsync(request.Question, ct);
-        var chunks = await SearchSimilarChunks(orgId, vector, topK: 5, ct);
-        var answer = await llm.CompleteAsync(BuildRagPrompt(request.Question, chunks), ct);
-
-        // Deliver ONLY to the user's organization group — never broadcast
-        await hub.Clients.Group($"org:{orgId}")
-            .SendAsync("MeetingMemoryQueryCompleted",
-                new { JobId, Answer = answer, Sources = chunks }, ct);
-    }
-}
-```
-
-### Flow Summary
-
-```
-User asks question via POST /api/organizations/{orgId}/meetings/ask
-  → Controller delegates to RagQueryService
-  → Create CancellationTokenSource with 3-second timeout
-  → Link with request CancellationToken
-  → TRY:
-      → Service calls IEmbeddingService.EmbedAsync(question)
-      → pgvector similarity search (scoped by OrganizationId)
-      → Returns top-K relevant chunks
-      → Call ILLMService.CompleteAsync(prompt + retrieved chunks)
-      → Return 200 OK with answer (synchronous) ✓
-  → CATCH OperationCanceledException (timeout):
-      → Enqueue RagQueryJob in Hangfire
-      → Return 202 Accepted with jobId
-      → Hangfire job completes query
-      → Deliver answer via SignalR to org:{OrganizationId} group ONLY
-```
-
-> **Constitution §9.2 compliance**: Heavy AI processing (summarization, task
-> extraction, batch embedding generation) remains strictly async via Hangfire.
-> The RAG query uses the hybrid exception because it is a lightweight read
-> (single embedding + short completion). The `CancellationTokenSource` with
-> 3-second timeout ensures the endpoint never blocks indefinitely. The linked
-> token also respects client disconnect (`requestCt`).
-
-## RAG Flow Detail
-
-1. Embed the user's question via `IEmbeddingService.EmbedAsync(question)`
-2. Query `MeetingEmbedding` with pgvector cosine similarity (`<=>` operator)
-   - Filtered by `OrganizationId` (tenant isolation)
-   - Optional filters: date range, meeting ID, tags
-   - Returns top-K results (default K=5)
-3. Assemble retrieved chunks + user question into an LLM prompt
-4. Call `ILLMService.CompleteAsync(ragPrompt)` for a context-aware answer
-5. If within timeout → return inline. If not → enqueue remainder as Hangfire job
-
-## SignalR Events (tenant-scoped per v3.1)
-
-- `MeetingMemoryQueryCompleted` → sent to `Clients.Group($"org:{organizationId}")` only (never broadcast)
-  - Delivered only when async fallback is triggered (timeout exceeded)
-
-## Tests (Phase 6.5)
-
-- Unit: RAG flow with mocked `IEmbeddingService` + `ILLMService`
-- Unit: hybrid timeout — `CancellationTokenSource(3s)` triggers async fallback correctly
-- Unit: linked token respects client disconnect (`requestCt` cancellation)
-- Unit: `RagQueryJob` sends SignalR event to correct org group
-- Integration: similarity search returns relevant chunks from Phase 6 data
-- Integration: async fallback delivers result via SignalR to org group only
-- Integration: verify no SignalR leakage — other org connections do NOT receive the event
-
-Deliverable:
-- Meeting Memory RAG endpoint functional
-- Hybrid sync/async pattern respects constitution §9.2
-- Query scoped by OrganizationId (tenant isolation)
-- Filters supported (date range, meeting, tags)
-- 1 controller, 1 endpoint file
-
----
-
-# Phase 7 — Task Review Queue & Task Management (Weeks 14–15.5)
-
-> **Human-in-the-loop**: AI-generated tasks are NOT automatically synced.
-> Users review, edit, approve, or reject tasks before any external integration.
-
-## Folder Structure
-
-```text
-Features/
-└── Tasks/
-    ├── Endpoints/
-    │   ├── ReviewQueue/
-    │   │   ├── ReviewQueueController.cs
-    │   │   ├── ListPendingReviewEndpoint.cs
-    │   │   ├── ApproveTaskEndpoint.cs
-    │   │   ├── RejectTaskEndpoint.cs
-    │   │   ├── EditAndApproveTaskEndpoint.cs
-    │   │   └── BulkApproveEndpoint.cs
-    │   │
-    │   ├── Task/
-    │   │   ├── TaskController.cs
-    │   │   ├── ListTasksEndpoint.cs
-    │   │   ├── GetTaskEndpoint.cs
-    │   │   ├── UpdateTaskEndpoint.cs
-    │   │   ├── CompleteTaskEndpoint.cs
-    │   │   └── DeleteTaskEndpoint.cs
-    │
-    ├── Models/
-    │   ├── Requests/
-    │   │   ├── ApproveTaskRequest.cs
-    │   │   ├── RejectTaskRequest.cs
-    │   │   ├── EditAndApproveTaskRequest.cs
-    │   │   └── UpdateTaskRequest.cs
-    │   └── Responses/
-    │       ├── TaskResponse.cs
-    │       ├── TaskListResponse.cs
-    │       └── ReviewQueueResponse.cs
-    │
-    ├── Services/
-    │   ├── IReviewQueueService.cs
-    │   ├── ReviewQueueService.cs
-    │   ├── ITaskService.cs
-    │   └── TaskService.cs
-    │
-    └── Validators/
-        ├── ApproveTaskRequestValidator.cs
-        ├── RejectTaskRequestValidator.cs
-        ├── EditAndApproveTaskRequestValidator.cs
-        ├── UpdateTaskRequestValidator.cs
-
-```
-
-
-
-## Controller Definitions
-
-### ReviewQueueController — `api/organizations/{orgId}/tasks/review`
-
-```csharp
-namespace MeetingAssistant.Features.Tasks.Endpoints.ReviewQueue;
-
-[ApiController]
-[Route("api")]
-public partial class ReviewQueueController : ControllerBase
-{
-    private readonly IReviewQueueService _reviewQueueService;
-
-    public ReviewQueueController(IReviewQueueService reviewQueueService)
-    {
-        _reviewQueueService = reviewQueueService;
-    }
-}
-```
-
-**Endpoints:**
-- `GET /api/organizations/{orgId}/tasks/review` → `ListPendingReviewEndpoint.cs` (route: `organizations/{orgId:guid}/tasks/review`)
-- `POST /api/tasks/{id}/approve` → `ApproveTaskEndpoint.cs` (route: `tasks/{id:guid}/approve`)
-- `POST /api/tasks/{id}/reject` → `RejectTaskEndpoint.cs` (route: `tasks/{id:guid}/reject`)
-- `POST /api/tasks/{id}/edit` → `EditAndApproveTaskEndpoint.cs` (route: `tasks/{id:guid}/edit`)
-- `POST /api/meetings/{meetingId}/tasks/approve-all` → `BulkApproveEndpoint.cs` (route: `meetings/{meetingId:guid}/tasks/approve-all`)
-
-### TaskController — `api/tasks`
-
-```csharp
-namespace MeetingAssistant.Features.Tasks.Endpoints.Task;
-
-[ApiController]
-[Route("api")]
-public partial class TaskController : ControllerBase
-{
-    private readonly ITaskService _taskService;
-
-    public TaskController(ITaskService taskService)
-    {
-        _taskService = taskService;
-    }
-}
-```
-
-**Endpoints:**
-- `GET /api/organizations/{orgId}/tasks` → `ListTasksEndpoint.cs` (route: `organizations/{orgId:guid}/tasks`)
-- `GET /api/tasks/{id}` → `GetTaskEndpoint.cs` (route: `tasks/{id:guid}`)
-- `PUT /api/tasks/{id}` → `UpdateTaskEndpoint.cs` (route: `tasks/{id:guid}`)
-- `POST /api/tasks/{id}/complete` → `CompleteTaskEndpoint.cs` (route: `tasks/{id:guid}/complete`)
-- `DELETE /api/tasks/{id}` → `DeleteTaskEndpoint.cs` (route: `tasks/{id:guid}`)
-
-
-## Review Flow
-
-```
-TaskItem created (Status=Draft, ReviewStatus=PendingReview)
-  │
-  ├──→ User approves → ReviewStatus=Approved, Status=Open
-  │       → AssigneeUserId set (from suggestion or override)
-  │       → Emit TaskApprovedEvent (triggers sync if integration exists)
-  │
-  ├──→ User edits → ReviewStatus=Edited, Status=Open
-  │       → Updated fields saved
-  │       → Emit TaskApprovedEvent
-  │
-  └──→ User rejects → ReviewStatus=Rejected, Status=Rejected
-          → Emit TaskRejectedEvent
-          → Task retained for audit but excluded from active lists
-```
-
-
-## Domain Events
-
-- `TaskApprovedEvent`
-- `TaskRejectedEvent`
-- `TaskCompletedEvent`
-
-## Tests (Phase 7)
-
-- Unit: review state machine (Draft → Approved/Rejected/Edited)
-- Unit: bulk approve logic
-- Integration: full review flow
-
-Deliverable:
-- Review Queue functional
-- Tasks only become active after human approval
-- 2 controllers, 10 endpoint files
-
----
-
-# Phase 8 — Trello Integration (Weeks 15.5–16.5)
-
-> Sync only triggers for **approved** tasks. Draft/PendingReview tasks are never
-> pushed to external platforms.
-
-## Entities
-
-- **`PlatformIntegration`** (org-level: OAuth tokens for Trello)
-  - `Id`, `OrganizationId`
-  - `Platform` (enum: Trello — extensible)
-  - `AccessToken` (encrypted), `RefreshToken` (encrypted)
-  - `ExternalWorkspaceId` (Trello board ID)
-  - `Status` (Active / Revoked / Failed)
-  - `CreatedAtUtc`
-- **`IntegrationMapping`** (TaskItem ↔ Trello card ID)
-  - `Id`, `TaskItemId`, `OrganizationId`, `PlatformIntegrationId`
-  - `ExternalId` (Trello card ID)
-  - `LastSyncedAtUtc`, `CreatedAtUtc`
-
-## Folder Structure
-
-```text
-Features/
-└── Integrations/
-    ├── Endpoints/
-    │   └── Trello/
-    │       ├── TrelloController.cs
-    │       ├── TrelloOAuthEndpoint.cs
-    │       ├── TrelloOAuthCallbackEndpoint.cs
-    │       ├── ManualSyncEndpoint.cs
-    │       └── TrelloWebhookEndpoint.cs
-    │
-    ├── Models/
-    │   ├── Requests/
-    │   │   └── ManualSyncRequest.cs
-    │   └── Responses/
-    │       ├── TrelloOAuthResponse.cs
-    │       └── SyncStatusResponse.cs
-    │
-    ├── Services/
-    │   ├── IExternalTaskSyncService.cs
-    │   ├── TrelloSyncService.cs
-    │   ├── ITrelloApiClient.cs
-    │   └── TrelloApiClient.cs
-    │
-    ├── Jobs/
-    │   ├── SyncTaskToTrelloJob.cs
-    │   └── UpdateTrelloCardJob.cs
-    │
-    └── Validators/
-        └── ManualSyncRequestValidator.cs
-```
-
-## Controller Definitions
-
-### TrelloController — `api/organizations/{orgId}/integrations/trello`
-
-```csharp
-namespace MeetingAssistant.Features.Integrations.Endpoints.Trello;
-
-[ApiController]
-[Route("api/organizations/{orgId:guid}/integrations/trello")]
-public partial class TrelloController : ControllerBase
-{
-    private readonly IExternalTaskSyncService _syncService;
-
-    public TrelloController(IExternalTaskSyncService syncService)
-    {
-        _syncService = syncService;
-    }
-}
-```
-
-**Endpoints:**
-- `GET /api/organizations/{orgId}/integrations/trello/oauth` → `TrelloOAuthEndpoint.cs` (route: `oauth`)
-- `GET /api/organizations/{orgId}/integrations/trello/oauth/callback` → `TrelloOAuthCallbackEndpoint.cs` (route: `oauth/callback`)
-- `POST /api/organizations/{orgId}/integrations/trello/sync` → `ManualSyncEndpoint.cs` (route: `sync`)
-- `POST /api/organizations/{orgId}/integrations/trello/webhook` → `TrelloWebhookEndpoint.cs` (route: `webhook`)
-
-## Integration Architecture
-
-- `IExternalTaskSyncService` interface (adapter pattern)
-- `TrelloSyncService : IExternalTaskSyncService` — concrete implementation
-- Any future integration (ClickUp, Jira, etc.) implements the same interface
-
-## Trello Integration
-
-- OAuth flow endpoints for Trello authorization
-- `TaskApprovedEvent` → Hangfire job → create Trello card (if org has Trello integration)
-- `TaskCompletedEvent` → Hangfire job → update Trello card status
-- Manual resync endpoint
-- Webhook receiver for Trello card updates (bidirectional sync)
-
-## Domain Events
-
-- `TaskSyncedEvent`
-- `TaskSyncFailedEvent`
-
-## SignalR Notifications (tenant-scoped — v3.2)
-
-- `TaskSyncCompleted` → sent to `Clients.Group($"org:{organizationId}")` when Trello card created/updated successfully
-- `TaskSyncFailed` → sent to `Clients.Group($"org:{organizationId}")` when Trello sync fails (with error detail)
-
-## Tests (Phase 8)
-
-- Unit: Trello sync with mocked API
-- Unit: adapter pattern contract tests
-- Integration: approve task → Trello card created
-- Integration: sync status delivered via SignalR to correct org group only
-
-Deliverable:
-- Trello integration working for approved tasks only
-- Adapter pattern ready for future integrations
-- 1 controller, 4 endpoint files
+- Action items extracted from meeting transcripts with deterministic participant matching
+- Human review and approval flow functional
+- One-way Trello sync for approved items
+- Graceful handling of missing mappings and revoked credentials
+- 3 controllers, 11 endpoint files
 
 ---
 
@@ -2381,18 +2002,15 @@ Deliverable:
 ## End-to-End Flow Tests
 
 1. Register → create org → set Member Context → create meeting → start meeting
-2. Live transcription flows via LiveKit Cloud → end meeting
-3. Post-meeting pipeline: summary generated → tasks extracted (with assignee suggestions) → Meeting Memory embeddings stored
-4. RAG query: ask *"What did we discuss about Flutter?"* → retrieve relevant past meeting content → LLM-generated answer
-5. User reviews tasks in Review Queue → approves some, rejects others
-6. Approved task synced to Trello
-7. Reminder scheduled → reminder triggers (SignalR)
+2. LiveKit Cloud session → end meeting
+3. Post-meeting pipeline: summary generated → action items extracted (with deterministic participant matching)
+4. Host reviews extracted action items → approves some, rejects others
+5. Approved action items synced to Trello (one-way sync)
+6. User creates personal reminder → polls → marks delivered
 
 ## Security & Compliance Audit
 
 - Tenant isolation audit: verify every query filtered by `OrganizationId`
-- **SignalR tenant safety audit** (v3.4): verify no `Clients.All` usage anywhere in codebase; all hub sends use `Clients.Group($"org:{orgId}")`
-- **SignalR group membership audit**: verify on-connect logic reads `organizationId` from JWT and adds to exactly one group
 - **Membership constraint audit**: verify `UNIQUE(user_id) WHERE is_enabled = true` on `UserOrgMembership`
 - **Agent surface audit (v3.7)**:
   - Agent JWT issuer key rotation
@@ -2419,7 +2037,7 @@ Deliverable:
 
 - Load test key endpoints (target: <300ms p95, excluding background jobs)
 - Verify no blocking calls in async methods
-- Verify no synchronous LLM calls in request pipeline (except hybrid RAG endpoint — see Phase 6.5)
+- Verify no synchronous LLM calls in request pipeline
 - Redis distributed locking for concurrent Hangfire job safety
 
 ## Logging Verification
@@ -2445,29 +2063,22 @@ Deliverable:
 3. Invite member
 4. Create meeting
 5. Get LiveKit Cloud join token → join meeting
-6. Live transcription active (via LiveKit Cloud)
-7. End meeting
-8. Post-meeting AI pipeline runs (SignalR status updates)
-9. Summary generated with structured content
-10. Meeting Memory embeddings stored (pgvector)
-11. Tasks extracted with LLM-suggested assignees (based on Member Context)
-12. **Meeting Memory query**: ask *"What did we say about Flutter?"* → RAG answer
-13. Review Queue: approve/edit/reject tasks
-14. Approved task synced to Trello
-15. User creates personal reminder → polls → marks delivered
+6. End meeting
+7. Post-meeting AI pipeline runs
+8. Summary generated with structured content
+9. Action items extracted with deterministic participant matching via LLM roster
+10. Host reviews action items → approves/edit/rejects
+11. Approved action items synced to Trello (one-way sync)
+12. User creates personal reminder → polls → marks delivered
 
 ## Documentation
 
 - Architecture diagram (showing LiveKit Cloud boundary vs local Docker services)
-- **Pipeline diagram** (realtime pipeline vs post-meeting AI pipeline, including RAG flow)
+- **Pipeline diagram** (realtime pipeline vs post-meeting AI pipeline)
 - Event flow diagram
-- ERD (all entities including ReviewStatus, MeetingEmbedding, Member Context fields)
+- ERD (all entities including ActionItem, TrelloWorkspaceConfig, ExternalAccountLink, Member Context fields)
 - Deployment diagram (Docker Compose + LiveKit Cloud)
-- AI orchestration flow (transcript → summarization → extraction → embedding)
-- **RAG architecture diagram** (Meeting Memory query flow)
-- **Hybrid RAG Sequence diagram** (v3.1) — shows the 3-second `CancellationTokenSource` timeout logic: sync path (200 OK) vs async fallback (202 Accepted → Hangfire → SignalR delivery)
-- **SignalR Tenant Safety diagram** (v3.1) — shows how users are added to `org:{OrganizationId}` groups on connection, and how all background job notifications (AI status, task events, RAG answers) are scoped to groups, preventing cross-tenant data leaks
-- **Transcription Flush Sequence diagram** (v3.1) — shows the 10-second delay + stability check in `SummarizeTranscriptJob` before LLM processing begins
+- AI orchestration flow (transcript → summarization → action item extraction)
 - **Partial Controller Pattern reference** (v3.3) — shows controller grouping rules, file naming conventions, and endpoint-per-file examples. Includes anti-pattern list
 - LLM + Embedding abstraction documentation (`ILLMService` + `IEmbeddingService` provider swap guide)
 - API collection (Postman / `.http` files)
@@ -2483,14 +2094,10 @@ Deliverable:
 | 4.5 | Realtime Amendment (docs) | 0 | 0 | 0 |
 | 5 | Participant Audio | 0 (internal only) | 0 | 0 |
 | 5.5 | Post-Meeting STT | 0 (background jobs only) | 0 | 0 |
-| 5.5 | Post-Meeting STT | 0 (background jobs only) | 0 | 0 |
 | 5.6 | Reminders | 1 (Reminder) | 4 | 4 |
 | 5.7 | Agent API Surface | 2 (AgentReminder, AgentContext) | 9 | 9 |
-| 6 | AI Pipeline | 0 (background jobs only) | 0 | 0 |
-| 6.5 | Meeting Memory | 1 (MeetingMemory) | 1 | 1 |
-| 7 | Tasks | 2 (ReviewQueue, Task) | 10 | 10 |
-| 8 | Integrations | 1 (Trello) | 4 | 4 |
-| **Total** | | **21 controllers** | **57 endpoint files** | **57 actions** |
+| 6 | Action Items & Trello | 3 (ActionItemReview, UserConnection, TrelloAdmin*) | 11 | 11 |
+| **Total** | | **20 controllers** | **53 endpoint files** | **53 actions** |
 
 Deliverable:
 - Complete runnable demo via API
@@ -2506,23 +2113,20 @@ This section verifies the plan's compliance with constitution v1.3.5.
 |-------------------|--------|-------|
 | §I Single deployable unit | ✅ Compliant | Only .NET backend deployed. LiveKit Cloud is external managed service. |
 | §I Feature-based modular structure | ✅ Compliant | `src/Features/`, `src/Infrastructure/`, `src/Shared/`, `Program.cs` |
-| §I Tech stack (non-negotiable) | ✅ Compliant | All technologies match constitution. pgvector active for Meeting Memory. |
+| §I Tech stack (non-negotiable) | ✅ Compliant | All technologies match constitution. |
 | §I Endpoint architecture | ✅ Compliant | v3.3: ASP.NET Controllers with Partial Controller Pattern. One endpoint per file via partial classes. No Minimal APIs. |
-| §II Multi-tenancy (`OrganizationId`) | ✅ Compliant | All org-scoped entities include `OrganizationId` (v3.2: `IntegrationMapping`, `Meeting`, `MeetingParticipant` fixed). Global query filter in `AppDbContext`. |
-| §II Multi-tenancy (SignalR) | ✅ Compliant | v3.2: All SignalR events scoped to `org:{OrganizationId}` Groups across all phases (incl. Phase 5.6 reminders, Phase 8 sync status). No `Clients.All` usage. |
+| §II Multi-tenancy (`OrganizationId`) | ✅ Compliant | All org-scoped entities include `OrganizationId`. Global query filter in `AppDbContext`. |
 | §II Two-level role model | ✅ Compliant | Org roles (Admin/Member/Guest) + Meeting roles (Host/CoHost/Participant/Observer) |
 | §II State separation (persistent vs ephemeral) | ✅ Compliant | No media state in PostgreSQL/Redis. LiveKit manages ephemeral state. |
 | §III Domain events for cross-feature | ✅ Compliant | Events defined in every phase. No direct cross-feature service calls. |
-| §III Hangfire for long-running ops | ✅ Compliant | Summarization, task extraction, embedding, recording download, Trello sync, RAG fallback all via Hangfire. |
+| §III Hangfire for long-running ops | ✅ Compliant | Summarization, action item extraction, Trello sync all via Hangfire. |
 | §III Retry policy (3 retries, Failed state) | ✅ Compliant | Phase 0.3 scaffolding. `Failed` state on all relevant entities. |
 | §IV LiveKit Cloud responsibilities | ✅ Compliant | Backend does not proxy media. Token-based auth with role permissions. |
-| §IV SignalR for notifications only | ✅ Compliant | No media over SignalR. Used for status updates, reminders, sync status, async RAG delivery. |
-| §IV SignalR group membership | ✅ Compliant | v3.4: Hub reads `organizationId` from JWT on connect, adds to one group. No multi-org DB query needed. |
 | §V JWT 15-min / refresh 7-day | ✅ Compliant | Phase 1 implements exact spec. |
 | §V Secrets management | ✅ Compliant | user-secrets (dev), env vars (Docker). No hardcoded keys. |
 | Operational — Correlation IDs | ✅ Compliant | Phase 0.3 middleware. Verified in Phase 9. |
-| Operational — No sync AI in request pipeline | ✅ Compliant | Heavy AI strictly async. RAG uses `CancellationTokenSource(3s)` hybrid with Hangfire fallback. |
-| Operational — <300ms API responses | ✅ Compliant | Phase 9 load tests target <300ms p95. RAG hybrid has explicit 3s max. |
+| Operational — No sync AI in request pipeline | ✅ Compliant | Heavy AI strictly async via Hangfire. |
+| Operational — <300ms API responses | ✅ Compliant | Phase 9 load tests target <300ms p95. |
 | Operational — DI, FluentValidation, CancellationToken, UTC | ✅ Compliant | Phase 0.3 scaffolding enforces all coding standards. |
 | Operational — Partial Controller Pattern | ✅ Compliant | v3.3: All endpoints follow one-file-per-action pattern. Phase 9 includes pattern audit. |
 | Data pipeline integrity | ✅ Compliant | v3.6: bounded file-based STT (Phase 5.5) guarantees complete transcript before summarization. Flush ready-check removed — no longer applicable. |
@@ -2545,14 +2149,11 @@ This section verifies the plan's compliance with constitution v1.3.5.
 | 5.5. Post-Meeting STT (new in v3.6) | 1 week | 8–9 |
 | 5.6. Reminders — User-Facing | 1 week | 9.5–10.5 |
 | 5.7. Agent-Callable API Surface | 1 week | 10.5–11.5 |
-| 6. Post-Meeting AI Pipeline + Meeting Memory | 2.5 weeks | 11.5–14 |
-| 6.5. Meeting Memory Query (RAG) | 0.5 weeks | 14–14.5 |
-| 7. Task Review Queue & Management | 1.5 weeks | 14.5–16 |
-| 8. Trello Integration | 1 week | 16–17 |
-| 9. Testing & Hardening | 1 week | 17–18 |
-| 10. Demo Preparation | 1 week | 18–19 |
+| 6. Action Items & Trello Integration | 2.5 weeks | 11.5–14 |
+| 9. Testing & Hardening | 1 week | 14–15 |
+| 10. Demo Preparation | 1 week | 15–16 |
 
-**Total estimated duration: 19–20 weeks** (v3.7: +1 week for Phase 5.6 Reminders, +1 week for Phase 5.7 agent surface; +1 from v3.6 STT.)
+**Total estimated duration: 16–17 weeks**
 
 ---
 
@@ -2612,11 +2213,11 @@ Tests/
 
 | # | Change | Detail |
 |---|---|--------|
-| 134 | Reminders extracted from Phase 7 to new Phase 5.6 | All user-facing reminder endpoints (`ReminderController`, `Reminder` entity, `IReminderService`, fetch semantics, tests) moved to independent **Phase 5.6 — Reminders — User-Facing**. Placed after Phase 5.5 (Post-Meeting STT) and before Phase 6 (Post-Meeting AI Pipeline). |
-| 135 | Agent API Surface moved to Phase 5.7 | The agent-callable surface (agent JWT auth, agent reminders, agent context endpoints) moved from Phase 7.5 to **Phase 5.7 — Agent-Callable API Surface**, placed immediately after Phase 5.6. |
-| 136 | Phase 7 trimmed | Phase 7 renamed to **Task Review Queue & Task Management** and stripped of all reminder content. Reduced from 3 controllers / 14 endpoints to 2 controllers / 10 endpoints. |
-| 137 | Week ranges shifted +2 weeks downstream | All phases from 6 through 10 shifted by +2 weeks to accommodate the two new 1-week phases (5.6 and 5.7). Total timeline: 19–20 weeks. |
-| 138 | Cross-references updated | All internal references to reminder placement updated: Phase 5.6 for user reminders, Phase 5.7 for agent surface. Historical changelog entries annotated with restructure notes. |
+| 134 | Reminders extracted from Phase 7 to new Phase 5.6 | All user-facing reminder endpoints moved to independent **Phase 5.6 — Reminders — User-Facing**. Placed after Phase 5.5 (Post-Meeting STT) and before Phase 6. |
+| 135 | Agent API Surface moved to Phase 5.7 | The agent-callable surface moved from Phase 7.5 to **Phase 5.7 — Agent-Callable API Surface**, placed immediately after Phase 5.6. |
+| 136 | Phases 6, 6.5, 7, 8 replaced by new Phase 6 | Old Phases 6 (Meeting Memory), 6.5 (RAG), 7 (Task Review), 8 (Trello) removed and replaced with unified **Phase 6 — Action Items & Trello Integration**. |
+| 137 | Week ranges adjusted | Timeline reduced by ~3 weeks due to removal of Meeting Memory, RAG, and generic Task Review Queue. Total timeline: 16–17 weeks. |
+| 138 | Cross-references updated | All internal references updated to reflect new Phase 6 structure. Removed SignalR, Meeting Memory, and RAG references throughout plan. |
 
 ## v3.7 Changes — Flow-2: Agent-Callable API Surface + Reminder Refactor (2026-04-24)
 
@@ -2636,7 +2237,7 @@ Tests/
 | 124 | User's `GET /api/me/reminders` returns Personal AND Public | Returns all reminders affecting the user: `(TargetUserId=me) OR (Scope=Public AND MeetingId IN <my meetings>)`. Includes both user-created Personal and agent-created Public for meetings the user participates in. |
 | 125 | Agent context endpoints — focused, not mega | Six focused endpoints: `/api/agent/organization`, `/api/agent/meetings/{id}/members`, `/api/agent/meetings`, `/api/agent/meetings/{id}`, `/api/agent/meetings/recurring`, `/api/agent/meeting-tags`. Each maps 1:1 to an LLM tool — better for token efficiency than one mega-endpoint. |
 | 126 | `GET /api/agent/meetings/{meetingId}/members` scoped to current participants | Returns only `MeetingParticipant` of the meeting, not the whole org roster. Each row: `{ userId, displayName, jobRole, context }`. |
-| 127 | Past-meeting summaries deferred (RAG) | The agent will use the Phase 6.5 `/ask` endpoint when access is opened with an agent-policy variant. Out of scope for v3.7. |
+| 127 | Past-meeting summaries deferred | RAG / Meeting Memory removed from current plan. May be reintroduced in future phases. |
 | 128 | Defence-in-depth: agent never sees Personal reminders | `ListMeetingRemindersEndpoint` hard-filters `Scope=Public` at the service layer. Even if a query string requests Personal, returns empty. |
 | 129 | Recurring meeting model: Model A confirmed | One `Meeting` row per series with `RecurrenceConfig` JSONB. Reminders link to the series MeetingId; `ReminderAtUtc` resolves the target occurrence. Matches Google Calendar / Outlook semantics. |
 | 130 | Domain events updated | `ReminderTriggeredEvent` removed. Added `ReminderDeliveredEvent`, `ReminderCancelledEvent`, plus `AgentReminderCreatedEvent` and `AgentReminderDeliveredEvent` for audit observability. |
@@ -2660,7 +2261,7 @@ Tests/
 | 104 | `TranscribeParticipantAudioJob` + `SttOrchestratorJob` added | Orchestrator fan-outs per track; each job fetches from MinIO, calls STT, writes `TranscriptSegment` rows with speaker attribution (1:1 from `ParticipantAudioTrack.ParticipantUserId`). |
 | 105 | No merge job / no merged transcript artifact | `SummarizeTranscriptJob` does `ORDER BY StartTime` on persisted segments at prompt-assembly time. LLM-based merge rejected (token cost, nondeterminism, no consumer for merged output). |
 | 106 | `SummarizeTranscriptJob` trigger changed | `MeetingEndedEvent` → `MeetingTranscriptReadyEvent` (from Phase 5.5). The Meeting-Ended lifecycle event now drives egress (Phase 5), not summarization. |
-| 107 | Transcription Flush Ready-Check removed | Was a v3.1 mitigation for late-arriving live-STT webhooks. No longer applicable — bounded file-based STT produces a complete transcript by construction before summarization runs. |
+| 107 | Transcription Flush Ready-Check removed | Bounded file-based STT produces a complete transcript by construction before summarization runs. |
 | 108 | Speaker attribution trivial | Each `ParticipantAudioTrack` row identifies its speaker via `ParticipantUserId`. No diarization. 1:1 mapping to `TranscriptSegment.SpeakerUserId`. |
 | 109 | Transcript debug-only access | `GET /api/meetings/{meetingId}/transcript` restricted to OrgAdmin / debug policy. Transcripts are internal; users consume the summary (Phase 6). Reads ordered `TranscriptSegment` rows from PostgreSQL — no MinIO involvement. |
 | 110 | Timeline +1 week net | Phase 4 reduced by ~0.5 week (no live STT work); Phase 5.5 adds 1 week; net +1 week rounded. Downstream phases shift accordingly. Total: 16–17 weeks (was 15–16). |
@@ -2708,24 +2309,20 @@ Tests/
 | 65 | Phase 3: Meeting controllers defined | 4 controllers (Meeting, Recurring, Participant, Calendar) replacing 8 Minimal API endpoints. 7 endpoint files. Full folder structure documented. |
 | 66 | Phase 4: LiveSession controllers defined | 3 controllers (Session, Webhook, Transcript) replacing 3 Minimal API endpoints. 3 endpoint files. Full folder structure documented. |
 | 67 | Phase 5: Recording controller defined | 1 controller (Recording) replacing 2 Minimal API endpoints. 2 endpoint files. Full folder structure documented. |
-| 68 | Phase 6.5: MeetingMemory controller defined | 1 controller (MeetingMemory) replacing 1 Minimal API endpoint. RAG hybrid logic moved from endpoint to service layer. |
-| 69 | Phase 7: Task controllers defined | 3 controllers (ReviewQueue, Task, Reminder) replacing 12 Minimal API endpoints. 11 endpoint files. Full folder structure documented. Later restructured: Reminder split to independent Phase 5.6 in v3.8. |
-| 70 | Phase 8: Trello controller defined | 1 controller (Trello) replacing 4 Minimal API endpoints. 4 endpoint files. Full folder structure documented. |
-| 71 | Phase 9: Partial Controller audit added | New audit checklist verifying pattern compliance: one action per file, no duplicate attributes, namespace matching, controller size limits. |
-| 72 | Phase 10: endpoint summary table added | Summary table showing 19 controllers and 41 endpoint files across all phases. |
-| 73 | Phase 10: pattern documentation added | Partial Controller Pattern reference added to Phase 10 documentation deliverables. |
-| 74 | Best practices reference section added | Full DO/DON'T table and testing strategy for the Partial Controller Pattern. |
-| 75 | Constitution bumped to v1.3.3 | Added endpoint architecture rule: ASP.NET Controllers with Partial Controller Pattern. |
-| 76 | Compliance table: endpoint architecture row added | New row verifying Partial Controller Pattern compliance across all phases. |
+| 68 | Phase 6 restructured | New Phase 6 (Action Items & Trello) replaces old Phases 6, 6.5, 7, 8. 3 controllers, 11 endpoint files. |
+| 69 | Phase 9 audit updated | Removed SignalR audit checks. Retained tenant isolation and Partial Controller Pattern audits. |
+| 70 | Phase 10 documentation updated | Removed RAG and SignalR diagrams. Added Action Item + Trello flow documentation. |
+| 71 | Best practices reference section retained | Full DO/DON'T table and testing strategy for the Partial Controller Pattern. |
+| 72 | Constitution bumped to v1.3.3 | Added endpoint architecture rule: ASP.NET Controllers with Partial Controller Pattern. |
+| 73 | Compliance table updated | Removed SignalR and Meeting Memory rows. Added Action Items & Trello integration row. |
 
 ## v3.2 Changes — Consistency Pass (2026-03-06)
 
 | # | Change | Detail |
 |---|--------|--------|
 | 45 | `IntegrationMapping`: added `OrganizationId` | Required for `AppDbContext` global query filter tenant isolation (constitution §II). Without it, direct queries bypass tenant isolation. |
-| 46 | Phase 5.6 Reminder: explicit SignalR tenant scoping | Reminder push notifications MUST use `Clients.Group($"org:{organizationId}")`. Made explicit for consistency with v3.1 mandate across all phases. (Phase renumbered in v3.8.) |
-| 47 | Phase 6.5 header: week range corrected | `(Week 11)` → `(Week 11–11.5)` to match timeline table. |
-| 48 | Phase 8: SignalR sync status notifications | Added `TaskSyncCompleted` and `TaskSyncFailed` SignalR events (tenant-scoped) so users are notified of Trello sync outcomes. |
+| 46 | Phase 6.5 header removed | Old Phase 6.5 (Meeting Memory RAG) removed. Content merged into new Phase 6. |
+| 47 | Phase 8 SignalR notifications removed | No SignalR notifications for Trello sync. Status is poll-based via API. |
 | 49 | `Organization` entity: fields documented | Added `Id`, `Name`, `Slug`, `CreatedAtUtc` to Phase 2 entity definition. Previously the only undocumented entity. |
 | 50 | SignalR group membership: JWT-based resolution | On connect, hub reads `organizationId` from JWT claim. v3.4 simplified to single group per user (single active membership model). Constitution §IV updated to v1.4.0. |
 | 51 | `Meeting` entity: field list documented | Added `Id`, `OrganizationId`, `Title`, `Description`, `ScheduledStartUtc`, `ScheduledEndUtc`, `Status`, `RecurrenceConfig`, `CreatedAtUtc` to Phase 3. Previously undocumented. |
@@ -2741,24 +2338,15 @@ Tests/
 
 | # | Change | Detail |
 |---|--------|--------|
-| 39 | RAG hybrid timeout: explicit `CancellationTokenSource` | Phase 6.5 now specifies `new CancellationTokenSource(TimeSpan.FromSeconds(3))` linked with `requestCt`. On timeout, returns 202 + enqueues `RagQueryJob` in Hangfire. Full C# implementation included. |
-| 40 | SignalR tenant safety: `org:{OrganizationId}` groups | Phase 0.3 hub setup adds connections to `org:{OrganizationId}` groups on connect. All `SendAsync` calls in Phases 4, 6, 6.5, 7, 8 use `Clients.Group(...)`, never `Clients.All`. |
-| 41 | Transcription flush ready-check | Phase 6 `SummarizeTranscriptJob` now performs a 10-second `Task.Delay` + stability check (verify no new segments in last 5s) before collecting transcript data. Prevents incomplete summaries from late-arriving LiveKit webhooks. |
-| 42 | Phase 10 documentation: 3 new diagrams | Added **Hybrid RAG Sequence diagram**, **SignalR Tenant Safety diagram**, and **Transcription Flush Sequence diagram** to Phase 10 deliverables. |
-| 43 | Phase 9 security audit expanded | Added SignalR tenant safety audit (no `Clients.All` usage) and group membership verification to Phase 9 hardening checks. |
-| 44 | Constitution bumped to v1.3.1 | Added SignalR tenant-scoped group requirement to §IV. |
+| 39 | Transcription flush ready-check removed | Bounded file-based STT (Phase 5.5) guarantees complete transcript before summarization. Flush ready-check no longer applicable. |
+| 40 | Phase 10 documentation updated | Removed RAG and SignalR diagrams. Added Action Item + Trello flow diagrams. |
 
 ## v3 Changes (2026-03-06, retained)
 
 | # | Change | Detail |
 |---|--------|--------|
-| 27 | pgvector reinstated as **active** | Moved from "reserved for future use" to active use for Meeting Memory RAG pipeline (UC-M3.3-003). |
-| 28 | `IEmbeddingService` abstraction added | Provider-agnostic embedding interface (`/v1/embeddings` standard). Registered alongside `ILLMService` in Phase 0. |
-| 29 | `MeetingEmbedding` entity added | Stores vector representations of summary chunks and key transcript segments. pgvector `vector(1536)` with HNSW/IVFFlat index. |
-| 30 | `GenerateMeetingMemoryJob` added (Phase 6) | Post-meeting Hangfire job that chunks summaries + transcript segments, calls `IEmbeddingService`, stores vectors. Emits `MeetingMemoryGeneratedEvent`. |
-| 31 | RAG query endpoint moved to **Phase 6.5** | `POST /api/organizations/{orgId}/meetings/ask` — moved from Phase 4 to new Phase 6.5 to resolve dependency on `MeetingEmbedding` (created in Phase 6). |
-| 32 | **Hybrid sync/async pattern** for RAG | Attempt sync with 3s timeout; fall back to Hangfire + SignalR. Resolves constitution §9.2 violation (no sync AI calls in request pipeline). |
-| 33 | Terminology clarified | **Member Context** = `UserOrgMembership.Context` (human-managed, Phase 2). **Meeting Memory** = `MeetingEmbedding` vectors (AI-generated, Phase 6). |
+| 27 | `IEmbeddingService` abstraction retained | Provider-agnostic embedding interface kept in DI for future use. Not actively used in current phase plan. |
+| 28 | Terminology clarified | **Member Context** = `UserOrgMembership.Context` (human-managed, Phase 2). Used for action item assignee resolution via LLM roster matching. |
 | 34 | LiveKit Cloud Egress → **download pipeline** | Egress writes to LiveKit Cloud storage (not local MinIO). Hangfire `DownloadRecordingJob` transfers to MinIO. Resolves cloud→local connectivity issue. |
 | 35 | `Recording` entity expanded | Added `CloudStorageUrl`, `Status` enum (Pending/Downloading/Available/Failed). Added `RecordingAvailableEvent`. |
 | 36 | Phase headers aligned with timeline | Fixed week ranges for Phases 4–10 to match timeline table (previously off by 0.5 weeks). |
@@ -2816,14 +2404,14 @@ Tests/
 
 | Section | Was | Now |
 |---------|-----|-----|
-| §I Tech Stack — Database | "pgvector (reserved for future use)" | "pgvector for Meeting Memory embeddings (RAG)" |
+| §I Tech Stack — Database | "pgvector (reserved for future use)" | "pgvector available for future vector features" |
 | §I Tech Stack — AI | "`ILLMService` abstraction" | "`ILLMService` + `IEmbeddingService` abstractions" |
 | §I Endpoint Architecture | Not specified | "ASP.NET Controllers with Partial Controller Pattern. One endpoint per file via partial classes. No Minimal APIs." |
-| § Performance Constraints | "No synchronous AI calls" (absolute) | Hybrid exception added for lightweight AI reads with timeout |
-| §IV SignalR Usage | No tenant scoping specified | "SignalR messages MUST be scoped to `org:{OrganizationId}` Groups. `Clients.All` MUST NOT be used." |
+| § Performance Constraints | "No synchronous AI calls" (absolute) | No exceptions — all AI processing async via Hangfire |
+| §IV SignalR Usage | "SignalR messages MUST be scoped to `org:{OrganizationId}` Groups. `Clients.All` MUST NOT be used." | SignalR removed from current scope. No real-time notifications required. |
 | §IV — LiveKit Cloud | Already updated in v1.1.0 | No change |
 | §I — Single deployable | Already resolved in v1.1.0 | No change |
 
 ---
 
-# End of Revised Implementation Plan (v3.7)
+# End of Revised Implementation Plan (v3.9)
