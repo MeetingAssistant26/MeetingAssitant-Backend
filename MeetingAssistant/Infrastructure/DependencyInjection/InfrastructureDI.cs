@@ -38,6 +38,7 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
 
             // Scoped infrastructure services
             services.AddScoped<ITenantProvider, TenantProvider>();
+            services.AddScoped<IAgentContextProvider, AgentContextProvider>();
             services.AddScoped<ICorrelationIdProvider, CorrelationIdProvider>();
             services.AddScoped<DevDbSeeder>();
 
