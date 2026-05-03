@@ -1,4 +1,5 @@
-﻿using MeetingAssistant.Infrastructure.Persistence.DbContext;
+using MeetingAssistant.Features.AgentApi.Services;
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -29,6 +30,10 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
                 ["Jwt:Audience"] = TestJwtTokenHelper.TestAudience,
                 ["Jwt:TokenExpiryMinutes"] = "60",
                 ["Jwt:RefreshTokenExpiryDays"] = "14",
+                ["AgentJwt:SigningKey"] = TestJwtTokenHelper.TestAgentSigningKey,
+                ["AgentJwt:Issuer"] = TestJwtTokenHelper.TestAgentIssuer,
+                ["AgentJwt:Audience"] = TestJwtTokenHelper.TestAgentAudience,
+                ["AgentJwt:TokenExpiryMinutes"] = "60",
                 ["ConnectionStrings:DefaultConnection"] = "not-used",
                 ["Redis:ConnectionString"] = "not-used",
                 ["HangfireSettings:DashboardUsername"] = "test",
@@ -73,7 +78,7 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
             services.RemoveAll<Microsoft.Extensions.Caching.Distributed.IDistributedCache>();
             services.AddDistributedMemoryCache();
 
-            // Override JWT bearer to use our test key
+            // Override user JWT bearer to use our test key
             services.PostConfigure<Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerOptions>(
                 Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerDefaults.AuthenticationScheme,
                 options =>
@@ -88,6 +93,25 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
                         ValidAudience = TestJwtTokenHelper.TestAudience,
                         IssuerSigningKey = new SymmetricSecurityKey(
                             Encoding.UTF8.GetBytes(TestJwtTokenHelper.TestSigningKey)),
+                        ClockSkew = TimeSpan.Zero
+                    };
+                });
+
+            // Override agent JWT bearer to use our test key
+            services.PostConfigure<Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerOptions>(
+                AgentAuthenticationDefaults.Scheme,
+                options =>
+                {
+                    options.TokenValidationParameters = new TokenValidationParameters
+                    {
+                        ValidateIssuerSigningKey = true,
+                        ValidateAudience = true,
+                        ValidateIssuer = true,
+                        ValidateLifetime = true,
+                        ValidIssuer = TestJwtTokenHelper.TestAgentIssuer,
+                        ValidAudience = TestJwtTokenHelper.TestAgentAudience,
+                        IssuerSigningKey = new SymmetricSecurityKey(
+                            Encoding.UTF8.GetBytes(TestJwtTokenHelper.TestAgentSigningKey)),
                         ClockSkew = TimeSpan.Zero
                     };
                 });
@@ -117,4 +141,3 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
         }
     }
 }
-

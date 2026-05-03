@@ -4,11 +4,16 @@ using MeetingAssistant.Infrastructure.SignalR;
 using MeetingAssistant.Features.Identity;
 using MeetingAssistant.Features.Organizations;
 using MeetingAssistant.Features.Meetings;
+using MeetingAssistant.Features.Tasks;
 using MeetingAssistant.Features.LiveSession;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.DevSeeding;
+using MeetingAssistant.Features.AgentApi;
 using Serilog;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Globalization;
+using System.Threading.RateLimiting;
 
 namespace MeetingAssistant.Api
 {
@@ -32,10 +37,45 @@ namespace MeetingAssistant.Api
                 .AddIdentityFeature()
                 .AddOrganizationsFeature()
                 .AddMeetingsFeature()
+                .AddTasksFeature()
                 .AddLiveSessionFeature(builder.Configuration)
+                .AddAgentApiFeature()
                 .AddMapping()
                 .AddSwaggerServices()
                 .AddHangfireServices(builder.Configuration);
+
+            builder.Services.AddRateLimiter(options =>
+            {
+                options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+                options.OnRejected = (context, cancellationToken) =>
+                {
+                    if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+                    {
+                        context.HttpContext.Response.Headers.RetryAfter =
+                            Math.Ceiling(retryAfter.TotalSeconds).ToString(CultureInfo.InvariantCulture);
+                    }
+
+                    return ValueTask.CompletedTask;
+                };
+
+                options.AddPolicy("AgentPerMeeting", httpContext =>
+                {
+                    var meetingPartition = httpContext.User.FindFirst("meetingId")?.Value
+                        ?? httpContext.Connection.RemoteIpAddress?.ToString()
+                        ?? "agent-anonymous";
+
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey: $"agent:{meetingPartition}",
+                        factory: _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = 100,
+                            Window = TimeSpan.FromMinutes(1),
+                            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                            QueueLimit = 0,
+                            AutoReplenishment = true
+                        });
+                });
+            });
 
             builder.Services.Configure<LiveKitOptions>(builder.Configuration.GetSection("LiveKit"));
             builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("Storage"));
@@ -60,6 +100,7 @@ namespace MeetingAssistant.Api
             app.UseMiddleware<ExceptionHandlingMiddleware>();
 
             app.UseAuthentication();
+            app.UseRateLimiter();
             app.UseAuthorization();
             app.UseCors();
 
