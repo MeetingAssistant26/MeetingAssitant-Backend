@@ -1,0 +1,168 @@
+# Data Model: Action Items & Trello Integration
+
+## Entity Relationship Diagram
+
+```
+┌─────────────────────┐     ┌──────────────────────┐     ┌─────────────────────┐
+│   Organization      │◄────┤ OrganizationIntegration│     │ TrelloWorkspaceConfig│
+│   (existing)        │     │   (new)              │◄────┤   (new)             │
+└─────────────────────┘     └──────────────────────┘     └─────────────────────┘
+         ▲                           ▲
+         │                           │
+         │                    ┌──────┴──────┐
+         │                    │             │
+┌────────┴────────┐    ┌─────┴──────┐  ┌───┴──────────┐
+│   Meeting       │    │ ActionItem │  │ ExternalAccountLink│
+│   (existing)    │◄───┤   (new)    │  │   (new)            │
+└─────────────────┘    └────────────┘  └────────────────────┘
+         ▲
+         │
+┌────────┴────────┐
+│ MeetingParticipant│
+│   (existing)    │
+└─────────────────┘
+```
+
+## New Entities
+
+### ActionItem
+
+Stores tasks extracted from meeting transcripts.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| Id | Guid | PK | Unique identifier |
+| OrganizationId | Guid | FK → Organization, NOT NULL, index | Tenant isolation |
+| MeetingId | Guid | FK → Meeting, NOT NULL, index | Source meeting |
+| Title | string (200) | NOT NULL | Task title |
+| Description | string (2000) | NULL | Task details |
+| AssignedToParticipantId | Guid | FK → MeetingParticipant, NULL | Matched participant from roster |
+| AssignedToUserId | Guid | FK → ApplicationUser, NULL | Platform user (null for guests) |
+| DueDateUtc | DateTime | NULL | Optional due date |
+| Status | ActionItemStatus | NOT NULL, default PendingReview | Lifecycle state |
+| TrelloCardId | string (50) | NULL | External Trello card ID |
+| TrelloCardUrl | string (500) | NULL | Deep link to Trello card |
+| TrelloAssigneeMissingReason | string (50) | NULL | Why assignee was skipped |
+| ExtractedAtUtc | DateTime | NOT NULL | When extraction completed |
+| SyncedAtUtc | DateTime | NULL | When sync completed |
+| RowVersion | byte[] | RowVersion (concurrency token) | Optimistic concurrency |
+| CreatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+| UpdatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+
+**Indexes**:
+- `(MeetingId, Status)` — for review panel queries
+- `(OrganizationId, Status)` — for tenant-scoped listing
+- `(AssignedToUserId, Status)` — for "my action items" queries
+
+**State Transitions**:
+```
+PendingReview ──[approve]──► Approved ──[sync]──► Synced
+PendingReview ──[reject]──► Rejected
+Approved ──[undo]──► PendingReview
+Rejected ──[undo]──► PendingReview
+Approved ──[sync, no assignee]──► SyncedNoAssignee
+```
+
+> **Rule**: `Synced` and `SyncedNoAssignee` are terminal. No further edits allowed.
+
+---
+
+### OrganizationIntegration
+
+Tracks enabled external integrations per organization.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| Id | Guid | PK | Unique identifier |
+| OrganizationId | Guid | FK → Organization, NOT NULL, UNIQUE | One integration record per org per type |
+| Type | IntegrationType | NOT NULL, default Trello | Integration provider |
+| Status | IntegrationStatus | NOT NULL, default Disabled | Connection health |
+| CreatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+| UpdatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+
+**IntegrationStatus enum**:
+- `Active` — working normally
+- `NeedsReconnect` — credentials invalid (401)
+- `InvalidConfig` — board/list not found (404)
+- `Disabled` — not configured or explicitly turned off
+
+---
+
+### TrelloWorkspaceConfig
+
+Organization-level Trello destination settings.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| Id | Guid | PK | Unique identifier |
+| OrganizationId | Guid | FK → Organization, NOT NULL, UNIQUE | Tenant isolation |
+| BoardId | string (50) | NOT NULL | Trello board ID |
+| ListId | string (50) | NOT NULL | Trello list ID |
+| ApiKeyProtected | string (500) | NOT NULL | Encrypted Trello API key |
+| ApiTokenProtected | string (500) | NOT NULL | Encrypted Trello token |
+| CreatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+| UpdatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+
+> **Encryption**: `ApiKeyProtected` and `ApiTokenProtected` are encrypted using ASP.NET Core Data Protection (`IDataProtector`).
+
+---
+
+### ExternalAccountLink
+
+Per-user, per-organization connection to external providers.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| Id | Guid | PK | Unique identifier |
+| UserId | Guid | FK → ApplicationUser, NOT NULL | Platform user |
+| OrganizationId | Guid | FK → Organization, NOT NULL | Tenant scope |
+| Provider | ExternalProvider | NOT NULL, default Trello | Provider type |
+| ExternalUserId | string (50) | NOT NULL | Trello member ID |
+| ExternalUsername | string (100) | NULL | Trello username (for display) |
+| AccessTokenProtected | string (500) | NOT NULL | Encrypted personal token |
+| CreatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+| UpdatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+
+**Unique Constraint**: `(UserId, OrganizationId, Provider)` — one link per user per org per provider.
+
+---
+
+### TrelloMemberMapping
+
+Explicit admin-defined mapping between platform user and Trello member.
+
+| Field | Type | Constraints | Description |
+|-------|------|-------------|-------------|
+| Id | Guid | PK | Unique identifier |
+| OrganizationId | Guid | FK → Organization, NOT NULL | Tenant scope |
+| UserId | Guid | FK → ApplicationUser, NOT NULL | Platform user |
+| TrelloMemberId | string (50) | NOT NULL | Trello member ID |
+| CreatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+| UpdatedAtUtc | DateTime | NOT NULL | Audit timestamp |
+
+**Unique Constraint**: `(OrganizationId, UserId)` — one mapping per user per org.
+
+> **Resolution priority during sync**: `ExternalAccountLink` (self-connected) is checked first. If absent, fallback to `TrelloMemberMapping` (admin-defined). If both absent, card created without assignee.
+
+## Entity Relationships
+
+| From | To | Cardinality | Notes |
+|------|-----|-------------|-------|
+| ActionItem | Organization | N:1 | Tenant isolation |
+| ActionItem | Meeting | N:1 | Source meeting |
+| ActionItem | MeetingParticipant | N:0..1 | Optional assignee participant |
+| ActionItem | ApplicationUser | N:0..1 | Optional platform user assignee |
+| OrganizationIntegration | Organization | 1:1 per type | One integration config per org |
+| TrelloWorkspaceConfig | Organization | 1:1 | One Trello config per org |
+| ExternalAccountLink | ApplicationUser | N:1 | User can have links to multiple providers/orgs |
+| ExternalAccountLink | Organization | N:1 | Scoped to org |
+| TrelloMemberMapping | Organization | N:1 | Many mappings per org |
+| TrelloMemberMapping | ApplicationUser | N:1 | One mapping per user per org |
+
+## Validation Rules
+
+1. **ActionItem.Title** — required, max 200 characters.
+2. **ActionItem.Status** — must be valid enum value; terminal states (`Synced`, `SyncedNoAssignee`) block updates.
+3. **TrelloWorkspaceConfig.BoardId/ListId** — required when integration is Active.
+4. **ExternalAccountLink.AccessTokenProtected** — must be non-empty encrypted value.
+5. **TrelloMemberMapping.TrelloMemberId** — required, must match Trello member ID format.
