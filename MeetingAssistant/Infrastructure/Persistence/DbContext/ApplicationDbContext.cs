@@ -9,6 +9,7 @@ using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Tasks.Models.Entities;
+using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Shared;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Api.Infrastructure.Services;
@@ -40,6 +41,11 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<MeetingTranscript> MeetingTranscripts => Set<MeetingTranscript>();
         public DbSet<MeetingSummary> MeetingSummaries => Set<MeetingSummary>();
         public DbSet<Reminder> Reminders => Set<Reminder>();
+        public DbSet<ActionItem> ActionItems => Set<ActionItem>();
+        public DbSet<OrganizationIntegration> OrganizationIntegrations => Set<OrganizationIntegration>();
+        public DbSet<OrganizationIntegrationConfig> OrganizationIntegrationConfigs => Set<OrganizationIntegrationConfig>();
+        public DbSet<ExternalAccountLink> ExternalAccountLinks => Set<ExternalAccountLink>();
+        public DbSet<ExternalMemberMapping> ExternalMemberMappings => Set<ExternalMemberMapping>();
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
