@@ -1,10 +1,14 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
+using MeetingAssistant.Api.Infrastructure.Configuration;
+using MeetingAssistant.Features.AgentApi.Services;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
+using MeetingAssistant.Shared.Abstractions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -121,9 +125,34 @@ namespace tests.Integration.LiveSession
                 "/twirp/livekit.AgentDispatchService/CreateDispatch");
         }
 
+        [Fact]
+        public async Task EnableAsync_WhenAiDebugEnabled_ShouldIncludeDebugMetadataWithAgentToken()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler();
+            var sut = CreateService(fixture, handler, aiDebugEnabled: true, persistPayloads: false);
+
+            var result = await sut.EnableAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            using var requestBody = JsonDocument.Parse(handler.RequestBodies.Last());
+            var metadataJson = requestBody.RootElement.GetProperty("metadata").GetString();
+            using var metadata = JsonDocument.Parse(metadataJson!);
+            var aiDebug = metadata.RootElement.GetProperty("aiDebug");
+            aiDebug.GetProperty("enabled").GetBoolean().Should().BeTrue();
+            aiDebug.GetProperty("persistPayloads").GetBoolean().Should().BeFalse();
+            aiDebug.GetProperty("agentToken").GetString().Should().Be("debug-agent-token");
+        }
+
         private static AiAssistantDispatchService CreateService(
             LiveSessionTestDb fixture,
-            FakeLiveKitDispatchHandler handler)
+            FakeLiveKitDispatchHandler handler,
+            bool aiDebugEnabled = false,
+            bool persistPayloads = true)
         {
             return new AiAssistantDispatchService(
                 fixture.DbContext,
@@ -135,6 +164,19 @@ namespace tests.Integration.LiveSession
                     EgressHost = "http://livekit.example",
                     AgentName = "meeting-assistant"
                 }),
+                Options.Create(new AiDebugOptions
+                {
+                    Enabled = aiDebugEnabled,
+                    PersistPayloads = persistPayloads
+                }),
+                Options.Create(new AgentJwtSettings
+                {
+                    Issuer = "MeetingAssistant",
+                    Audience = "MeetingAssistantAgent",
+                    SigningKey = "AgentSigningKeyForIntegrationTests_MustBeAtLeast32Chars!!",
+                    TokenExpiryMinutes = 60
+                }),
+                new FakeAgentAuthService(),
                 NullLogger<AiAssistantDispatchService>.Instance);
         }
 
@@ -157,6 +199,21 @@ namespace tests.Integration.LiveSession
         private sealed class FakeHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
         {
             public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+        }
+
+        private sealed class FakeAgentAuthService : IAgentAuthService
+        {
+            public Task<Result<string>> MintTokenAsync(
+                Guid organizationId,
+                Guid meetingId,
+                TimeSpan lifetime,
+                CancellationToken cancellationToken = default)
+                => Task.FromResult(Result.Success("debug-agent-token"));
+
+            public Task<Result<string>> RefreshTokenAsync(
+                string currentToken,
+                CancellationToken cancellationToken = default)
+                => Task.FromResult(Result.Success("debug-agent-token"));
         }
 
         private sealed class FakeLiveKitDispatchHandler(

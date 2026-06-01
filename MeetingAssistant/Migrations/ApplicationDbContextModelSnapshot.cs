@@ -470,6 +470,123 @@ namespace MeetingAssistant.Migrations
                     b.ToTable("MeetingTranscripts");
                 });
 
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.AiAssistantTraceEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("AudioDurationMs")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("CharactersCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("CompletionTokens")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("DurationMs")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ErrorType")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("MeetingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ParticipantIdentity")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<int?>("PromptTokens")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RequestPayloadJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("ResponsePayloadJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("SessionId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("State")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("StepEndpoint")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("StepModel")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("StepProvider")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("StepType")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("StepVoice")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("Text")
+                        .HasColumnType("text");
+
+                    b.Property<int?>("TotalTokens")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TurnId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MeetingId");
+
+                    b.HasIndex("OrganizationId")
+                        .HasDatabaseName("IX_AiAssistantTraceEvents_OrganizationId");
+
+                    b.HasIndex("OrganizationId", "MeetingId", "OccurredAtUtc")
+                        .HasDatabaseName("IX_AiAssistantTraceEvents_Org_Meeting_OccurredAtUtc");
+
+                    b.HasIndex("OrganizationId", "MeetingId", "SessionId", "TurnId", "Sequence")
+                        .HasDatabaseName("IX_AiAssistantTraceEvents_Turn_Sequence");
+
+                    b.ToTable("AiAssistantTraceEvents");
+                });
+
             modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.ParticipantAudioTrack", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1195,6 +1312,17 @@ namespace MeetingAssistant.Migrations
                 });
 
             modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.MeetingTranscript", b =>
+                {
+                    b.HasOne("MeetingAssistant.Features.Meetings.Models.Meeting", "Meeting")
+                        .WithMany()
+                        .HasForeignKey("MeetingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Meeting");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.LiveSession.Models.AiAssistantTraceEvent", b =>
                 {
                     b.HasOne("MeetingAssistant.Features.Meetings.Models.Meeting", "Meeting")
                         .WithMany()

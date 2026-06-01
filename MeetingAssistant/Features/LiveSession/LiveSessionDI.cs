@@ -13,10 +13,12 @@ namespace MeetingAssistant.Features.LiveSession
             IConfiguration configuration)
         {
             services.Configure<OpenAiCompatibleOptions>(configuration.GetSection("OpenAiCompatible"));
+            services.Configure<AiDebugOptions>(configuration.GetSection("AiDebug"));
             services.AddScoped<ISessionService, SessionService>();
             services.AddScoped<IMeetingArtifactService, MeetingArtifactService>();
             services.AddScoped<ILiveKitTokenIssuer, LiveKitTokenIssuer>();
             services.AddScoped<IAiAssistantDispatchService, AiAssistantDispatchService>();
+            services.AddScoped<IAiDebugTraceService, AiDebugTraceService>();
             services.AddScoped<ILiveKitWebhookValidator, LiveKitWebhookValidator>();
             services.AddScoped<IWebhookService, WebhookService>();
             services.AddScoped<IStorageService, StorageService>();

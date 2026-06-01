@@ -31,6 +31,9 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
         _configurationOverrides = configurationOverrides;
     }
 
+    public MeetingAssistantWebFactory WithConfiguration(IReadOnlyDictionary<string, string?> configurationOverrides)
+        => new(configurationOverrides);
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");

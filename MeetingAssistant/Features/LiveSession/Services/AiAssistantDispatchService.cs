@@ -3,6 +3,8 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Livekit.Server.Sdk.Dotnet;
+using MeetingAssistant.Api.Infrastructure.Configuration;
+using MeetingAssistant.Features.AgentApi.Services;
 using MeetingAssistant.Features.LiveSession.Contracts.Responses;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.Meetings.Models;
@@ -21,17 +23,26 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private readonly ApplicationDbContext _dbContext;
         private readonly HttpClient _httpClient;
         private readonly LiveKitOptions _options;
+        private readonly AiDebugOptions _aiDebugOptions;
+        private readonly AgentJwtSettings _agentJwtSettings;
+        private readonly IAgentAuthService _agentAuthService;
         private readonly ILogger<AiAssistantDispatchService> _logger;
 
         public AiAssistantDispatchService(
             ApplicationDbContext dbContext,
             IHttpClientFactory httpClientFactory,
             IOptions<LiveKitOptions> options,
+            IOptions<AiDebugOptions> aiDebugOptions,
+            IOptions<AgentJwtSettings> agentJwtSettings,
+            IAgentAuthService agentAuthService,
             ILogger<AiAssistantDispatchService> logger)
         {
             _dbContext = dbContext;
             _httpClient = httpClientFactory.CreateClient("livekit-agent-dispatch");
             _options = options.Value;
+            _aiDebugOptions = aiDebugOptions.Value;
+            _agentJwtSettings = agentJwtSettings.Value;
+            _agentAuthService = agentAuthService;
             _logger = logger;
         }
 
@@ -285,16 +296,19 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 return Result.Success(ToStatus(enabled: true, existingResult.Value));
             }
 
-            var metadata = JsonSerializer.Serialize(new
-            {
+            var metadataResult = await BuildDispatchMetadataAsync(
                 organizationId,
                 meetingId,
-                requestedByUserId
-            }, JsonOptions);
+                requestedByUserId,
+                cancellationToken);
+            if (metadataResult.IsFailure)
+            {
+                return Result.Failure<AiAssistantStatusResponse>(metadataResult.Error);
+            }
 
             var created = await SendDispatchRequestAsync(
                 "CreateDispatch",
-                new CreateDispatchRequest(roomName, AgentName, metadata),
+                new CreateDispatchRequest(roomName, AgentName, metadataResult.Value),
                 ParseDispatch,
                 cancellationToken);
 
@@ -312,6 +326,53 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 AgentName);
 
             return Result.Success(ToStatus(enabled: true, [created.Value]));
+        }
+
+        private async Task<Result<string>> BuildDispatchMetadataAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid? requestedByUserId,
+            CancellationToken cancellationToken)
+        {
+            object? aiDebug = null;
+            if (_aiDebugOptions.Enabled)
+            {
+                var lifetime = TimeSpan.FromMinutes(Math.Max(_agentJwtSettings.TokenExpiryMinutes, 1));
+                var tokenResult = await _agentAuthService.MintTokenAsync(
+                    organizationId,
+                    meetingId,
+                    lifetime,
+                    cancellationToken);
+
+                if (tokenResult.IsFailure)
+                {
+                    return Result.Failure<string>(tokenResult.Error);
+                }
+
+                aiDebug = new
+                {
+                    enabled = true,
+                    persistPayloads = _aiDebugOptions.PersistPayloads,
+                    agentToken = tokenResult.Value
+                };
+            }
+
+            var metadata = aiDebug is null
+                ? JsonSerializer.Serialize(new
+                {
+                    organizationId,
+                    meetingId,
+                    requestedByUserId
+                }, JsonOptions)
+                : JsonSerializer.Serialize(new
+                {
+                    organizationId,
+                    meetingId,
+                    requestedByUserId,
+                    aiDebug
+                }, JsonOptions);
+
+            return Result.Success(metadata);
         }
 
         private async Task<Result> EnsureRoomExistsAsync(string roomName, CancellationToken cancellationToken)

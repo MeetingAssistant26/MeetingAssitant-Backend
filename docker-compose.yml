@@ -68,6 +68,10 @@ services:
       # JWT
       Jwt__SigningKey: ${Jwt__SigningKey:-dev-secret-key}
 
+      # AI assistant debug tracing
+      AiDebug__Enabled: ${AiDebug__Enabled:-false}
+      AiDebug__PersistPayloads: ${AiDebug__PersistPayloads:-true}
+
       # Redis (optional)
       Redis__ConnectionString: ${Redis__ConnectionString:-redis:6379}
 
@@ -82,9 +86,14 @@ services:
       LiveKit__WebhookSecret: ${LiveKit__WebhookSecret:-}
       LiveKit__EgressHost: ${LiveKit__EgressHost:-http://livekit:7880}
       LiveKit__AgentName: ${LiveKit__AgentName:-meeting-assistant}
+      LiveKit__AiAssistantDefaultEnabled: ${LiveKit__AiAssistantDefaultEnabled:-true}
 
     ports:
       - "8080:8080"
+
+    networks:
+      - default
+      - ai-network
 
     depends_on:
       postgres:
@@ -167,6 +176,9 @@ services:
       - STT_URL=${STT_URL:-http://stt:8000/v1}
       - LLM_URL=${LLM_URL:-http://llm:8000/v1}
       - TTS_URL=${TTS_URL:-http://tts:8000/v1}
+      # AI debug tracing: backend metadata must also enable tracing; AI_TRACE_ENABLED=false is a local agent kill switch.
+      - BACKEND_AGENT_API_URL=${BACKEND_AGENT_API_URL:-http://api:8080}
+      - AI_TRACE_ENABLED=${AI_TRACE_ENABLED:-true}
       - DEPENDENCY_READY_MAX_ATTEMPTS=${DEPENDENCY_READY_MAX_ATTEMPTS:-60}
       - DEPENDENCY_READY_INTERVAL_MS=${DEPENDENCY_READY_INTERVAL_MS:-5000}
       - DEPENDENCY_READY_TIMEOUT_MS=${DEPENDENCY_READY_TIMEOUT_MS:-5000}
