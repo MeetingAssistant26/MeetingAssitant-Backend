@@ -104,6 +104,44 @@ public class ActionItemReviewTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task ApproveActionItem_WithAiExtractedMissingAssignee_ShouldReturnConflictUntilCorrected()
+    {
+        var meeting = await SeedMeetingAsync(TestOrganizationId);
+        var participant = await SeedMeetingParticipantAsync(meeting.Id, TestOrganizationId, TestUserId, MeetingRole.Host);
+        var item = await SeedActionItemAsync(
+            TestOrganizationId,
+            meeting.Id,
+            assignedToUserId: null,
+            title: "Needs assignee review",
+            syncMissingAssigneeReason: "NeedsAssignee");
+        var originalEtag = await GetCurrentEtagAsync(meeting.Id, item.Id);
+
+        var blockedRequest = new HttpRequestMessage(HttpMethod.Patch,
+            $"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}/action-items/{item.Id}/approve");
+        blockedRequest.Headers.TryAddWithoutValidation("If-Match", originalEtag);
+        var blockedResponse = await Client.SendAsync(blockedRequest);
+
+        blockedResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var updateRequest = new HttpRequestMessage(HttpMethod.Patch,
+            $"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}/action-items/{item.Id}");
+        updateRequest.Headers.TryAddWithoutValidation("If-Match", await GetCurrentEtagAsync(meeting.Id, item.Id));
+        updateRequest.Content = JsonContent.Create(new { assignedToParticipantId = participant.Id });
+        var updateResponse = await Client.SendAsync(updateRequest);
+        updateResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var approveRequest = new HttpRequestMessage(HttpMethod.Patch,
+            $"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}/action-items/{item.Id}/approve");
+        approveRequest.Headers.TryAddWithoutValidation("If-Match", await GetCurrentEtagAsync(meeting.Id, item.Id));
+        var approveResponse = await Client.SendAsync(approveRequest);
+
+        approveResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await approveResponse.Content.ReadFromJsonAsync<ActionItemResponse>();
+        body!.Status.Should().Be(ActionItemStatus.Approved.ToString());
+        body.SyncMissingAssigneeReason.Should().BeNull();
+    }
+
+    [Fact]
     public async Task ListOrganizationActionItems_ShouldFilterPaginateAndExcludeOtherOrganizations()
     {
         var otherUserId = Guid.NewGuid();
@@ -292,7 +330,8 @@ public class ActionItemReviewTests : IntegrationTestBase
         string title,
         DateTime? dueDateUtc = null,
         ActionItemStatus status = ActionItemStatus.PendingReview,
-        ExternalProvider? provider = null)
+        ExternalProvider? provider = null,
+        string? syncMissingAssigneeReason = null)
     {
         await using var scope = Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -308,6 +347,7 @@ public class ActionItemReviewTests : IntegrationTestBase
             DueDateUtc = dueDateUtc,
             Status = status,
             ExternalProvider = provider,
+            SyncMissingAssigneeReason = syncMissingAssigneeReason,
             ExtractedAtUtc = DateTime.UtcNow
         };
 

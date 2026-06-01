@@ -30,8 +30,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         model = _llm.Model,
                         messages = new object[]
                         {
-                            new { role = "system", content = _promptProvider.GetSummarizerPrompt() },
-                            new { role = "user", content = fullTranscript }
+                            new { role = "user", content = _promptProvider.GetSummarizerPrompt(fullTranscript) }
                         }
                     }, JsonOptions),
                     Encoding.UTF8,

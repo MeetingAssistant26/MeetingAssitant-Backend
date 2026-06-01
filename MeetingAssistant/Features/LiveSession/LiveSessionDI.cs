@@ -12,7 +12,12 @@ namespace MeetingAssistant.Features.LiveSession
             this IServiceCollection services,
             IConfiguration configuration)
         {
-            services.Configure<OpenAiCompatibleOptions>(configuration.GetSection("OpenAiCompatible"));
+            services.AddOptions<OpenAiCompatibleOptions>()
+                .Bind(configuration.GetSection("OpenAiCompatible"))
+                .Validate(
+                    options => IsValidProvider(options.Stt) && IsValidProvider(options.Llm),
+                    "OpenAiCompatible:Stt and OpenAiCompatible:Llm must each specify an absolute HTTP(S) BaseUrl and non-empty Model.")
+                .ValidateOnStart();
             services.Configure<AiDebugOptions>(configuration.GetSection("AiDebug"));
             services.AddScoped<ISessionService, SessionService>();
             services.AddScoped<IMeetingArtifactService, MeetingArtifactService>();
@@ -34,6 +39,18 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddHttpClient("livekit-agent-dispatch");
 
             return services;
+        }
+
+        private static bool IsValidProvider(OpenAiCompatibleOptions.ProviderConfig provider)
+        {
+            if (string.IsNullOrWhiteSpace(provider.Model)
+                || string.IsNullOrWhiteSpace(provider.BaseUrl)
+                || !Uri.TryCreate(provider.BaseUrl, UriKind.Absolute, out var uri))
+            {
+                return false;
+            }
+
+            return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
         }
     }
 }

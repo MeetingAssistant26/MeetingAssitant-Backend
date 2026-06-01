@@ -58,7 +58,13 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
                 ["LiveKit:ApiKey"] = "test-livekit-key",
                 ["LiveKit:ApiSecret"] = "0123456789abcdef0123456789abcdef",
                 ["LiveKit:ServerUrl"] = "wss://test.livekit.local",
-                ["LiveKit:WebhookSecret"] = "0123456789abcdef0123456789abcdef"
+                ["LiveKit:WebhookSecret"] = "0123456789abcdef0123456789abcdef",
+                ["OpenAiCompatible:Stt:BaseUrl"] = "http://stt.test/v1",
+                ["OpenAiCompatible:Stt:ApiKey"] = "test-stt-key",
+                ["OpenAiCompatible:Stt:Model"] = "whisper-1",
+                ["OpenAiCompatible:Llm:BaseUrl"] = "http://llm.test/v1",
+                ["OpenAiCompatible:Llm:ApiKey"] = "test-llm-key",
+                ["OpenAiCompatible:Llm:Model"] = "local"
             };
 
             foreach (var setting in _configurationOverrides)

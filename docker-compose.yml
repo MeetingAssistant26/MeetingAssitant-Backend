@@ -76,8 +76,19 @@ services:
       Redis__ConnectionString: ${Redis__ConnectionString:-redis:6379}
 
       # AI (optional)
-      AI__ApiKey: ${AI__ApiKey:-}
-      AI__BaseUrl: ${AI__BaseUrl:-https://api.openai.com}
+      # Generic LLM client used by post-meeting action extraction. The service appends /v1.
+      AI__ApiKey: ${AI__ApiKey:-local-ai-key}
+      AI__BaseUrl: ${AI__BaseUrl:-http://llm:8000}
+      AI__Model: ${AI__Model:-local}
+
+      # OpenAI-compatible post-meeting providers.
+      # Start ../ai_work first so stt/llm resolve on the external ai_work_ai-network.
+      OpenAiCompatible__Stt__BaseUrl: ${OpenAiCompatible__Stt__BaseUrl:-http://stt:8000/v1}
+      OpenAiCompatible__Stt__ApiKey: ${OpenAiCompatible__Stt__ApiKey:-local-ai-key}
+      OpenAiCompatible__Stt__Model: ${OpenAiCompatible__Stt__Model:-whisper-1}
+      OpenAiCompatible__Llm__BaseUrl: ${OpenAiCompatible__Llm__BaseUrl:-http://llm:8000/v1}
+      OpenAiCompatible__Llm__ApiKey: ${OpenAiCompatible__Llm__ApiKey:-local-ai-key}
+      OpenAiCompatible__Llm__Model: ${OpenAiCompatible__Llm__Model:-local}
 
       # LiveKit (optional)
       LiveKit__ApiKey: ${LiveKit__ApiKey:-}
