@@ -10,6 +10,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U meetingassistant -d meetingassistant"]
       interval: 5s
@@ -34,8 +35,8 @@ services:
     container_name: meetingassistant-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -107,9 +108,9 @@ services:
         redis:
           address: redis:6379
         keys:
-          devkey: devsecret_devsecret_devsecret_32chars
+          ${LiveKit__ApiKey:-devkey}: ${LiveKit__ApiSecret:-devsecret_devsecret_devsecret_32chars}
         webhook:
-          api_key: devkey
+          api_key: ${LiveKit__ApiKey:-devkey}
           urls:
             - http://api:8080/api/webhooks/livekit
     ports:
@@ -131,21 +132,54 @@ services:
     environment:
       EGRESS_CONFIG_BODY: |
         log_level: info
-        api_key: devkey
-        api_secret: devsecret_devsecret_devsecret_32chars
+        api_key: ${LiveKit__ApiKey:-devkey}
+        api_secret: ${LiveKit__ApiSecret:-devsecret_devsecret_devsecret_32chars}
         ws_url: ws://livekit:7880
         insecure: true
         redis:
           address: redis:6379
         storage:
           s3:
-            access_key: minioadmin
-            secret: minioadmin
-            endpoint: http://minio:9000
-            bucket: recordings
+            access_key: ${Storage__AccessKey:-minioadmin}
+            secret: ${Storage__SecretKey:-minioadmin}
+            endpoint: ${Storage__Endpoint:-http://minio:9000}
+            bucket: ${Storage__Bucket:-recordings}
             force_path_style: true
     cap_add:
       - SYS_ADMIN
+
+  # LiveKit Agent (Node.js) — joins rooms as an AI participant.
+  # Start ../ai_work first so the external ai_work_ai-network exists and
+  # stt/llm/tts service names resolve from this container.
+  livekit-agent:
+    build:
+      context: ../livekit-agent
+      dockerfile: Dockerfile
+    container_name: meetingassistant-agent
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LiveKit__ApiKey:-devkey}
+      - LIVEKIT_API_SECRET=${LiveKit__ApiSecret:-devsecret_devsecret_devsecret_32chars}
+      - STT_URL=${STT_URL:-http://stt:8000/v1}
+      - LLM_URL=${LLM_URL:-http://llm:8000/v1}
+      - TTS_URL=${TTS_URL:-http://tts:8000/v1}
+      - DEPENDENCY_READY_MAX_ATTEMPTS=${DEPENDENCY_READY_MAX_ATTEMPTS:-60}
+      - DEPENDENCY_READY_INTERVAL_MS=${DEPENDENCY_READY_INTERVAL_MS:-5000}
+      - DEPENDENCY_READY_TIMEOUT_MS=${DEPENDENCY_READY_TIMEOUT_MS:-5000}
+      - NODE_ENV=production
+    depends_on:
+      livekit:
+        condition: service_started
+    networks:
+      - default
+      - ai-network
+    healthcheck:
+      test: ["CMD", "node", "dist/readiness.js", "--once"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
 
   web:
     build:
@@ -160,3 +194,8 @@ services:
 volumes:
   postgres_data:
   minio_data:
+
+networks:
+  ai-network:
+    external: true
+    name: ai_work_ai-network
