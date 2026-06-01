@@ -68,7 +68,7 @@ services:
       # JWT
       Jwt__SigningKey: ${Jwt__SigningKey:-dev-secret-key}
 
-      # AI assistant debug tracing
+      # Coherent AI debug gate for assistant traces and post-processing trace reads
       AiDebug__Enabled: ${AiDebug__Enabled:-false}
       AiDebug__PersistPayloads: ${AiDebug__PersistPayloads:-true}
 

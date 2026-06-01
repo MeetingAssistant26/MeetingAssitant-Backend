@@ -4,6 +4,8 @@ using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Models.Events;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
@@ -21,7 +23,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
         IBackgroundJobClient backgroundJobClient,
         IOptions<LiveKitOptions> options,
         IEgressService egressService,
-        ILogger<WebhookService> logger) : IWebhookService
+        ILogger<WebhookService> logger,
+        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null) : IWebhookService
     {
         private const string UniqueViolationSqlState = "23505";
 
@@ -30,6 +33,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private readonly LiveKitOptions _options = options.Value;
         private readonly IEgressService _egressService = egressService;
         private readonly ILogger<WebhookService> _logger = logger;
+        private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
 
         public async Task<Result> ProcessAsync(
             WebhookEvent webhookEvent,
@@ -92,6 +96,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             var ingestEnqueues = new List<(Guid FragmentId, string S3LocationUrl, long? SizeBytes)>();
             var egressStarts = new List<(Guid MeetingId, Guid FragmentId, string RoomName, string TrackSid, string ParticipantIdentity)>();
+            var discoveredFragmentIds = new List<Guid>();
 
             switch (eventType)
             {
@@ -215,6 +220,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                             failureCode: status == ParticipantAudioFragmentStatus.Failed ? egressDetails.FailureCode ?? "egress_failed" : null,
                             failureMessage: status == ParticipantAudioFragmentStatus.Failed ? egressDetails.FailureMessage ?? $"LiveKit egress ended with status {webhookEvent.EgressInfo?.Status}" : null,
                             cancellationToken);
+                        discoveredFragmentIds.Add(fragment.Id);
 
                         if (status == ParticipantAudioFragmentStatus.Failed)
                         {
@@ -280,6 +286,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                 failureCode: null,
                                 failureMessage: null,
                                 cancellationToken);
+                            discoveredFragmentIds.Add(fragment.Id);
 
                             egressStarts.Add((
                                 meeting.Id,
@@ -307,8 +314,44 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             foreach (var (fragmentId, s3LocationUrl, sizeBytes) in ingestEnqueues)
             {
-                _backgroundJobClient.Enqueue<IngestParticipantAudioJob>(
+                var jobId = _backgroundJobClient.Enqueue<IngestParticipantAudioJob>(
                     job => job.RunFragmentAsync(fragmentId, s3LocationUrl, sizeBytes, CancellationToken.None));
+
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                        meeting.OrganizationId,
+                        meeting.Id,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        message: "Participant audio fragment ingest job enqueued.",
+                        relatedHangfireJobId: jobId,
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragmentId),
+                        cancellationToken: cancellationToken);
+                }
+            }
+
+            if (_postMeetingProcessingTracker is not null)
+            {
+                if (eventType == SessionEventType.RoomFinished)
+                {
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        meeting.OrganizationId,
+                        meeting.Id,
+                        PostMeetingProcessingStepType.RoomCompleted,
+                        message: "LiveKit room completion webhook processed.",
+                        cancellationToken: cancellationToken);
+                }
+
+                if (discoveredFragmentIds.Count > 0)
+                {
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        meeting.OrganizationId,
+                        meeting.Id,
+                        PostMeetingProcessingStepType.FragmentDiscovery,
+                        message: $"Discovered {discoveredFragmentIds.Count} participant audio fragment(s).",
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: discoveredFragmentIds),
+                        cancellationToken: cancellationToken);
+                }
             }
 
             foreach (var egressStart in egressStarts)

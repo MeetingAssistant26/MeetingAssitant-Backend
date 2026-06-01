@@ -4,7 +4,9 @@ using System.Text.RegularExpressions;
 using MediatR;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,12 +16,14 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         ApplicationDbContext dbContext,
         ISttService sttService,
         IPublisher publisher,
-        ILogger<GenerateMeetingTranscriptJob> logger)
+        ILogger<GenerateMeetingTranscriptJob> logger,
+        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ISttService _sttService = sttService;
         private readonly IPublisher _publisher = publisher;
         private readonly ILogger<GenerateMeetingTranscriptJob> _logger = logger;
+        private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
 
         private const int MaxSttParallelism = 1;
 
@@ -32,6 +36,16 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             Guid organizationId,
             CancellationToken cancellationToken = default)
         {
+            if (_postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.StartStepAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.Stt,
+                    message: "STT transcription started.",
+                    cancellationToken: cancellationToken);
+            }
+
             var fragments = await _dbContext.ParticipantAudioFragments
                 .IgnoreQueryFilters()
                 .Where(x => x.MeetingId == meetingId
@@ -53,6 +67,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
             if (fragments.Count == 0)
             {
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.Stt,
+                        "no_available_fragments",
+                        "No available participant audio fragments were found for transcript generation.",
+                        cancellationToken: cancellationToken);
+                }
+
                 _logger.LogInformation(
                     "Transcript generation skipped because no available participant audio fragments were found. MeetingId={MeetingId}",
                     meetingId);
@@ -190,6 +215,18 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
             if (allSegments.IsEmpty)
             {
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.Stt,
+                        "all_fragments_failed",
+                        "All participant audio fragment transcriptions failed.",
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds),
+                        cancellationToken: cancellationToken);
+                }
+
                 _logger.LogWarning(
                     "Transcript generation skipped because all participant transcriptions failed. MeetingId={MeetingId}",
                     meetingId);
@@ -206,6 +243,24 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .OrderBy(x => x.RoomRelativeStartMs)
                 .ThenBy(x => x.RoomRelativeEndMs)
                 .ToList();
+
+            if (_postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.CompleteStepAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.Stt,
+                    message: $"STT transcription completed for {orderedSegments.Count} segment(s).",
+                    artifact: new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: fragmentsWithTiming.Select(x => x.FragmentId).ToList()),
+                    cancellationToken: cancellationToken);
+
+                await _postMeetingProcessingTracker.StartStepAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.TranscriptPersistence,
+                    message: "Transcript persistence started.",
+                    cancellationToken: cancellationToken);
+            }
 
             var participantIds = orderedSegments
                 .Select(x => x.ParticipantUserId)
@@ -278,6 +333,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             transcript.GeneratedAtUtc = DateTime.UtcNow;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
+
+            if (_postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.CompleteStepAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.TranscriptPersistence,
+                    message: "Transcript persisted.",
+                    artifact: new PostMeetingArtifactLink("meeting_transcript", transcript.Id),
+                    cancellationToken: cancellationToken);
+            }
 
             await _publisher.Publish(
                 new MeetingTranscriptReadyEvent(meetingId, organizationId, DateTime.UtcNow),

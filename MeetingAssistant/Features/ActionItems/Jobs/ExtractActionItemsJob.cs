@@ -6,7 +6,9 @@ using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Models;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Infrastructure.AI;
 using MeetingAssistant.Infrastructure.AI.DTOs;
@@ -30,6 +32,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
         private readonly ILLMService _llmService;
         private readonly IPromptProvider _promptProvider;
         private readonly ILogger<ExtractActionItemsJob> _logger;
+        private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker;
         private readonly string _model;
 
         public ExtractActionItemsJob(
@@ -37,12 +40,14 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             ILLMService llmService,
             IPromptProvider promptProvider,
             IOptions<OpenAiCompatibleOptions> options,
-            ILogger<ExtractActionItemsJob> logger)
+            ILogger<ExtractActionItemsJob> logger,
+            IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
         {
             _dbContext = dbContext;
             _llmService = llmService;
             _promptProvider = promptProvider;
             _logger = logger;
+            _postMeetingProcessingTracker = postMeetingProcessingTracker;
             _model = options.Value.Llm.Model;
         }
 
@@ -50,12 +55,37 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
         public async Task RunAsync(Guid meetingId, Guid organizationId, CancellationToken cancellationToken)
         {
             _logger.LogInformation("Starting action item extraction for meeting {MeetingId}", meetingId);
+            if (_postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.StartStepAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    message: "Action item extraction started.",
+                    cancellationToken: cancellationToken);
+            }
 
             var existingCount = await _dbContext.ActionItems
                 .CountAsync(x => x.MeetingId == meetingId, cancellationToken);
 
             if (existingCount > 0)
             {
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    var existingIds = await _dbContext.ActionItems
+                        .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
+                        .Select(x => x.Id)
+                        .ToListAsync(cancellationToken);
+
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.ActionExtraction,
+                        message: "Action items already exist for meeting. Skipping extraction.",
+                        artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: existingIds),
+                        cancellationToken: cancellationToken);
+                }
+
                 _logger.LogInformation("Action items already exist for meeting {MeetingId}. Skipping.", meetingId);
                 return;
             }
@@ -66,6 +96,17 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
             if (transcript == null || string.IsNullOrWhiteSpace(transcript.FullText))
             {
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.ActionExtraction,
+                        "transcript_unavailable",
+                        "No transcript found for action item extraction.",
+                        cancellationToken: cancellationToken);
+                }
+
                 _logger.LogWarning("No transcript found for meeting {MeetingId}", meetingId);
                 return;
             }
@@ -98,6 +139,17 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
                 if (result.Tasks.Count == 0)
                 {
+                    if (_postMeetingProcessingTracker is not null)
+                    {
+                        await _postMeetingProcessingTracker.CompleteStepAsync(
+                            organizationId,
+                            meetingId,
+                            PostMeetingProcessingStepType.ActionExtraction,
+                            message: "No action items extracted.",
+                            artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: Array.Empty<Guid>()),
+                            cancellationToken: cancellationToken);
+                    }
+
                     _logger.LogInformation("No action items extracted for meeting {MeetingId}", meetingId);
                     return;
                 }
@@ -137,15 +189,52 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
                 if (createdCount == 0)
                 {
+                    if (_postMeetingProcessingTracker is not null)
+                    {
+                        await _postMeetingProcessingTracker.CompleteStepAsync(
+                            organizationId,
+                            meetingId,
+                            PostMeetingProcessingStepType.ActionExtraction,
+                            message: "No usable action items extracted.",
+                            artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: Array.Empty<Guid>()),
+                            cancellationToken: cancellationToken);
+                    }
+
                     _logger.LogInformation("No usable action items extracted for meeting {MeetingId}", meetingId);
                     return;
                 }
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    var createdIds = await _dbContext.ActionItems
+                        .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
+                        .Select(x => x.Id)
+                        .ToListAsync(cancellationToken);
+
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.ActionExtraction,
+                        message: $"Extracted {createdCount} action item(s).",
+                        artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: createdIds),
+                        cancellationToken: cancellationToken);
+                }
                 _logger.LogInformation("Extracted {Count} action items for meeting {MeetingId}", createdCount, meetingId);
             }
             catch (Exception ex)
             {
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.ActionExtraction,
+                        "action_extraction_failed",
+                        ex.GetBaseException().Message,
+                        cancellationToken: cancellationToken);
+                }
+
                 _logger.LogError(ex, "Failed to extract action items for meeting {MeetingId}", meetingId);
                 throw;
             }

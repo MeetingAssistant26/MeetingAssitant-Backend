@@ -1,6 +1,7 @@
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -24,6 +25,8 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<ILiveKitTokenIssuer, LiveKitTokenIssuer>();
             services.AddScoped<IAiAssistantDispatchService, AiAssistantDispatchService>();
             services.AddScoped<IAiDebugTraceService, AiDebugTraceService>();
+            services.AddScoped<IPostMeetingProcessingTracker, PostMeetingProcessingTracker>();
+            services.AddScoped<IPostMeetingProcessingTraceService, PostMeetingProcessingTraceService>();
             services.AddScoped<ILiveKitWebhookValidator, LiveKitWebhookValidator>();
             services.AddScoped<IWebhookService, WebhookService>();
             services.AddScoped<IStorageService, StorageService>();

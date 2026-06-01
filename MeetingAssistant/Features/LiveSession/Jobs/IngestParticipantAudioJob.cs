@@ -1,6 +1,8 @@
 using Hangfire;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
@@ -11,13 +13,15 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
     public class IngestParticipantAudioJob(
         ApplicationDbContext dbContext,
         IPublisher publisher,
-        ILogger<IngestParticipantAudioJob> logger)
+        ILogger<IngestParticipantAudioJob> logger,
+        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
     {
         private const string UniqueViolationSqlState = "23505";
 
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly IPublisher _publisher = publisher;
         private readonly ILogger<IngestParticipantAudioJob> _logger = logger;
+        private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
 
         [AutomaticRetry(Attempts = 3)]
         public async Task RunAsync(
@@ -41,6 +45,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
             if (track.Status is ParticipantAudioTrackStatus.Available or ParticipantAudioTrackStatus.Failed)
             {
+                if (_postMeetingProcessingTracker is not null && track.Status == ParticipantAudioTrackStatus.Available)
+                {
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        track.OrganizationId,
+                        track.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        message: "Participant audio track ingest was already complete.",
+                        artifact: new PostMeetingArtifactLink("participant_audio_track", track.Id),
+                        cancellationToken: cancellationToken);
+                }
+
                 _logger.LogInformation(
                     "Participant audio ingest skipped. TrackId={TrackId} StatusTransition={StatusTransition} StorageObjectKey={StorageObjectKey} SizeBytes={SizeBytes}",
                     trackId,
@@ -51,11 +66,32 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
 
             var previousStatus = track.Status;
+            if (_postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.StartStepAsync(
+                    track.OrganizationId,
+                    track.MeetingId,
+                    PostMeetingProcessingStepType.AudioIngest,
+                    message: "Participant audio track ingest started.",
+                    artifact: new PostMeetingArtifactLink("participant_audio_track", track.Id),
+                    cancellationToken: cancellationToken);
+            }
 
             var age = DateTime.UtcNow - track.CreatedAtUtc;
             if (age > TimeSpan.FromMinutes(8))
             {
                 track.Status = ParticipantAudioTrackStatus.Failed;
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        track.OrganizationId,
+                        track.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        "ingest_timeout",
+                        "Participant audio ingest abandoned after 8-minute ceiling.",
+                        artifact: new PostMeetingArtifactLink("participant_audio_track", track.Id),
+                        cancellationToken: cancellationToken);
+                }
                 var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
 
                 _logger.LogWarning(
@@ -81,6 +117,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     trackId,
                     s3LocationUrl);
                 track.Status = ParticipantAudioTrackStatus.Failed;
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        track.OrganizationId,
+                        track.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        "invalid_storage_location",
+                        "Failed to extract object key from S3 location URL.",
+                        artifact: new PostMeetingArtifactLink("participant_audio_track", track.Id),
+                        cancellationToken: cancellationToken);
+                }
                 await PersistTerminalStatusAsync(track, cancellationToken);
                 return;
             }
@@ -91,6 +138,16 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 track.SizeBytes = sizeBytes;
                 track.Status = ParticipantAudioTrackStatus.Available;
                 var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        track.OrganizationId,
+                        track.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        message: "Participant audio track ingest completed.",
+                        artifact: new PostMeetingArtifactLink("participant_audio_track", track.Id),
+                        cancellationToken: cancellationToken);
+                }
 
                 _logger.LogInformation(
                     "Participant audio ingest completed. TrackId={TrackId} MeetingId={MeetingId} StatusTransition={StatusTransition} StorageObjectKey={StorageObjectKey} SizeBytes={SizeBytes}",
@@ -108,6 +165,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             catch (Exception ex)
             {
                 track.Status = ParticipantAudioTrackStatus.Failed;
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        track.OrganizationId,
+                        track.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        "ingest_failed",
+                        ex.Message,
+                        artifact: new PostMeetingArtifactLink("participant_audio_track", track.Id),
+                        cancellationToken: cancellationToken);
+                }
                 var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
 
                 _logger.LogError(
@@ -148,6 +216,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
             if (fragment.Status is ParticipantAudioFragmentStatus.Available or ParticipantAudioFragmentStatus.Failed)
             {
+                if (_postMeetingProcessingTracker is not null && fragment.Status == ParticipantAudioFragmentStatus.Available)
+                {
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        fragment.OrganizationId,
+                        fragment.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        message: "Participant audio fragment ingest was already complete.",
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                        cancellationToken: cancellationToken);
+                }
+
                 _logger.LogInformation(
                     "Participant audio fragment ingest skipped. FragmentId={FragmentId} StatusTransition={StatusTransition} StorageObjectKey={StorageObjectKey} SizeBytes={SizeBytes}",
                     fragmentId,
@@ -158,6 +237,16 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
 
             var previousStatus = fragment.Status;
+            if (_postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.StartStepAsync(
+                    fragment.OrganizationId,
+                    fragment.MeetingId,
+                    PostMeetingProcessingStepType.AudioIngest,
+                    message: "Participant audio fragment ingest started.",
+                    artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                    cancellationToken: cancellationToken);
+            }
 
             var age = DateTime.UtcNow - fragment.CreatedAtUtc;
             if (age > TimeSpan.FromMinutes(8))
@@ -166,6 +255,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 fragment.FailedAtUtc = DateTime.UtcNow;
                 fragment.FailureCode = "ingest_timeout";
                 fragment.FailureMessage = "Participant audio fragment ingest abandoned after 8-minute ceiling.";
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        fragment.OrganizationId,
+                        fragment.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        fragment.FailureCode,
+                        fragment.FailureMessage,
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                        cancellationToken: cancellationToken);
+                }
 
                 var readyEvent = await PersistFragmentTerminalStatusAndTryCreateReadyEventAsync(fragment, cancellationToken);
 
@@ -197,6 +297,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 fragment.FailedAtUtc = DateTime.UtcNow;
                 fragment.FailureCode = "invalid_storage_location";
                 fragment.FailureMessage = "Failed to extract object key from S3 location URL.";
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        fragment.OrganizationId,
+                        fragment.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        fragment.FailureCode,
+                        fragment.FailureMessage,
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                        cancellationToken: cancellationToken);
+                }
                 await PersistFragmentTerminalStatusAndTryCreateReadyEventAsync(fragment, cancellationToken);
                 return;
             }
@@ -213,6 +324,16 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 fragment.FailureMessage = null;
 
                 var readyEvent = await PersistFragmentTerminalStatusAndTryCreateReadyEventAsync(fragment, cancellationToken);
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        fragment.OrganizationId,
+                        fragment.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        message: "Participant audio fragment ingest completed.",
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                        cancellationToken: cancellationToken);
+                }
 
                 _logger.LogInformation(
                     "Participant audio fragment ingest completed. FragmentId={FragmentId} MeetingId={MeetingId} TrackSid={TrackSid} StatusTransition={StatusTransition} StorageObjectKey={StorageObjectKey} SizeBytes={SizeBytes}",
@@ -234,6 +355,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 fragment.FailedAtUtc = DateTime.UtcNow;
                 fragment.FailureCode = "ingest_failed";
                 fragment.FailureMessage = ex.Message;
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.FailStepAsync(
+                        fragment.OrganizationId,
+                        fragment.MeetingId,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        fragment.FailureCode,
+                        fragment.FailureMessage,
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                        cancellationToken: cancellationToken);
+                }
                 var readyEvent = await PersistFragmentTerminalStatusAndTryCreateReadyEventAsync(fragment, cancellationToken);
 
                 _logger.LogError(

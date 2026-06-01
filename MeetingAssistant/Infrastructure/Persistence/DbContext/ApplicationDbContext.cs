@@ -10,6 +10,7 @@ using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Tasks.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Shared;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Api.Infrastructure.Services;
@@ -39,6 +40,9 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<MeetingMeetingTag> MeetingMeetingTags => Set<MeetingMeetingTag>();
         public DbSet<SessionEvent> SessionEvents => Set<SessionEvent>();
         public DbSet<AiAssistantTraceEvent> AiAssistantTraceEvents => Set<AiAssistantTraceEvent>();
+        public DbSet<PostMeetingProcessingRun> PostMeetingProcessingRuns => Set<PostMeetingProcessingRun>();
+        public DbSet<PostMeetingProcessingStep> PostMeetingProcessingSteps => Set<PostMeetingProcessingStep>();
+        public DbSet<PostMeetingProcessingEvent> PostMeetingProcessingEvents => Set<PostMeetingProcessingEvent>();
         public DbSet<ParticipantAudioFragment> ParticipantAudioFragments => Set<ParticipantAudioFragment>();
         public DbSet<ParticipantAudioTrack> ParticipantAudioTracks => Set<ParticipantAudioTrack>();
         public DbSet<MeetingTranscript> MeetingTranscripts => Set<MeetingTranscript>();
