@@ -64,7 +64,12 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
                 ["OpenAiCompatible:Stt:Model"] = "whisper-1",
                 ["OpenAiCompatible:Llm:BaseUrl"] = "http://llm.test/v1",
                 ["OpenAiCompatible:Llm:ApiKey"] = "test-llm-key",
-                ["OpenAiCompatible:Llm:Model"] = "local"
+                ["OpenAiCompatible:Llm:Model"] = "local",
+                ["OpenAiCompatible:Embedding:Provider"] = "deterministic-test",
+                ["OpenAiCompatible:Embedding:BaseUrl"] = "",
+                ["OpenAiCompatible:Embedding:ApiKey"] = "test-embedding-key",
+                ["OpenAiCompatible:Embedding:Model"] = "deterministic-test-v1",
+                ["OpenAiCompatible:Embedding:Dimension"] = "1536"
             };
 
             foreach (var setting in _configurationOverrides)

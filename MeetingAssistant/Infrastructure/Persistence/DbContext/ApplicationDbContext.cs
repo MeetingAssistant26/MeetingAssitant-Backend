@@ -11,6 +11,7 @@ using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Tasks.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
+using MeetingAssistant.Features.Rag.Models;
 using MeetingAssistant.Shared;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Api.Infrastructure.Services;
@@ -49,6 +50,9 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<MeetingSummary> MeetingSummaries => Set<MeetingSummary>();
         public DbSet<Reminder> Reminders => Set<Reminder>();
         public DbSet<ActionItem> ActionItems => Set<ActionItem>();
+        public DbSet<KnowledgeDocument> KnowledgeDocuments => Set<KnowledgeDocument>();
+        public DbSet<KnowledgeChunk> KnowledgeChunks => Set<KnowledgeChunk>();
+        public DbSet<KnowledgeChunkTag> KnowledgeChunkTags => Set<KnowledgeChunkTag>();
         public DbSet<OrganizationIntegration> OrganizationIntegrations => Set<OrganizationIntegration>();
         public DbSet<OrganizationIntegrationConfig> OrganizationIntegrationConfigs => Set<OrganizationIntegrationConfig>();
         public DbSet<ExternalAccountLink> ExternalAccountLinks => Set<ExternalAccountLink>();
@@ -56,6 +60,8 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         protected  override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
+
+            modelBuilder.HasPostgresExtension("vector");
 
             modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
 

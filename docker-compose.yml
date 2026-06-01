@@ -88,6 +88,13 @@ services:
       OpenAiCompatible__Llm__BaseUrl: ${OpenAiCompatible__Llm__BaseUrl:-http://llm:8000/v1}
       OpenAiCompatible__Llm__ApiKey: ${OpenAiCompatible__Llm__ApiKey:-local-ai-key}
       OpenAiCompatible__Llm__Model: ${OpenAiCompatible__Llm__Model:-local}
+      # RAG embedding metadata/provider. Use deterministic-test locally until an
+      # OpenAI-compatible embeddings service is attached to the Docker network.
+      OpenAiCompatible__Embedding__Provider: ${OpenAiCompatible__Embedding__Provider:-deterministic-test}
+      OpenAiCompatible__Embedding__BaseUrl: ${OpenAiCompatible__Embedding__BaseUrl:-}
+      OpenAiCompatible__Embedding__ApiKey: ${OpenAiCompatible__Embedding__ApiKey:-local-ai-key}
+      OpenAiCompatible__Embedding__Model: ${OpenAiCompatible__Embedding__Model:-deterministic-test-v1}
+      OpenAiCompatible__Embedding__Dimension: ${OpenAiCompatible__Embedding__Dimension:-1536}
 
       # LiveKit (optional)
       LiveKit__ApiKey: ${LiveKit__ApiKey:-}

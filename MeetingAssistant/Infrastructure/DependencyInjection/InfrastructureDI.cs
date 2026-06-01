@@ -60,10 +60,15 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
 
             services.AddHttpClient<IEmbeddingService, OpenAiEmbeddingService>(client =>
             {
+                var embeddingSettings = configuration.GetSection("OpenAiCompatible:Embedding")
+                    .Get<OpenAiCompatibleOptions.ProviderConfig>();
                 var aiSettings = configuration.GetSection("AI").Get<AiSettings>();
-                if (!string.IsNullOrEmpty(aiSettings?.ApiKey))
+                var apiKey = !string.IsNullOrWhiteSpace(embeddingSettings?.ApiKey)
+                    ? embeddingSettings.ApiKey
+                    : aiSettings?.ApiKey;
+                if (!string.IsNullOrEmpty(apiKey))
                     client.DefaultRequestHeaders.Authorization =
-                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", aiSettings.ApiKey);
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
             })
             .AddPolicyHandler(GetRetryPolicy())
             .AddPolicyHandler(GetCircuitBreakerPolicy());

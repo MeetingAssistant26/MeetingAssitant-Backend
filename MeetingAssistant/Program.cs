@@ -10,6 +10,7 @@ using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.DevSeeding;
 using MeetingAssistant.Features.AgentApi;
 using MeetingAssistant.Features.ActionItems;
+using MeetingAssistant.Features.Rag;
 using Serilog;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.RateLimiting;
@@ -42,6 +43,7 @@ namespace MeetingAssistant.Api
                 .AddLiveSessionFeature(builder.Configuration)
                 .AddAgentApiFeature()
                 .AddActionItemsFeature()
+                .AddRagFeature()
                 .AddMapping()
                 .AddSwaggerServices()
                 .AddHangfireServices(builder.Configuration);
