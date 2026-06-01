@@ -82,44 +82,48 @@ namespace MeetingAssistant.Features.Rag.Services
             var generatedAtUtc = DateTime.UtcNow;
             var drafts = await CreateDraftDocumentsAsync(artifactsToPublish, confirmedTags, generationId, generatedAtUtc, cancellationToken);
 
-            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
-            try
+            var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
+            await executionStrategy.ExecuteAsync(async () =>
             {
-                _dbContext.KnowledgeDocuments.AddRange(drafts);
-                await _dbContext.SaveChangesAsync(cancellationToken);
-
-                var replacementKeys = drafts
-                    .Select(x => new ArtifactKey(x.ArtifactType, x.ArtifactId, x.ArtifactVersion))
-                    .Distinct()
-                    .ToArray();
-
-                await ArchivePreviousCurrentDocumentsAsync(
-                    organizationId,
-                    meetingId,
-                    replacementKeys,
-                    generationId,
-                    cancellationToken);
-
-                foreach (var document in drafts)
+                await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+                try
                 {
-                    document.Visibility = KnowledgeVisibility.Published;
-                    document.IsCurrent = true;
+                    _dbContext.KnowledgeDocuments.AddRange(drafts);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
 
-                    foreach (var chunk in document.Chunks)
+                    var replacementKeys = drafts
+                        .Select(x => new ArtifactKey(x.ArtifactType, x.ArtifactId, x.ArtifactVersion))
+                        .Distinct()
+                        .ToArray();
+
+                    await ArchivePreviousCurrentDocumentsAsync(
+                        organizationId,
+                        meetingId,
+                        replacementKeys,
+                        generationId,
+                        cancellationToken);
+
+                    foreach (var document in drafts)
                     {
-                        chunk.Visibility = KnowledgeVisibility.Published;
-                        chunk.IsCurrent = true;
-                    }
-                }
+                        document.Visibility = KnowledgeVisibility.Published;
+                        document.IsCurrent = true;
 
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                await transaction.CommitAsync(cancellationToken);
-            }
-            catch
-            {
-                await transaction.RollbackAsync(cancellationToken);
-                throw;
-            }
+                        foreach (var chunk in document.Chunks)
+                        {
+                            chunk.Visibility = KnowledgeVisibility.Published;
+                            chunk.IsCurrent = true;
+                        }
+                    }
+
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                }
+                catch
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    throw;
+                }
+            });
 
             var documentIds = drafts.Select(x => x.Id).ToArray();
             var chunkCount = drafts.Sum(x => x.Chunks.Count);
@@ -426,30 +430,41 @@ namespace MeetingAssistant.Features.Rag.Services
                 return;
             }
 
-            var existing = await _dbContext.KnowledgeDocuments
-                .IgnoreQueryFilters()
-                .Include(x => x.Chunks)
-                .Where(x => x.OrganizationId == organizationId
-                            && x.MeetingId == meetingId
-                            && x.IsCurrent
-                            && x.Visibility == KnowledgeVisibility.Published
-                            && x.IndexGenerationId != generationId)
-                .ToListAsync(cancellationToken);
+            var updatedAtUtc = DateTime.UtcNow;
 
-            var toArchive = existing
-                .Where(x => replacementKeys.Contains(new ArtifactKey(x.ArtifactType, x.ArtifactId, x.ArtifactVersion)))
-                .ToList();
-
-            foreach (var document in toArchive)
+            foreach (var key in replacementKeys)
             {
-                document.IsCurrent = false;
-                document.Visibility = KnowledgeVisibility.Archived;
+                await _dbContext.KnowledgeDocuments
+                    .IgnoreQueryFilters()
+                    .Where(x => x.OrganizationId == organizationId
+                                && x.MeetingId == meetingId
+                                && x.ArtifactType == key.ArtifactType
+                                && x.ArtifactId == key.ArtifactId
+                                && x.ArtifactVersion == key.ArtifactVersion
+                                && x.IsCurrent
+                                && x.Visibility == KnowledgeVisibility.Published
+                                && x.IndexGenerationId != generationId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(x => x.IsCurrent, false)
+                        .SetProperty(x => x.Visibility, KnowledgeVisibility.Archived)
+                        .SetProperty(x => x.UpdatedAtUtc, updatedAtUtc),
+                        cancellationToken);
 
-                foreach (var chunk in document.Chunks)
-                {
-                    chunk.IsCurrent = false;
-                    chunk.Visibility = KnowledgeVisibility.Archived;
-                }
+                await _dbContext.KnowledgeChunks
+                    .IgnoreQueryFilters()
+                    .Where(x => x.OrganizationId == organizationId
+                                && x.MeetingId == meetingId
+                                && x.ArtifactType == key.ArtifactType
+                                && x.ArtifactId == key.ArtifactId
+                                && x.ArtifactVersion == key.ArtifactVersion
+                                && x.IsCurrent
+                                && x.Visibility == KnowledgeVisibility.Published
+                                && x.IndexGenerationId != generationId)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(x => x.IsCurrent, false)
+                        .SetProperty(x => x.Visibility, KnowledgeVisibility.Archived)
+                        .SetProperty(x => x.UpdatedAtUtc, updatedAtUtc),
+                        cancellationToken);
             }
         }
 

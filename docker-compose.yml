@@ -208,6 +208,7 @@ services:
       # Disable preemptive generation by default because RAG context is injected at end-of-turn;
       # enabling it can start an ungrounded LLM request before backend context arrives.
       - AGENT_PREEMPTIVE_GENERATION_ENABLED=${AGENT_PREEMPTIVE_GENERATION_ENABLED:-false}
+      - AGENT_INTERRUPTION_ENABLED=${AGENT_INTERRUPTION_ENABLED:-false}
       - AGENT_LLM_TIMEOUT_MS=${AGENT_LLM_TIMEOUT_MS:-60000}
       - AGENT_TTS_TIMEOUT_MS=${AGENT_TTS_TIMEOUT_MS:-30000}
       - AGENT_TTS_KEEPALIVE_MS=${AGENT_TTS_KEEPALIVE_MS:-1000}
