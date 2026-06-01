@@ -7,5 +7,6 @@ namespace MeetingAssistant.Features.ActionItems.Models.Responses
         public string? ExternalTaskId { get; set; }
         public string? ExternalTaskUrl { get; set; }
         public string? SyncMissingAssigneeReason { get; set; }
+        public string? RowVersionEtag { get; set; }
     }
 }

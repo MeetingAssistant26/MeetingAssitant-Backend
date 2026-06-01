@@ -10,14 +10,14 @@ namespace MeetingAssistant.Features.ActionItems.Endpoints.Review
     {
         [HttpPatch("{id:guid}/approve")]
         public async Task<IActionResult> ApproveActionItem(
-            Guid organizationId,
+            Guid orgId,
             Guid meetingId,
             Guid id,
-            [FromHeader(Name = "If-Match")] string etag,
+            [FromHeader(Name = "If-Match")] string? etag,
             CancellationToken cancellationToken = default)
         {
             var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-            var result = await _actionItemService.ApproveAsync(id, userId, organizationId, etag, cancellationToken);
+            var result = await _actionItemService.ApproveAsync(id, userId, orgId, etag, cancellationToken);
 
             return result.IsSuccess
                 ? Ok(result.Value)

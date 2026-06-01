@@ -10,13 +10,13 @@ namespace MeetingAssistant.Features.ActionItems.Endpoints.Review
     {
         [HttpPost("sync-all")]
         public async Task<IActionResult> BulkSyncActionItems(
-            Guid organizationId,
+            Guid orgId,
             Guid meetingId,
             [FromBody] BulkSyncRequest request,
             CancellationToken cancellationToken = default)
         {
             var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-            var result = await _actionItemService.BulkSyncAsync(meetingId, request.ActionItemIds, userId, organizationId, cancellationToken);
+            var result = await _actionItemService.BulkSyncAsync(meetingId, request.ActionItemIds, userId, orgId, cancellationToken);
 
             return result.IsSuccess
                 ? StatusCode(207, result.Value)

@@ -1,3 +1,6 @@
+using Hangfire;
+using Hangfire.Common;
+using Hangfire.States;
 using MeetingAssistant.Features.AgentApi.Services;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.AspNetCore.Hosting;
@@ -70,6 +73,7 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
 
             // Remove Hangfire services that require PostgreSQL
             RemoveHangfireServices(services);
+            services.AddSingleton<IBackgroundJobClient, NoOpBackgroundJobClient>();
 
             // Remove health checks that require real infrastructure
             services.RemoveAll<Microsoft.Extensions.Diagnostics.HealthChecks.IHealthCheck>();
@@ -130,6 +134,13 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
 
         foreach (var descriptor in hangfireDescriptors)
             services.Remove(descriptor);
+    }
+
+    private sealed class NoOpBackgroundJobClient : IBackgroundJobClient
+    {
+        public string Create(Job job, IState state) => Guid.NewGuid().ToString("N");
+
+        public bool ChangeState(string jobId, IState state, string expectedState) => true;
     }
 
     protected override void Dispose(bool disposing)

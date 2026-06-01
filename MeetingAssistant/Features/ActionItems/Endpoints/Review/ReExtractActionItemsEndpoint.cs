@@ -9,12 +9,12 @@ namespace MeetingAssistant.Features.ActionItems.Endpoints.Review
     {
         [HttpPost("re-extract")]
         public async Task<IActionResult> ReExtractActionItems(
-            Guid organizationId,
+            Guid orgId,
             Guid meetingId,
             CancellationToken cancellationToken = default)
         {
             var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-            var result = await _actionItemService.ReExtractAsync(meetingId, userId, organizationId, cancellationToken);
+            var result = await _actionItemService.ReExtractAsync(meetingId, userId, orgId, cancellationToken);
 
             return result.IsSuccess
                 ? Accepted()

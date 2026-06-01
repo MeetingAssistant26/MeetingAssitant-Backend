@@ -9,14 +9,14 @@ namespace MeetingAssistant.Features.ActionItems.Endpoints.Review
     {
         [HttpDelete("{id:guid}")]
         public async Task<IActionResult> DeleteActionItem(
-            Guid organizationId,
+            Guid orgId,
             Guid meetingId,
             Guid id,
-            [FromHeader(Name = "If-Match")] string etag,
+            [FromHeader(Name = "If-Match")] string? etag,
             CancellationToken cancellationToken = default)
         {
             var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-            var result = await _actionItemService.DeleteAsync(id, userId, organizationId, etag, cancellationToken);
+            var result = await _actionItemService.DeleteAsync(id, userId, orgId, etag, cancellationToken);
 
             return result.IsSuccess
                 ? NoContent()

@@ -9,12 +9,12 @@ namespace MeetingAssistant.Features.ActionItems.Endpoints.Review
     {
         [HttpGet]
         public async Task<IActionResult> ListMeetingActionItems(
-            Guid organizationId,
+            Guid orgId,
             Guid meetingId,
             CancellationToken cancellationToken = default)
         {
             var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-            var result = await _actionItemService.GetByMeetingAsync(meetingId, userId, organizationId, cancellationToken);
+            var result = await _actionItemService.GetByMeetingAsync(meetingId, userId, orgId, cancellationToken);
 
             return result.IsSuccess
                 ? Ok(result.Value)

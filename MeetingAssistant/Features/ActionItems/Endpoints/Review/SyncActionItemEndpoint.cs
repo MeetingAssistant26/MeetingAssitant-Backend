@@ -9,14 +9,14 @@ namespace MeetingAssistant.Features.ActionItems.Endpoints.Review
     {
         [HttpPost("{id:guid}/sync")]
         public async Task<IActionResult> SyncActionItem(
-            Guid organizationId,
+            Guid orgId,
             Guid meetingId,
             Guid id,
             [FromHeader(Name = "If-Match")] string? etag,
             CancellationToken cancellationToken = default)
         {
             var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-            var result = await _actionItemService.SyncToProviderAsync(id, userId, organizationId, etag, cancellationToken);
+            var result = await _actionItemService.SyncToProviderAsync(id, userId, orgId, etag, cancellationToken);
 
             return result.IsSuccess
                 ? Ok(result.Value)

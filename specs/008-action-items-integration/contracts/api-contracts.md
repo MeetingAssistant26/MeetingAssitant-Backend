@@ -35,11 +35,32 @@ GET /api/organizations/{orgId:guid}/meetings/{meetingId:guid}/action-items
       "externalProvider": "Trello|null",
       "syncMissingAssigneeReason": "string|null",
       "extractedAtUtc": "2026-05-04T10:00:00Z",
-      "syncedAtUtc": "2026-05-04T11:00:00Z|null"
+      "syncedAtUtc": "2026-05-04T11:00:00Z|null",
+      "rowVersionEtag": "base64-row-version"
     }
-  ]
+  ],
+  "totalCount": 1,
+  "page": 1,
+  "pageSize": 1
 }
 ```
+
+### List Organization Action Items
+
+```
+GET /api/organizations/{orgId:guid}/action-items?page=&pageSize=&assignee=&meetingId=&status=&provider=&fromUtc=&toUtc=
+```
+
+**Auth**: Any active organization member.  
+**Query Params**:
+- `assignee=all|me` (optional, defaults to `all`)
+- `meetingId=guid` (optional)
+- `status=PendingReview|Approved|Rejected|Synced|SyncedNoAssignee` (optional)
+- `provider=Trello|ClickUp` (optional)
+- `fromUtc` / `toUtc` filter by `dueDateUtc` when present
+- `page` / `pageSize` paginate results; page is one-based
+
+**Response 200 OK**: Same paginated `ActionItemListResponse` as the meeting-scoped list. Every item includes `rowVersionEtag` for use as `If-Match` on mutations.
 
 ---
 
@@ -84,7 +105,8 @@ POST /api/organizations/{orgId:guid}/meetings/{meetingId:guid}/action-items/{id:
   "status": "Synced|SyncedNoAssignee",
   "externalTaskId": "string|null",
   "externalTaskUrl": "string|null",
-  "syncMissingAssigneeReason": "string|null"
+  "syncMissingAssigneeReason": "string|null",
+  "rowVersionEtag": "base64-row-version"
 }
 ```
 

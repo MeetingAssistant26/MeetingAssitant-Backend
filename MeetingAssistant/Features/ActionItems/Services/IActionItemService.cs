@@ -10,21 +10,34 @@ namespace MeetingAssistant.Features.ActionItems.Services
             Guid meetingId, Guid userId, Guid organizationId,
             CancellationToken cancellationToken = default);
 
+        Task<Result<ActionItemListResponse>> ListOrganizationActionItemsAsync(
+            Guid organizationId,
+            Guid userId,
+            int page,
+            int pageSize,
+            string? assignee,
+            Guid? meetingId,
+            string? status,
+            string? provider,
+            DateTime? fromUtc,
+            DateTime? toUtc,
+            CancellationToken cancellationToken = default);
+
         Task<Result<ActionItemResponse>> UpdateAsync(
             Guid id, UpdateActionItemRequest request,
-            Guid userId, Guid organizationId, string etag,
+            Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default);
 
         Task<Result<ActionItemResponse>> ApproveAsync(
-            Guid id, Guid userId, Guid organizationId, string etag,
+            Guid id, Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default);
 
         Task<Result<ActionItemResponse>> RejectAsync(
-            Guid id, Guid userId, Guid organizationId, string etag,
+            Guid id, Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default);
 
         Task<Result> DeleteAsync(
-            Guid id, Guid userId, Guid organizationId, string etag,
+            Guid id, Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default);
 
         Task<Result<SyncResultResponse>> SyncToProviderAsync(

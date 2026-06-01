@@ -38,46 +38,127 @@ namespace MeetingAssistant.Features.ActionItems.Services
             CancellationToken cancellationToken = default)
         {
             var isParticipant = await _dbContext.MeetingParticipants
-                .AnyAsync(p => p.MeetingId == meetingId && p.UserId == userId, cancellationToken);
+                .AnyAsync(p => p.MeetingId == meetingId && p.UserId == userId && p.OrganizationId == organizationId, cancellationToken);
 
             if (!isParticipant)
                 return Result.Failure<ActionItemListResponse>(new Error("Forbidden", "You are not a participant of this meeting.", 403));
 
-            var items = await _dbContext.ActionItems
+            var actionItems = await _dbContext.ActionItems
                 .AsNoTracking()
-                .Where(x => x.MeetingId == meetingId)
+                .Include(x => x.AssignedToUser)
+                .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
                 .OrderBy(x => x.CreatedAtUtc)
-                .Select(x => new ActionItemResponse
-                {
-                    Id = x.Id,
-                    MeetingId = x.MeetingId,
-                    Title = x.Title,
-                    Description = x.Description,
-                    AssignedToUserId = x.AssignedToUserId,
-                    AssignedToUserName = x.AssignedToUser != null ? x.AssignedToUser.UserName : null,
-                    DueDateUtc = x.DueDateUtc,
-                    Status = x.Status.ToString(),
-                    ExternalTaskId = x.ExternalTaskId,
-                    ExternalTaskUrl = x.ExternalTaskUrl,
-                    ExternalProvider = x.ExternalProvider.ToString(),
-                    SyncMissingAssigneeReason = x.SyncMissingAssigneeReason,
-                    ExtractedAtUtc = x.ExtractedAtUtc,
-                    SyncedAtUtc = x.SyncedAtUtc,
-                    RowVersionEtag = ToRowVersionEtag(x.RowVersion)
-                })
                 .ToListAsync(cancellationToken);
 
-            return Result.Success(new ActionItemListResponse { Items = items });
+            var items = actionItems.Select(MapToResponse).ToList();
+
+            return Result.Success(new ActionItemListResponse
+            {
+                Items = items,
+                TotalCount = items.Count,
+                Page = 1,
+                PageSize = items.Count
+            });
+        }
+
+        public async Task<Result<ActionItemListResponse>> ListOrganizationActionItemsAsync(
+            Guid organizationId,
+            Guid userId,
+            int page,
+            int pageSize,
+            string? assignee,
+            Guid? meetingId,
+            string? status,
+            string? provider,
+            DateTime? fromUtc,
+            DateTime? toUtc,
+            CancellationToken cancellationToken = default)
+        {
+            var isActiveMember = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .AnyAsync(m => m.OrganizationId == organizationId && m.UserId == userId && m.IsEnabled, cancellationToken);
+
+            if (!isActiveMember)
+                return Result.Failure<ActionItemListResponse>(new Error("Forbidden", "You do not have access to this organization.", 403));
+
+            page = Math.Max(page, 1);
+            pageSize = pageSize <= 0 ? 20 : Math.Min(pageSize, 100);
+
+            var assigneeFilter = string.IsNullOrWhiteSpace(assignee) ? "all" : assignee.Trim();
+            if (!string.Equals(assigneeFilter, "all", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(assigneeFilter, "me", StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure<ActionItemListResponse>(new Error("BadRequest", "assignee must be 'me' or 'all'.", 400));
+            }
+
+            ActionItemStatus? statusFilter = null;
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                if (!Enum.TryParse<ActionItemStatus>(status, true, out var parsedStatus))
+                    return Result.Failure<ActionItemListResponse>(new Error("BadRequest", "Invalid action item status filter.", 400));
+
+                statusFilter = parsedStatus;
+            }
+
+            ExternalProvider? providerFilter = null;
+            if (!string.IsNullOrWhiteSpace(provider))
+            {
+                if (!Enum.TryParse<ExternalProvider>(provider, true, out var parsedProvider))
+                    return Result.Failure<ActionItemListResponse>(new Error("BadRequest", "Invalid action item provider filter.", 400));
+
+                providerFilter = parsedProvider;
+            }
+
+            var query = _dbContext.ActionItems
+                .AsNoTracking()
+                .Include(x => x.AssignedToUser)
+                .Where(x => x.OrganizationId == organizationId);
+
+            if (string.Equals(assigneeFilter, "me", StringComparison.OrdinalIgnoreCase))
+                query = query.Where(x => x.AssignedToUserId == userId);
+
+            if (meetingId.HasValue)
+                query = query.Where(x => x.MeetingId == meetingId.Value);
+
+            if (statusFilter.HasValue)
+                query = query.Where(x => x.Status == statusFilter.Value);
+
+            if (providerFilter.HasValue)
+                query = query.Where(x => x.ExternalProvider == providerFilter.Value);
+
+            if (fromUtc.HasValue)
+                query = query.Where(x => x.DueDateUtc.HasValue && x.DueDateUtc.Value >= fromUtc.Value);
+
+            if (toUtc.HasValue)
+                query = query.Where(x => x.DueDateUtc.HasValue && x.DueDateUtc.Value <= toUtc.Value);
+
+            var totalCount = await query.CountAsync(cancellationToken);
+
+            var actionItems = await query
+                .OrderBy(x => x.DueDateUtc ?? DateTime.MaxValue)
+                .ThenBy(x => x.ExtractedAtUtc)
+                .ThenBy(x => x.Id)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync(cancellationToken);
+
+            return Result.Success(new ActionItemListResponse
+            {
+                Items = actionItems.Select(MapToResponse).ToList(),
+                TotalCount = totalCount,
+                Page = page,
+                PageSize = pageSize
+            });
         }
 
         public async Task<Result<ActionItemResponse>> UpdateAsync(
             Guid id, UpdateActionItemRequest request,
-            Guid userId, Guid organizationId, string etag,
+            Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default)
         {
             var item = await _dbContext.ActionItems
                 .Include(x => x.AssignedToUser)
-                .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+                .FirstOrDefaultAsync(x => x.Id == id && x.OrganizationId == organizationId, cancellationToken);
 
             if (item == null)
                 return Result.Failure<ActionItemResponse>(new Error("NotFound", "Action item not found.", 404));
@@ -123,25 +204,25 @@ namespace MeetingAssistant.Features.ActionItems.Services
         }
 
         public async Task<Result<ActionItemResponse>> ApproveAsync(
-            Guid id, Guid userId, Guid organizationId, string etag,
+            Guid id, Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default)
         {
             return await UpdateStatusAsync(id, userId, organizationId, etag, ActionItemStatus.Approved, cancellationToken);
         }
 
         public async Task<Result<ActionItemResponse>> RejectAsync(
-            Guid id, Guid userId, Guid organizationId, string etag,
+            Guid id, Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default)
         {
             return await UpdateStatusAsync(id, userId, organizationId, etag, ActionItemStatus.Rejected, cancellationToken);
         }
 
         public async Task<Result> DeleteAsync(
-            Guid id, Guid userId, Guid organizationId, string etag,
+            Guid id, Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default)
         {
             var item = await _dbContext.ActionItems
-                .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+                .FirstOrDefaultAsync(x => x.Id == id && x.OrganizationId == organizationId, cancellationToken);
 
             if (item == null)
                 return Result.Failure(new Error("NotFound", "Action item not found.", 404));
@@ -167,7 +248,7 @@ namespace MeetingAssistant.Features.ActionItems.Services
             CancellationToken cancellationToken = default)
         {
             var item = await _dbContext.ActionItems
-                .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+                .FirstOrDefaultAsync(x => x.Id == id && x.OrganizationId == organizationId, cancellationToken);
 
             if (item == null)
                 return Result.Failure<SyncResultResponse>(new Error("NotFound", "Action item not found.", 404));
@@ -257,7 +338,8 @@ namespace MeetingAssistant.Features.ActionItems.Services
                     Status = item.Status.ToString(),
                     ExternalTaskId = item.ExternalTaskId,
                     ExternalTaskUrl = item.ExternalTaskUrl,
-                    SyncMissingAssigneeReason = item.SyncMissingAssigneeReason
+                    SyncMissingAssigneeReason = item.SyncMissingAssigneeReason,
+                    RowVersionEtag = ToRowVersionEtag(item.RowVersion)
                 });
             }
             catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
@@ -396,11 +478,11 @@ namespace MeetingAssistant.Features.ActionItems.Services
         }
 
         private async Task<Result<ActionItemResponse>> UpdateStatusAsync(
-            Guid id, Guid userId, Guid organizationId, string etag, ActionItemStatus newStatus, CancellationToken cancellationToken)
+            Guid id, Guid userId, Guid organizationId, string? etag, ActionItemStatus newStatus, CancellationToken cancellationToken)
         {
             var item = await _dbContext.ActionItems
                 .Include(x => x.AssignedToUser)
-                .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+                .FirstOrDefaultAsync(x => x.Id == id && x.OrganizationId == organizationId, cancellationToken);
 
             if (item == null)
                 return Result.Failure<ActionItemResponse>(new Error("NotFound", "Action item not found.", 404));
@@ -454,7 +536,7 @@ namespace MeetingAssistant.Features.ActionItems.Services
                 Status = item.Status.ToString(),
                 ExternalTaskId = item.ExternalTaskId,
                 ExternalTaskUrl = item.ExternalTaskUrl,
-                ExternalProvider = item.ExternalProvider.ToString(),
+                ExternalProvider = item.ExternalProvider?.ToString(),
                 SyncMissingAssigneeReason = item.SyncMissingAssigneeReason,
                 ExtractedAtUtc = item.ExtractedAtUtc,
                 SyncedAtUtc = item.SyncedAtUtc,
