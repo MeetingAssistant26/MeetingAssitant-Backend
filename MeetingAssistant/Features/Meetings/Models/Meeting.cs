@@ -26,6 +26,12 @@ namespace MeetingAssistant.Features.Meetings.Models
 
         public RecurrenceConfig? RecurrenceConfig { get; set; }
 
+        public Guid? RecurringSeriesId { get; set; }
+
+        public int? RecurringOccurrenceIndex { get; set; }
+
+        public RecurringMeetingSeries? RecurringSeries { get; set; }
+
         public ICollection<MeetingParticipant> Participants { get; set; } = new List<MeetingParticipant>();
 
         public ICollection<MeetingMeetingTag> Tags { get; set; } = new List<MeetingMeetingTag>();

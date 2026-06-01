@@ -33,6 +33,7 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<UserOrgMembership> UserOrgMemberships => Set<UserOrgMembership>();
         public DbSet<Invitation> Invitations => Set<Invitation>();
         public DbSet<MeetingTag> MeetingTags => Set<MeetingTag>();
+        public DbSet<RecurringMeetingSeries> RecurringMeetingSeries => Set<RecurringMeetingSeries>();
         public DbSet<Meeting> Meetings => Set<Meeting>();
         public DbSet<MeetingParticipant> MeetingParticipants => Set<MeetingParticipant>();
         public DbSet<MeetingMeetingTag> MeetingMeetingTags => Set<MeetingMeetingTag>();

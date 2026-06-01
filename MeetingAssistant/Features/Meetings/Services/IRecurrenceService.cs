@@ -10,5 +10,25 @@ namespace MeetingAssistant.Features.Meetings.Services
             Guid userId,
             CreateRecurringMeetingRequest request,
             CancellationToken cancellationToken = default);
+
+        Task<Result<RecurringSeriesListResponse>> ListRecurringSeriesAsync(
+            int page,
+            int pageSize,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<RecurringSeriesResponse>> GetRecurringSeriesAsync(
+            Guid seriesId,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<RecurringSeriesResponse>> UpdateRecurringSeriesAsync(
+            Guid seriesId,
+            Guid userId,
+            UpdateRecurringSeriesRequest request,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<RecurringSeriesResponse>> DeleteRecurringSeriesAsync(
+            Guid seriesId,
+            Guid userId,
+            CancellationToken cancellationToken = default);
     }
 }

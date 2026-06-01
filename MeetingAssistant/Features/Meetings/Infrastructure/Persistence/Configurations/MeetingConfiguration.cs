@@ -19,6 +19,11 @@ namespace MeetingAssistant.Features.Meetings.Infrastructure.Persistence.Configur
 
             builder.Property(m => m.RoomActivatedAtUtc);
 
+            builder.HasOne(m => m.RecurringSeries)
+                .WithMany(s => s.Meetings)
+                .HasForeignKey(m => m.RecurringSeriesId)
+                .OnDelete(DeleteBehavior.Restrict);
+
             builder.HasIndex(m => m.OrganizationId)
                 .HasDatabaseName("IX_Meetings_OrganizationId");
 
@@ -27,6 +32,14 @@ namespace MeetingAssistant.Features.Meetings.Infrastructure.Persistence.Configur
 
             builder.HasIndex(m => new { m.OrganizationId, m.Status })
                 .HasDatabaseName("IX_Meetings_OrgId_Status");
+
+            builder.HasIndex(m => new { m.OrganizationId, m.RecurringSeriesId, m.ScheduledStartUtc })
+                .HasDatabaseName("IX_Meetings_OrgId_RecurringSeriesId_ScheduledStartUtc");
+
+            builder.HasIndex(m => new { m.RecurringSeriesId, m.RecurringOccurrenceIndex })
+                .IsUnique()
+                .HasFilter("\"RecurringSeriesId\" IS NOT NULL AND \"RecurringOccurrenceIndex\" IS NOT NULL")
+                .HasDatabaseName("IX_Meetings_RecurringSeriesId_RecurringOccurrenceIndex");
 
             builder.OwnsOne(m => m.RecurrenceConfig, r =>
             {

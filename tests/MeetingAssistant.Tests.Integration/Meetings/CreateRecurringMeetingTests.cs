@@ -124,7 +124,8 @@ public class CreateRecurringMeetingTests : IntegrationTestBase
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var result = await response.Content.ReadFromJsonAsync<RecurringMeetingCreationResponse>();
         result.Should().NotBeNull();
-        result!.Count.Should().BeGreaterThan(0);
+        result!.SeriesId.Should().NotBeNull();
+        result.Count.Should().BeGreaterThan(0);
         result.Meetings.Should().HaveCount(result.Count);
         result.Meetings.Should().OnlyContain(m => m.Status == MeetingStatus.Scheduled);
         result.Meetings.Should().OnlyContain(m => m.Title == request.Title);
@@ -137,6 +138,12 @@ public class CreateRecurringMeetingTests : IntegrationTestBase
         var dbMeetings = await db.Meetings.IgnoreQueryFilters().Where(m => createdMeetingIds.Contains(m.Id)).ToListAsync();
         dbMeetings.Should().HaveCount(result.Count);
         dbMeetings.Should().OnlyContain(m => m.Status == MeetingStatus.Scheduled);
+        dbMeetings.Should().OnlyContain(m => m.RecurringSeriesId == result.SeriesId);
+        dbMeetings.Select(m => m.RecurringOccurrenceIndex).Should().OnlyContain(i => i.HasValue);
+
+        var series = await db.RecurringMeetingSeries.IgnoreQueryFilters().SingleAsync(s => s.Id == result.SeriesId);
+        series.Title.Should().Be(request.Title);
+        series.CreatedByUserId.Should().Be(TestUserId);
 
         var hostParticipantsCount = await db.MeetingParticipants.IgnoreQueryFilters()
             .CountAsync(p => createdMeetingIds.Contains(p.MeetingId) && p.UserId == TestUserId && p.MeetingRole == MeetingRole.Host);

@@ -591,6 +591,12 @@ namespace MeetingAssistant.Migrations
                     b.Property<Guid>("OrganizationId")
                         .HasColumnType("uuid");
 
+                    b.Property<int?>("RecurringOccurrenceIndex")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("RecurringSeriesId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime?>("RoomActivatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -621,6 +627,14 @@ namespace MeetingAssistant.Migrations
 
                     b.HasIndex("OrganizationId", "Status")
                         .HasDatabaseName("IX_Meetings_OrgId_Status");
+
+                    b.HasIndex("OrganizationId", "RecurringSeriesId", "ScheduledStartUtc")
+                        .HasDatabaseName("IX_Meetings_OrgId_RecurringSeriesId_ScheduledStartUtc");
+
+                    b.HasIndex("RecurringSeriesId", "RecurringOccurrenceIndex")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Meetings_RecurringSeriesId_RecurringOccurrenceIndex")
+                        .HasFilter("\"RecurringSeriesId\" IS NOT NULL AND \"RecurringOccurrenceIndex\" IS NOT NULL");
 
                     b.ToTable("Meetings");
                 });
@@ -677,6 +691,66 @@ namespace MeetingAssistant.Migrations
                         .HasDatabaseName("IX_MeetingParticipants_MeetingId_UserId");
 
                     b.ToTable("MeetingParticipants");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.Meetings.Models.RecurringMeetingSeries", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("CancelledAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DaysOfWeek")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTime?>("EndsAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Frequency")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Interval")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<TimeSpan>("ScheduledEndTimeUtc")
+                        .HasColumnType("interval");
+
+                    b.Property<TimeSpan>("ScheduledStartTimeUtc")
+                        .HasColumnType("interval");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrganizationId", "Status")
+                        .HasDatabaseName("IX_RecurringMeetingSeries_OrganizationId_Status");
+
+                    b.ToTable("RecurringMeetingSeries");
                 });
 
             modelBuilder.Entity("MeetingAssistant.Features.Organizations.Models.Invitation", b =>
@@ -1155,6 +1229,11 @@ namespace MeetingAssistant.Migrations
 
             modelBuilder.Entity("MeetingAssistant.Features.Meetings.Models.Meeting", b =>
                 {
+                    b.HasOne("MeetingAssistant.Features.Meetings.Models.RecurringMeetingSeries", "RecurringSeries")
+                        .WithMany("Meetings")
+                        .HasForeignKey("RecurringSeriesId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.OwnsOne("MeetingAssistant.Features.Meetings.Models.RecurrenceConfig", "RecurrenceConfig", b1 =>
                         {
                             b1.Property<Guid>("MeetingId");
@@ -1180,6 +1259,8 @@ namespace MeetingAssistant.Migrations
                         });
 
                     b.Navigation("RecurrenceConfig");
+
+                    b.Navigation("RecurringSeries");
                 });
 
             modelBuilder.Entity("MeetingAssistant.Features.Meetings.Models.MeetingMeetingTag", b =>
@@ -1325,6 +1406,11 @@ namespace MeetingAssistant.Migrations
                     b.Navigation("Participants");
 
                     b.Navigation("Tags");
+                });
+
+            modelBuilder.Entity("MeetingAssistant.Features.Meetings.Models.RecurringMeetingSeries", b =>
+                {
+                    b.Navigation("Meetings");
                 });
 
             modelBuilder.Entity("MeetingAssistant.Features.Organizations.Models.Organization", b =>
