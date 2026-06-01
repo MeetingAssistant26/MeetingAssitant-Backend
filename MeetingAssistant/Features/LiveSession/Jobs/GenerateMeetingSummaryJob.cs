@@ -3,6 +3,7 @@ using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using MeetingAssistant.Features.Meetings.Jobs;
 using MeetingAssistant.Features.Rag.Jobs;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.EntityFrameworkCore;
@@ -115,6 +116,20 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     cancellationToken: cancellationToken);
             }
 
+            var tagSuggestionJobId = _backgroundJobClient?.Enqueue<SuggestMeetingTagsJob>(
+                job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
+
+            if (tagSuggestionJobId is not null && _postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.TagSuggestion,
+                    message: "Meeting tag suggestion job enqueued after summary generation.",
+                    relatedHangfireJobId: tagSuggestionJobId,
+                    cancellationToken: cancellationToken);
+            }
+
             var knowledgeJobId = _backgroundJobClient?.Enqueue<ReindexMeetingKnowledgeJob>(
                 job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
 
@@ -124,7 +139,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     organizationId,
                     meetingId,
                     PostMeetingProcessingStepType.KnowledgeIndexing,
-                    message: "Knowledge indexing job enqueued after summary generation.",
+                    message: "Knowledge indexing job enqueued after summary generation. Unconfirmed tag suggestions remain separate from confirmed meeting tag context.",
                     relatedHangfireJobId: knowledgeJobId,
                     cancellationToken: cancellationToken);
             }

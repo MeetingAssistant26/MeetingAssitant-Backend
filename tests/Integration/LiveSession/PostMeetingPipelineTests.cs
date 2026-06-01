@@ -6,6 +6,8 @@ using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.Meetings.Jobs;
+using MeetingAssistant.Features.Rag.Jobs;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
@@ -89,9 +91,17 @@ namespace tests.Integration.LiveSession
             var summaryJob = new GenerateMeetingSummaryJob(
                 db.DbContext,
                 summarizer,
-                NullLogger<GenerateMeetingSummaryJob>.Instance);
+                NullLogger<GenerateMeetingSummaryJob>.Instance,
+                backgroundJobClient: jobs);
 
             await summaryJob.RunAsync(meetingId, orgId);
+
+            jobs.CreatedJobs.Should()
+                .Contain(x => x.Type == typeof(SuggestMeetingTagsJob),
+                    "post-meeting tag suggestion should run after summary generation has both transcript and summary context");
+            jobs.CreatedJobs.Should()
+                .Contain(x => x.Type == typeof(ReindexMeetingKnowledgeJob),
+                    "knowledge indexing remains separate and uses only confirmed tags until suggestions are confirmed");
 
             var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
             var lines = transcript.FullText.Split(Environment.NewLine, StringSplitOptions.None);

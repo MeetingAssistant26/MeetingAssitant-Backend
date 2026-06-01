@@ -39,6 +39,7 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<Meeting> Meetings => Set<Meeting>();
         public DbSet<MeetingParticipant> MeetingParticipants => Set<MeetingParticipant>();
         public DbSet<MeetingMeetingTag> MeetingMeetingTags => Set<MeetingMeetingTag>();
+        public DbSet<MeetingTagSuggestion> MeetingTagSuggestions => Set<MeetingTagSuggestion>();
         public DbSet<SessionEvent> SessionEvents => Set<SessionEvent>();
         public DbSet<AiAssistantTraceEvent> AiAssistantTraceEvents => Set<AiAssistantTraceEvent>();
         public DbSet<PostMeetingProcessingRun> PostMeetingProcessingRuns => Set<PostMeetingProcessingRun>();
