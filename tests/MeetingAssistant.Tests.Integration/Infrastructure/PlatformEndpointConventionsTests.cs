@@ -262,7 +262,7 @@ public class PlatformEndpointConventionsTests : IntegrationTestBase
 
         while (current is not null)
         {
-            var marker = Path.Combine(current.FullName, "AGENTS.md");
+            var marker = Path.Combine(current.FullName, "MeetingAssistant.sln");
             if (File.Exists(marker))
             {
                 return current.FullName;
