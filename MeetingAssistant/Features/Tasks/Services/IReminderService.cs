@@ -17,6 +17,14 @@ namespace MeetingAssistant.Features.Tasks.Services
             Guid organizationId,
             int page,
             int pageSize,
+            bool includeFuture = false,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<ReminderResponse>> UpdateReminderAsync(
+            Guid reminderId,
+            UpdateMyReminderRequest request,
+            Guid userId,
+            Guid organizationId,
             CancellationToken cancellationToken = default);
 
         Task<Result<ReminderResponse>> MarkDeliveredAsync(

@@ -291,6 +291,27 @@ public class ListMyRemindersTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task ListMyReminders_WithIncludeFutureTrue_ShouldReturnFutureActivePersonalReminder()
+    {
+        // Arrange
+        var reminder = await SeedReminderAsync(
+            TestOrganizationId,
+            TestUserId,
+            TestUserId,
+            reminderAt: DateTime.UtcNow.AddDays(1));
+
+        // Act
+        var response = await Client.GetAsync("/api/me/reminders?includeFuture=true&page=1&pageSize=20");
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<ReminderListResponse>();
+        result.Should().NotBeNull();
+        result!.Items.Should().ContainSingle(r => r.Id == reminder.Id);
+        result.TotalCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task ListMyReminders_Unauthenticated_ShouldReturnUnauthorized()
     {
         // Arrange

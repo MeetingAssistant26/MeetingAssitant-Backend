@@ -48,9 +48,11 @@ namespace MeetingAssistant.Features.Tasks.Services
             Guid organizationId,
             int page,
             int pageSize,
+            bool includeFuture = false,
             CancellationToken cancellationToken = default)
         {
             var now = DateTime.UtcNow;
+            var dueCutoff = includeFuture ? DateTime.MaxValue : now;
             var normalizedPage = Math.Max(page, 1);
             var clampedPageSize = Math.Clamp(pageSize, 1, 50);
 
@@ -59,13 +61,13 @@ namespace MeetingAssistant.Features.Tasks.Services
                 .Where(r => r.Scope == ReminderScope.Personal
                          && r.TargetUserId == userId
                          && r.Status == ReminderStatus.Active
-                         && r.ReminderAtUtc <= now);
+                         && r.ReminderAtUtc <= dueCutoff);
 
             var publicQuery = _dbContext.Reminders
                 .Where(r => r.OrganizationId == organizationId)
                 .Where(r => r.Scope == ReminderScope.Public
                          && r.Status == ReminderStatus.Active
-                         && r.ReminderAtUtc <= now
+                         && r.ReminderAtUtc <= dueCutoff
                          && r.MeetingId != null)
                 .Join(
                     _dbContext.MeetingParticipants.Where(mp => mp.UserId == userId),
@@ -92,6 +94,47 @@ namespace MeetingAssistant.Features.Tasks.Services
             var responses = items.Adapt<List<ReminderResponse>>();
 
             return Result.Success(new ReminderListResponse(responses, totalCount, normalizedPage, clampedPageSize));
+        }
+
+
+        public async Task<Result<ReminderResponse>> UpdateReminderAsync(
+            Guid reminderId,
+            UpdateMyReminderRequest request,
+            Guid userId,
+            Guid organizationId,
+            CancellationToken cancellationToken = default)
+        {
+            var reminder = await _dbContext.Reminders
+                .FirstOrDefaultAsync(r => r.Id == reminderId && r.OrganizationId == organizationId, cancellationToken);
+
+            if (reminder == null)
+                return Result.Failure<ReminderResponse>(ReminderErrors.NotFound);
+
+            if (reminder.Scope != ReminderScope.Personal)
+                return Result.Failure<ReminderResponse>(ReminderErrors.NotPersonal);
+
+            if (reminder.TargetUserId != userId)
+                return Result.Failure<ReminderResponse>(ReminderErrors.NotOwner);
+
+            if (reminder.Channel != ReminderChannel.User)
+                return Result.Failure<ReminderResponse>(ReminderErrors.AgentOwned);
+
+            if (reminder.Status != ReminderStatus.Active)
+                return Result.Failure<ReminderResponse>(ReminderErrors.InvalidStatus);
+
+            if (request.Text is not null)
+            {
+                reminder.Text = request.Text.Trim();
+            }
+
+            if (request.ReminderAtUtc.HasValue)
+            {
+                reminder.ReminderAtUtc = request.ReminderAtUtc.Value;
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(reminder.Adapt<ReminderResponse>());
         }
 
         public async Task<Result<ReminderResponse>> MarkDeliveredAsync(

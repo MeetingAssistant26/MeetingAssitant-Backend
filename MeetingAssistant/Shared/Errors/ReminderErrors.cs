@@ -34,5 +34,10 @@ namespace MeetingAssistant.Shared.Errors
             "Reminders.InvalidStatus",
             "The operation is invalid for the current reminder status.",
             StatusCodes.Status409Conflict);
+
+        public static readonly Error AgentOwned = new(
+            "Reminders.AgentOwned",
+            "Agent-owned reminders cannot be modified by user reminder endpoints.",
+            StatusCodes.Status403Forbidden);
     }
 }

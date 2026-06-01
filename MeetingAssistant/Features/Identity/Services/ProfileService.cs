@@ -47,7 +47,7 @@ namespace MeetingAssistant.Features.Identity.Services
             }
 
             user.DisplayName = request.DisplayName;
-            if (request.ProfileAvatarUrl is not null)
+            if (request.ProfileAvatarUrlWasProvided)
             {
                 user.ProfileAvatarUrl = string.IsNullOrWhiteSpace(request.ProfileAvatarUrl)
                     ? null

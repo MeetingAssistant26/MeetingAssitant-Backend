@@ -14,6 +14,7 @@ namespace MeetingAssistant.Features.LiveSession
         {
             services.Configure<OpenAiCompatibleOptions>(configuration.GetSection("OpenAiCompatible"));
             services.AddScoped<ISessionService, SessionService>();
+            services.AddScoped<IMeetingArtifactService, MeetingArtifactService>();
             services.AddScoped<ILiveKitTokenIssuer, LiveKitTokenIssuer>();
             services.AddScoped<ILiveKitWebhookValidator, LiveKitWebhookValidator>();
             services.AddScoped<IWebhookService, WebhookService>();
