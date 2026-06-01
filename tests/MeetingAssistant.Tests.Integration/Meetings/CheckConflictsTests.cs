@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using FluentAssertions;
 using MeetingAssistant.Api.Shared;
 using MeetingAssistant.Features.Identity.Entites;
+using MeetingAssistant.Features.Meetings.Contracts.Requests;
 using MeetingAssistant.Features.Meetings.Contracts.Responses;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
@@ -118,6 +119,98 @@ public class CheckConflictsTests : IntegrationTestBase
             });
             await db.SaveChangesAsync();
         }
+    }
+
+    [Fact]
+    public async Task CheckSchedulingConflicts_OverlappingHostMeetingExists_ShouldReturnConflict()
+    {
+        // Arrange
+        var start = DateTime.UtcNow.AddDays(1).Date.AddHours(10);
+        var existingMeeting = await SeedMeetingAsync(
+            TestOrganizationId,
+            scheduledStart: start,
+            scheduledEnd: start.AddHours(1),
+            title: "Existing Host Meeting");
+        await SeedMeetingParticipantAsync(existingMeeting.Id, TestOrganizationId, TestUserId, MeetingRole.Host);
+
+        var request = new MeetingConflictCheckRequest(
+            start.AddMinutes(15),
+            start.AddMinutes(45),
+            new List<Guid>(),
+            null);
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/conflict-check", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<ConflictCheckResponse>();
+        result.Should().NotBeNull();
+        result!.Conflicts.Should().ContainSingle(c => c.UserId == TestUserId);
+        result.Conflicts.Single().ConflictingMeetings.Should().ContainSingle(m => m.Id == existingMeeting.Id);
+    }
+
+    [Fact]
+    public async Task CheckSchedulingConflicts_SelectedParticipantHasOverlap_ShouldReturnConflict()
+    {
+        // Arrange
+        var participantId = Guid.NewGuid();
+        var otherHostId = Guid.NewGuid();
+        await SeedUserAndMembershipAsync(participantId, TestOrganizationId);
+        await SeedUserAndMembershipAsync(otherHostId, TestOrganizationId);
+
+        var start = DateTime.UtcNow.AddDays(1).Date.AddHours(10);
+        var existingMeeting = await SeedMeetingAsync(
+            TestOrganizationId,
+            scheduledStart: start,
+            scheduledEnd: start.AddHours(1),
+            title: "Participant Conflict Meeting");
+        await SeedMeetingParticipantAsync(existingMeeting.Id, TestOrganizationId, otherHostId, MeetingRole.Host);
+        await SeedMeetingParticipantAsync(existingMeeting.Id, TestOrganizationId, participantId, MeetingRole.Participant);
+
+        var request = new MeetingConflictCheckRequest(
+            start.AddMinutes(15),
+            start.AddMinutes(45),
+            new List<Guid> { participantId },
+            null);
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/conflict-check", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<ConflictCheckResponse>();
+        result.Should().NotBeNull();
+        result!.Conflicts.Should().ContainSingle(c => c.UserId == participantId);
+        result.Conflicts.Single().ConflictingMeetings.Should().ContainSingle(m => m.Id == existingMeeting.Id);
+    }
+
+    [Fact]
+    public async Task CheckSchedulingConflicts_ExcludedMeetingUsesCurrentParticipants_ShouldReturnEmptyForSelfOverlap()
+    {
+        // Arrange
+        var start = DateTime.UtcNow.AddDays(1).Date.AddHours(10);
+        var currentMeeting = await SeedMeetingAsync(
+            TestOrganizationId,
+            scheduledStart: start,
+            scheduledEnd: start.AddHours(1),
+            title: "Current Meeting");
+        await SeedMeetingParticipantAsync(currentMeeting.Id, TestOrganizationId, TestUserId, MeetingRole.Host);
+
+        var request = new MeetingConflictCheckRequest(
+            start.AddMinutes(15),
+            start.AddMinutes(45),
+            null,
+            currentMeeting.Id);
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/conflict-check", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<ConflictCheckResponse>();
+        result.Should().NotBeNull();
+        result!.Conflicts.Should().BeEmpty();
     }
 
     [Fact]

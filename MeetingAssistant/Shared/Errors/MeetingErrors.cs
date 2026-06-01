@@ -1,4 +1,5 @@
 using MeetingAssistant.Shared.Abstractions;
+using MeetingAssistant.Features.Meetings.Contracts.Responses;
 using Microsoft.AspNetCore.Http;
 
 namespace MeetingAssistant.Shared.Errors
@@ -72,8 +73,39 @@ namespace MeetingAssistant.Shared.Errors
 
         public static readonly Error ConflictDetected = new(
             "Meetings.ConflictDetected",
-            "A conflicting meeting exists.",
+            "Scheduling conflict detected.",
             StatusCodes.Status409Conflict);
+
+        public static Error ConflictDetectedWithDetails(IReadOnlyCollection<ConflictResponse> conflicts) =>
+            ConflictDetected with
+            {
+                Errors = new Dictionary<string, string[]>
+                {
+                    ["ScheduledStartUtc"] = ["One or more participants have overlapping meetings."]
+                },
+                Extensions = new Dictionary<string, object?>
+                {
+                    ["conflicts"] = conflicts
+                }
+            };
+
+        public static Error ConflictDetectedWithOccurrenceDetails(
+            IReadOnlyCollection<OccurrenceConflictResponse> conflicts,
+            int totalOccurrencesChecked) =>
+            ConflictDetected with
+            {
+                Errors = new Dictionary<string, string[]>
+                {
+                    ["ScheduledStartUtc"] = ["One or more recurring meeting occurrences overlap existing meetings."]
+                },
+                Extensions = new Dictionary<string, object?>
+                {
+                    ["recurringConflicts"] = new RecurringConflictCheckResponse(
+                        totalOccurrencesChecked,
+                        conflicts.Count,
+                        conflicts.ToList())
+                }
+            };
 
         public static readonly Error GuestNotAllowed = new(
             "Meetings.GuestNotAllowed",

@@ -11,6 +11,11 @@ namespace MeetingAssistant.Features.Meetings.Services
             CreateRecurringMeetingRequest request,
             CancellationToken cancellationToken = default);
 
+        Task<Result<RecurringConflictCheckResponse>> CheckSchedulingConflictsAsync(
+            Guid userId,
+            RecurringMeetingConflictCheckRequest request,
+            CancellationToken cancellationToken = default);
+
         Task<Result<RecurringSeriesListResponse>> ListRecurringSeriesAsync(
             int page,
             int pageSize,

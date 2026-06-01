@@ -2,6 +2,7 @@
 using MeetingAssistant.Api.Shared;
 using Microsoft.AspNetCore.Mvc;
 using System;
+using System.Text.Json;
 
 namespace MeetingAssistant.Shared.Abstractions
 {
@@ -22,6 +23,15 @@ namespace MeetingAssistant.Shared.Abstractions
                 Errors = result.Error.Errors,
                 CorrelationId = correlationProvider.CorrelationId
             };
+
+            if (result.Error.Extensions is { Count: > 0 })
+            {
+                response.Extensions = result.Error.Extensions.ToDictionary(
+                    pair => pair.Key,
+                    pair => JsonSerializer.SerializeToElement(
+                        pair.Value,
+                        new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+            }
             
             return new ObjectResult(response)
             {

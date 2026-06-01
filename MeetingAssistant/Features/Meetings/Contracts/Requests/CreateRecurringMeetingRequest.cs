@@ -14,5 +14,15 @@ namespace MeetingAssistant.Features.Meetings.Contracts.Requests
         TimeSpan ScheduledStartTimeUtc,
         TimeSpan ScheduledEndTimeUtc,
         RecurrenceConfigDto Recurrence,
-        IReadOnlyList<Guid>? TagIds);
+        IReadOnlyList<Guid>? TagIds)
+    {
+        public List<CreateMeetingParticipantRequest>? Participants { get; init; }
+    }
+
+    public sealed record RecurringMeetingConflictCheckRequest(
+        TimeSpan ScheduledStartTimeUtc,
+        TimeSpan ScheduledEndTimeUtc,
+        RecurrenceConfigDto Recurrence,
+        List<Guid>? ParticipantUserIds,
+        Guid? ExcludeRecurringSeriesId);
 }

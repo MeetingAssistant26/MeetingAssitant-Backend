@@ -25,6 +25,21 @@ namespace MeetingAssistant.Features.Meetings.Validators
                 .Cascade(CascadeMode.Stop)
                 .NotEmpty().WithMessage("End time is required.")
                 .GreaterThan(x => x.ScheduledStartUtc).WithMessage("End time must be after the start time.");
+
+            RuleFor(x => x.Participants)
+                .Must(participants => participants == null || participants.Select(p => p.UserId).Distinct().Count() == participants.Count)
+                .WithMessage("Participants cannot contain duplicate users.");
+
+            RuleForEach(x => x.Participants).ChildRules(participant =>
+            {
+                participant.RuleFor(x => x.UserId)
+                    .Cascade(CascadeMode.Stop)
+                    .NotEmpty().WithMessage("Participant user ID is required.");
+
+                participant.RuleFor(x => x.MeetingRole)
+                    .Cascade(CascadeMode.Stop)
+                    .IsInEnum().WithMessage("Participant role must be a valid MeetingRole.");
+            });
         }
     }
 }

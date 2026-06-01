@@ -16,11 +16,13 @@ namespace MeetingAssistant.Features.Meetings.Services
     public class MeetingService(
         ApplicationDbContext dbContext,
         ITenantProvider tenantProvider,
-        IOptions<LiveKitOptions> liveKitOptions) : IMeetingService
+        IOptions<LiveKitOptions> liveKitOptions,
+        IMeetingConflictService meetingConflictService) : IMeetingService
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ITenantProvider _tenantProvider = tenantProvider;
         private readonly LiveKitOptions _liveKitOptions = liveKitOptions.Value;
+        private readonly IMeetingConflictService _meetingConflictService = meetingConflictService;
 
         public async Task<Result<MeetingResponse>> CreateMeetingAsync(
             CreateMeetingRequest request,
@@ -38,6 +40,38 @@ namespace MeetingAssistant.Features.Meetings.Services
 
             if (membership.OrgRole == OrganizationRole.Guest)
                 return Result.Failure<MeetingResponse>(MeetingErrors.GuestNotAllowed);
+
+            var requestedParticipants = request.Participants ?? [];
+            var requestedParticipantIds = requestedParticipants.Select(p => p.UserId).Distinct().ToList();
+
+            if (requestedParticipantIds.Contains(userId))
+                return Result.Failure<MeetingResponse>(MeetingErrors.AlreadyParticipant);
+
+            if (requestedParticipantIds.Count > 0)
+            {
+                var activeParticipantMemberCount = await _dbContext.UserOrgMemberships
+                    .IgnoreQueryFilters()
+                    .CountAsync(
+                        m => requestedParticipantIds.Contains(m.UserId)
+                             && m.OrganizationId == orgId
+                             && m.IsEnabled,
+                        cancellationToken);
+
+                if (activeParticipantMemberCount != requestedParticipantIds.Count)
+                    return Result.Failure<MeetingResponse>(MeetingErrors.NotOrgMember);
+            }
+
+            var conflictUserIds = requestedParticipantIds.Append(userId).ToList();
+            var conflicts = await _meetingConflictService.FindConflictsAsync(
+                orgId,
+                conflictUserIds,
+                request.ScheduledStartUtc,
+                request.ScheduledEndUtc,
+                null,
+                cancellationToken);
+
+            if (conflicts.Count > 0)
+                return Result.Failure<MeetingResponse>(MeetingErrors.ConflictDetectedWithDetails(conflicts));
 
             var meeting = new Meeting
             {
@@ -59,6 +93,17 @@ namespace MeetingAssistant.Features.Meetings.Services
                 MeetingRole = MeetingRole.Host
             };
             meeting.Participants.Add(hostParticipant);
+
+            foreach (var participant in requestedParticipants)
+            {
+                meeting.Participants.Add(new MeetingParticipant
+                {
+                    MeetingId = meeting.Id,
+                    OrganizationId = orgId,
+                    UserId = participant.UserId,
+                    MeetingRole = participant.MeetingRole
+                });
+            }
 
             // Associate tags if provided
             if (request.TagIds is { Count: > 0 })
@@ -99,6 +144,24 @@ namespace MeetingAssistant.Features.Meetings.Services
             if (meeting.Status != MeetingStatus.Scheduled)
                 return Result.Failure<MeetingResponse>(MeetingErrors.InvalidStatus);
 
+            if (request.ScheduledStartUtc.HasValue || request.ScheduledEndUtc.HasValue)
+            {
+                var nextStartUtc = request.ScheduledStartUtc ?? meeting.ScheduledStartUtc;
+                var nextEndUtc = request.ScheduledEndUtc ?? meeting.ScheduledEndUtc;
+                var participantUserIds = meeting.Participants.Select(p => p.UserId).ToList();
+
+                var conflicts = await _meetingConflictService.FindConflictsAsync(
+                    orgId,
+                    participantUserIds,
+                    nextStartUtc,
+                    nextEndUtc,
+                    meetingId,
+                    cancellationToken);
+
+                if (conflicts.Count > 0)
+                    return Result.Failure<MeetingResponse>(MeetingErrors.ConflictDetectedWithDetails(conflicts));
+            }
+
             if (request.Title != null)
                 meeting.Title = request.Title;
 
@@ -130,6 +193,81 @@ namespace MeetingAssistant.Features.Meetings.Services
             await _dbContext.SaveChangesAsync(cancellationToken);
 
             return Result.Success(await LoadMeetingResponseAsync(meeting.Id, cancellationToken));
+        }
+
+        public async Task<Result<ConflictCheckResponse>> CheckSchedulingConflictsAsync(
+            MeetingConflictCheckRequest request,
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var orgId = GetOrganizationId();
+
+            var membership = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .Where(m => m.UserId == userId && m.OrganizationId == orgId && m.IsEnabled)
+                .Select(m => (OrganizationRole?)m.OrgRole)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (membership == null)
+                return Result.Failure<ConflictCheckResponse>(MeetingErrors.NotOrgMember);
+
+            if (membership == OrganizationRole.Guest)
+                return Result.Failure<ConflictCheckResponse>(MeetingErrors.GuestNotAllowed);
+
+            List<Guid>? existingMeetingParticipantIds = null;
+            if (request.ExcludeMeetingId.HasValue)
+            {
+                var excludedMeeting = await _dbContext.Meetings
+                    .Where(m => m.Id == request.ExcludeMeetingId.Value && m.OrganizationId == orgId)
+                    .Select(m => new
+                    {
+                        CallerRole = m.Participants
+                            .Where(p => p.UserId == userId)
+                            .Select(p => (MeetingRole?)p.MeetingRole)
+                            .FirstOrDefault(),
+                        Participants = m.Participants.Select(p => p.UserId).ToList()
+                    })
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (excludedMeeting == null)
+                    return Result.Failure<ConflictCheckResponse>(MeetingErrors.NotFound);
+
+                if (excludedMeeting.CallerRole != MeetingRole.Host && excludedMeeting.CallerRole != MeetingRole.CoHost)
+                    return Result.Failure<ConflictCheckResponse>(MeetingErrors.NotHost);
+
+                existingMeetingParticipantIds = excludedMeeting.Participants;
+            }
+
+            var participantUserIds = request.ParticipantUserIds is { Count: > 0 }
+                ? request.ParticipantUserIds
+                : existingMeetingParticipantIds ?? [];
+
+            var userIdsToCheck = participantUserIds
+                .Append(userId)
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+
+            var activeMemberCount = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .CountAsync(
+                    m => userIdsToCheck.Contains(m.UserId)
+                         && m.OrganizationId == orgId
+                         && m.IsEnabled,
+                    cancellationToken);
+
+            if (activeMemberCount != userIdsToCheck.Count)
+                return Result.Failure<ConflictCheckResponse>(MeetingErrors.NotOrgMember);
+
+            var conflicts = await _meetingConflictService.FindConflictsAsync(
+                orgId,
+                userIdsToCheck,
+                request.ScheduledStartUtc,
+                request.ScheduledEndUtc,
+                request.ExcludeMeetingId,
+                cancellationToken);
+
+            return Result.Success(new ConflictCheckResponse(conflicts.ToList()));
         }
 
         public async Task<Result> CancelMeetingAsync(

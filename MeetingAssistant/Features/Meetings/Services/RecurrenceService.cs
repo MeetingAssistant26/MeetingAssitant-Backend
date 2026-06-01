@@ -22,11 +22,13 @@ namespace MeetingAssistant.Features.Meetings.Services
     public class RecurrenceService(
         ApplicationDbContext dbContext,
         ITenantProvider tenantProvider,
-        IOptions<LiveKitOptions> liveKitOptions) : IRecurrenceService
+        IOptions<LiveKitOptions> liveKitOptions,
+        IMeetingConflictService meetingConflictService) : IRecurrenceService
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ITenantProvider _tenantProvider = tenantProvider;
         private readonly LiveKitOptions _liveKitOptions = liveKitOptions.Value;
+        private readonly IMeetingConflictService _meetingConflictService = meetingConflictService;
 
         private Guid GetOrganizationId()
         {
@@ -52,6 +54,16 @@ namespace MeetingAssistant.Features.Meetings.Services
 
             if (membership.OrgRole == OrganizationRole.Guest)
                 return Result.Failure<RecurringMeetingCreationResponse>(MeetingErrors.GuestNotAllowed);
+
+            var requestedParticipants = NormalizeParticipants(request.Participants);
+            var participantValidation = await ValidateParticipantMembershipAsync(
+                organizationId,
+                userId,
+                requestedParticipants.Select(p => p.UserId).ToList(),
+                cancellationToken);
+
+            if (participantValidation.IsFailure)
+                return Result.Failure<RecurringMeetingCreationResponse>(participantValidation.Error);
 
             var tags = new List<MeetingTag>();
             if (request.TagIds != null && request.TagIds.Any())
@@ -81,6 +93,22 @@ namespace MeetingAssistant.Features.Meetings.Services
 
             if (!startDates.Any())
                 return Result.Failure<RecurringMeetingCreationResponse>(MeetingErrors.InvalidRecurrence);
+
+            var occurrenceRequests = BuildOccurrenceRequests(
+                startDates,
+                request.ScheduledStartTimeUtc,
+                request.ScheduledEndTimeUtc);
+            var conflictUserIds = requestedParticipants.Select(p => p.UserId).Append(userId).Distinct().ToList();
+            var conflicts = await _meetingConflictService.FindConflictsForOccurrencesAsync(
+                organizationId,
+                conflictUserIds,
+                occurrenceRequests,
+                null,
+                cancellationToken);
+
+            if (conflicts.Count > 0)
+                return Result.Failure<RecurringMeetingCreationResponse>(
+                    MeetingErrors.ConflictDetectedWithOccurrenceDetails(conflicts, occurrenceRequests.Count));
 
             var series = new RecurringMeetingSeries
             {
@@ -135,6 +163,17 @@ namespace MeetingAssistant.Features.Meetings.Services
                     MeetingRole = MeetingRole.Host
                 });
 
+                foreach (var participant in requestedParticipants)
+                {
+                    meeting.Participants.Add(new MeetingParticipant
+                    {
+                        MeetingId = meeting.Id,
+                        OrganizationId = organizationId,
+                        UserId = participant.UserId,
+                        MeetingRole = participant.MeetingRole
+                    });
+                }
+
                 foreach (var tag in tags)
                 {
                     meeting.Tags.Add(new MeetingMeetingTag
@@ -154,6 +193,79 @@ namespace MeetingAssistant.Features.Meetings.Services
 
             var responses = meetings.Adapt<IReadOnlyList<MeetingResponse>>();
             return Result.Success(new RecurringMeetingCreationResponse(responses.Count, responses, series.Id));
+        }
+
+        public async Task<Result<RecurringConflictCheckResponse>> CheckSchedulingConflictsAsync(
+            Guid userId,
+            RecurringMeetingConflictCheckRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            var organizationId = GetOrganizationId();
+
+            var membership = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .Where(m => m.UserId == userId && m.OrganizationId == organizationId && m.IsEnabled)
+                .Select(m => (OrganizationRole?)m.OrgRole)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (membership == null)
+                return Result.Failure<RecurringConflictCheckResponse>(MeetingErrors.NotOrgMember);
+
+            if (membership == OrganizationRole.Guest)
+                return Result.Failure<RecurringConflictCheckResponse>(MeetingErrors.GuestNotAllowed);
+
+            if (request.ExcludeRecurringSeriesId.HasValue)
+            {
+                var excludedSeries = await _dbContext.RecurringMeetingSeries
+                    .FirstOrDefaultAsync(
+                        s => s.Id == request.ExcludeRecurringSeriesId.Value && s.OrganizationId == organizationId,
+                        cancellationToken);
+
+                if (excludedSeries == null)
+                    return Result.Failure<RecurringConflictCheckResponse>(MeetingErrors.NotFound);
+
+                var auth = await EnsureSeriesManagementAllowedAsync(excludedSeries, userId, cancellationToken);
+                if (auth.IsFailure)
+                    return Result.Failure<RecurringConflictCheckResponse>(auth.Error);
+            }
+
+            var participantUserIds = (request.ParticipantUserIds ?? [])
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+            var participantValidation = await ValidateParticipantMembershipAsync(
+                organizationId,
+                userId,
+                participantUserIds,
+                cancellationToken);
+
+            if (participantValidation.IsFailure)
+                return Result.Failure<RecurringConflictCheckResponse>(participantValidation.Error);
+
+            var startDates = CalculateOccurrenceDates(
+                DateTime.UtcNow.Date,
+                request.ScheduledStartTimeUtc,
+                request.Recurrence,
+                ResolveLimitDate(request.Recurrence));
+
+            if (!startDates.Any())
+                return Result.Failure<RecurringConflictCheckResponse>(MeetingErrors.InvalidRecurrence);
+
+            var occurrenceRequests = BuildOccurrenceRequests(
+                startDates,
+                request.ScheduledStartTimeUtc,
+                request.ScheduledEndTimeUtc);
+            var conflicts = await _meetingConflictService.FindConflictsForOccurrencesAsync(
+                organizationId,
+                participantUserIds.Append(userId).Distinct().ToList(),
+                occurrenceRequests,
+                request.ExcludeRecurringSeriesId,
+                cancellationToken);
+
+            return Result.Success(new RecurringConflictCheckResponse(
+                occurrenceRequests.Count,
+                conflicts.Count,
+                conflicts.ToList()));
         }
 
         public async Task<Result<RecurringSeriesListResponse>> ListRecurringSeriesAsync(
@@ -254,6 +366,35 @@ namespace MeetingAssistant.Features.Meetings.Services
                 || request.ScheduledEndTimeUtc.HasValue
                 || request.Recurrence != null;
 
+            IReadOnlyList<(Guid UserId, MeetingRole Role)> participantTemplate = [];
+            IReadOnlyList<DateTime> generatedDates = [];
+            IReadOnlyList<ConflictOccurrenceRequest> occurrenceRequests = [];
+
+            if (patternChanged)
+            {
+                participantTemplate = GetParticipantTemplate(series, futureScheduled);
+                generatedDates = CalculateOccurrenceDates(
+                    DateTime.UtcNow.Date,
+                    nextStartTime,
+                    nextRecurrence,
+                    ResolveLimitDate(nextRecurrence));
+
+                if (!generatedDates.Any())
+                    return Result.Failure<RecurringSeriesResponse>(MeetingErrors.InvalidRecurrence);
+
+                occurrenceRequests = BuildOccurrenceRequests(generatedDates, nextStartTime, nextEndTime);
+                var conflicts = await _meetingConflictService.FindConflictsForOccurrencesAsync(
+                    organizationId,
+                    participantTemplate.Select(p => p.UserId).Distinct().ToList(),
+                    occurrenceRequests,
+                    series.Id,
+                    cancellationToken);
+
+                if (conflicts.Count > 0)
+                    return Result.Failure<RecurringSeriesResponse>(
+                        MeetingErrors.ConflictDetectedWithOccurrenceDetails(conflicts, occurrenceRequests.Count));
+            }
+
             series.Title = nextTitle;
             series.Description = nextDescription;
             series.ScheduledStartTimeUtc = nextStartTime;
@@ -273,12 +414,9 @@ namespace MeetingAssistant.Features.Meetings.Services
 
                 var generated = GenerateOccurrenceMeetings(
                     series,
-                    GetParticipantTemplate(series, futureScheduled),
+                    participantTemplate,
                     tags.Value,
-                    CalculateOccurrenceDates(DateTime.UtcNow.Date, nextStartTime, nextRecurrence, ResolveLimitDate(nextRecurrence)));
-
-                if (!generated.Any())
-                    return Result.Failure<RecurringSeriesResponse>(MeetingErrors.InvalidRecurrence);
+                    generatedDates);
 
                 _dbContext.Meetings.AddRange(generated);
             }
@@ -395,6 +533,59 @@ namespace MeetingAssistant.Features.Meetings.Services
             }
 
             return meetings;
+        }
+
+        private static IReadOnlyList<CreateMeetingParticipantRequest> NormalizeParticipants(
+            IReadOnlyList<CreateMeetingParticipantRequest>? participants)
+        {
+            return participants?
+                .Where(p => p.UserId != Guid.Empty)
+                .GroupBy(p => p.UserId)
+                .Select(g => g.First())
+                .ToList() ?? [];
+        }
+
+        private async Task<Result> ValidateParticipantMembershipAsync(
+            Guid organizationId,
+            Guid hostUserId,
+            IReadOnlyCollection<Guid> participantUserIds,
+            CancellationToken cancellationToken)
+        {
+            var distinctParticipantUserIds = participantUserIds
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToList();
+
+            if (distinctParticipantUserIds.Contains(hostUserId))
+                return Result.Failure(MeetingErrors.AlreadyParticipant);
+
+            if (distinctParticipantUserIds.Count == 0)
+                return Result.Success();
+
+            var activeParticipantMemberCount = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .CountAsync(
+                    m => distinctParticipantUserIds.Contains(m.UserId)
+                         && m.OrganizationId == organizationId
+                         && m.IsEnabled,
+                    cancellationToken);
+
+            return activeParticipantMemberCount == distinctParticipantUserIds.Count
+                ? Result.Success()
+                : Result.Failure(MeetingErrors.NotOrgMember);
+        }
+
+        private static IReadOnlyList<ConflictOccurrenceRequest> BuildOccurrenceRequests(
+            IReadOnlyList<DateTime> dates,
+            TimeSpan scheduledStartTimeUtc,
+            TimeSpan scheduledEndTimeUtc)
+        {
+            return dates
+                .Select((date, index) => new ConflictOccurrenceRequest(
+                    index,
+                    date.Add(scheduledStartTimeUtc),
+                    date.Add(scheduledEndTimeUtc)))
+                .ToList();
         }
 
         private static IReadOnlyList<(Guid UserId, MeetingRole Role)> GetParticipantTemplate(

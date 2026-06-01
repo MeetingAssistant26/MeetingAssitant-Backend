@@ -5,5 +5,7 @@
         public static readonly Error None = new(string.Empty, string.Empty, 200);
 
         public Dictionary<string, string[]>? Errors { get; init; }
+
+        public Dictionary<string, object?>? Extensions { get; init; }
     }
 }

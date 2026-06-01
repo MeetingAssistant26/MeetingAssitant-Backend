@@ -111,6 +111,41 @@ public class CreateRecurringMeetingTests : IntegrationTestBase
         return tag;
     }
 
+    private async Task<Meeting> SeedMeetingWithParticipantAsync(
+        Guid orgId,
+        Guid userId,
+        DateTime scheduledStart,
+        DateTime scheduledEnd,
+        string title = "Existing Meeting",
+        MeetingStatus status = MeetingStatus.Scheduled)
+    {
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var meeting = new Meeting
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Title = title,
+            ScheduledStartUtc = scheduledStart,
+            ScheduledEndUtc = scheduledEnd,
+            Status = status
+        };
+
+        meeting.Participants.Add(new MeetingParticipant
+        {
+            Id = Guid.NewGuid(),
+            MeetingId = meeting.Id,
+            OrganizationId = orgId,
+            UserId = userId,
+            MeetingRole = MeetingRole.Host
+        });
+
+        db.Meetings.Add(meeting);
+        await db.SaveChangesAsync();
+        return meeting;
+    }
+
     [Fact]
     public async Task CreateRecurringMeeting_ValidAdminRequest_ShouldReturnOkAndCreateMeetings()
     {
@@ -214,6 +249,155 @@ public class CreateRecurringMeetingTests : IntegrationTestBase
         var meetingIds = result.Meetings.Select(m => m.Id).ToList();
         var linksCount = await db.MeetingMeetingTags.IgnoreQueryFilters().CountAsync(x => meetingIds.Contains(x.MeetingId) && x.MeetingTagId == tag.Id);
         linksCount.Should().Be(result.Count);
+    }
+
+    [Fact]
+    public async Task CreateRecurringMeeting_WithParticipants_ShouldCreateParticipantOnEveryOccurrence()
+    {
+        // Arrange
+        var participantId = Guid.NewGuid();
+        await SeedUserAndMembershipAsync(participantId, TestOrganizationId);
+        var request = CreateValidRequest(title: "Recurring With Participant") with
+        {
+            Participants = new List<CreateMeetingParticipantRequest>
+            {
+                new(participantId, MeetingRole.Participant)
+            }
+        };
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/recurring", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<RecurringMeetingCreationResponse>();
+        result.Should().NotBeNull();
+        result!.Meetings.Should().OnlyContain(m => m.Participants.Any(p => p.UserId == participantId && p.Role == MeetingRole.Participant));
+
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var createdMeetingIds = result.Meetings.Select(m => m.Id).ToList();
+        var participantRows = await db.MeetingParticipants
+            .IgnoreQueryFilters()
+            .CountAsync(p => createdMeetingIds.Contains(p.MeetingId) && p.UserId == participantId && p.MeetingRole == MeetingRole.Participant);
+        participantRows.Should().Be(result.Count);
+    }
+
+    [Fact]
+    public async Task CreateRecurringMeeting_GeneratedOccurrenceOverlapsExistingHostMeeting_ShouldReturnConflictAndNotCreateSeries()
+    {
+        // Arrange
+        var existingStart = DateTime.UtcNow.Date.AddDays(2).AddHours(9);
+        var existingMeeting = await SeedMeetingWithParticipantAsync(
+            TestOrganizationId,
+            TestUserId,
+            existingStart,
+            existingStart.AddHours(1),
+            "Existing Future One-Off");
+        var request = CreateValidRequest(
+            title: "Conflicting Daily Series",
+            scheduledStartTimeUtc: TimeSpan.FromHours(9),
+            scheduledEndTimeUtc: TimeSpan.FromHours(10),
+            recurrence: new RecurrenceConfigDto(
+                RecurrenceFrequency.Daily,
+                1,
+                null,
+                DateTime.UtcNow.Date.AddDays(4)));
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/recurring", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var error = await response.Content.ReadFromJsonAsync<StandardErrorResponse>();
+        error.Should().NotBeNull();
+        error!.Title.Should().Be("Scheduling conflict detected.");
+        error.Errors.Should().ContainKey("ScheduledStartUtc");
+
+        var json = await response.Content.ReadAsStringAsync();
+        json.Should().Contain("recurringConflicts");
+        json.Should().Contain(existingMeeting.Id.ToString());
+
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var seriesCreated = await db.RecurringMeetingSeries
+            .IgnoreQueryFilters()
+            .AnyAsync(s => s.Title == "Conflicting Daily Series");
+        seriesCreated.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CreateRecurringMeeting_SelectedParticipantHasGeneratedOccurrenceOverlap_ShouldReturnConflict()
+    {
+        // Arrange
+        var participantId = Guid.NewGuid();
+        await SeedUserAndMembershipAsync(participantId, TestOrganizationId);
+        var existingStart = DateTime.UtcNow.Date.AddDays(3).AddHours(9);
+        var existingMeeting = await SeedMeetingWithParticipantAsync(
+            TestOrganizationId,
+            participantId,
+            existingStart,
+            existingStart.AddHours(1),
+            "Participant Future One-Off");
+        var request = CreateValidRequest(
+            title: "Participant Conflicting Series",
+            scheduledStartTimeUtc: TimeSpan.FromHours(9),
+            scheduledEndTimeUtc: TimeSpan.FromHours(10),
+            recurrence: new RecurrenceConfigDto(
+                RecurrenceFrequency.Daily,
+                1,
+                null,
+                DateTime.UtcNow.Date.AddDays(5))) with
+        {
+            Participants = new List<CreateMeetingParticipantRequest>
+            {
+                new(participantId, MeetingRole.Participant)
+            }
+        };
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/recurring", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var json = await response.Content.ReadAsStringAsync();
+        json.Should().Contain("recurringConflicts");
+        json.Should().Contain(existingMeeting.Id.ToString());
+    }
+
+    [Fact]
+    public async Task CheckRecurringSchedulingConflicts_OverlappingOccurrence_ShouldReturnOccurrenceConflicts()
+    {
+        // Arrange
+        var existingStart = DateTime.UtcNow.Date.AddDays(2).AddHours(9);
+        await SeedMeetingWithParticipantAsync(
+            TestOrganizationId,
+            TestUserId,
+            existingStart,
+            existingStart.AddHours(1),
+            "Advisory Future One-Off");
+        var request = new RecurringMeetingConflictCheckRequest(
+            TimeSpan.FromHours(9),
+            TimeSpan.FromHours(10),
+            new RecurrenceConfigDto(
+                RecurrenceFrequency.Daily,
+                1,
+                null,
+                DateTime.UtcNow.Date.AddDays(4)),
+            null,
+            null);
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/recurring/conflict-check", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<RecurringConflictCheckResponse>();
+        result.Should().NotBeNull();
+        result!.TotalOccurrencesChecked.Should().BeGreaterThan(1);
+        result.TotalConflictOccurrences.Should().Be(1);
+        result.Conflicts.Should().ContainSingle();
+        result.Conflicts[0].Conflicts.Should().Contain(c => c.UserId == TestUserId);
     }
 
     [Fact]

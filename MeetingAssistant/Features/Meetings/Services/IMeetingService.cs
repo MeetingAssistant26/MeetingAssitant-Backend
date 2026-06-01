@@ -17,6 +17,11 @@ namespace MeetingAssistant.Features.Meetings.Services
             Guid userId,
             CancellationToken cancellationToken = default);
 
+        Task<Result<ConflictCheckResponse>> CheckSchedulingConflictsAsync(
+            MeetingConflictCheckRequest request,
+            Guid userId,
+            CancellationToken cancellationToken = default);
+
         Task<Result> CancelMeetingAsync(
             Guid meetingId,
             Guid userId,

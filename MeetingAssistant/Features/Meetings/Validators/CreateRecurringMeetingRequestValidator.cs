@@ -17,6 +17,16 @@ namespace MeetingAssistant.Features.Meetings.Validators
                 .Cascade(CascadeMode.Stop)
                 .GreaterThan(x => x.ScheduledStartTimeUtc).WithMessage("End time must be after the start time.");
 
+            RuleForEach(x => x.Participants)
+                .ChildRules(participant =>
+                {
+                    participant.RuleFor(x => x.UserId)
+                        .NotEmpty().WithMessage("Participant user IDs must be valid.");
+
+                    participant.RuleFor(x => x.MeetingRole)
+                        .IsInEnum().WithMessage("Meeting role must be valid.");
+                });
+
             RuleFor(x => x.Recurrence)
                 .Cascade(CascadeMode.Stop)
                 .NotNull().WithMessage("Recurrence configuration is required.");

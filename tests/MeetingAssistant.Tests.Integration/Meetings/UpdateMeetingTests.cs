@@ -234,6 +234,40 @@ public class UpdateMeetingTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task UpdateMeeting_ScheduleOverlapsParticipantMeeting_ShouldReturnConflictWithDetails()
+    {
+        // Arrange
+        var start = DateTime.UtcNow.AddDays(1).Date.AddHours(10);
+        var meeting = await SeedMeetingAsync(
+            TestOrganizationId,
+            scheduledStart: start.AddHours(3),
+            scheduledEnd: start.AddHours(4));
+        await SeedMeetingParticipantAsync(meeting.Id, TestOrganizationId, TestUserId, MeetingRole.Host);
+
+        var existingMeeting = await SeedMeetingAsync(
+            TestOrganizationId,
+            title: "Existing Conflict",
+            scheduledStart: start,
+            scheduledEnd: start.AddHours(1));
+        await SeedMeetingParticipantAsync(existingMeeting.Id, TestOrganizationId, TestUserId, MeetingRole.Host);
+
+        var request = new UpdateMeetingRequest(null, null, start.AddMinutes(15), start.AddMinutes(45), null);
+
+        // Act
+        var response = await Client.PutAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var error = await response.Content.ReadFromJsonAsync<StandardErrorResponse>();
+        error.Should().NotBeNull();
+        error!.Title.Should().Be("Scheduling conflict detected.");
+
+        var json = await response.Content.ReadAsStringAsync();
+        json.Should().Contain("conflicts");
+        json.Should().Contain(existingMeeting.Id.ToString());
+    }
+
+    [Fact]
     public async Task UpdateMeeting_HostUpdatesAllFields_ShouldReturnOkWithAllFieldsUpdated()
     {
         // Arrange

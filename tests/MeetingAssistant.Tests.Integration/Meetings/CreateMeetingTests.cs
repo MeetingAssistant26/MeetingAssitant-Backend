@@ -79,6 +79,40 @@ public class CreateMeetingTests : IntegrationTestBase
         return user;
     }
 
+    private async Task<Meeting> SeedMeetingWithParticipantAsync(
+        Guid orgId,
+        Guid userId,
+        DateTime scheduledStart,
+        DateTime scheduledEnd,
+        string title = "Existing Meeting")
+    {
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var meeting = new Meeting
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Title = title,
+            ScheduledStartUtc = scheduledStart,
+            ScheduledEndUtc = scheduledEnd,
+            Status = MeetingStatus.Scheduled
+        };
+
+        meeting.Participants.Add(new MeetingParticipant
+        {
+            Id = Guid.NewGuid(),
+            MeetingId = meeting.Id,
+            OrganizationId = orgId,
+            UserId = userId,
+            MeetingRole = MeetingRole.Host
+        });
+
+        db.Meetings.Add(meeting);
+        await db.SaveChangesAsync();
+        return meeting;
+    }
+
     [Fact]
     public async Task CreateMeeting_ValidAdminRequest_ShouldReturnOk_AndCreateMeeting()
     {
@@ -144,6 +178,121 @@ public class CreateMeetingTests : IntegrationTestBase
         var result = await response.Content.ReadFromJsonAsync<MeetingResponse>();
         result.Should().NotBeNull();
         result!.Description.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateMeeting_WithParticipants_ShouldCreateMeetingAndParticipantsAtomically()
+    {
+        // Arrange
+        var participantId = Guid.NewGuid();
+        await SeedUserAndMembershipAsync(participantId, TestOrganizationId);
+        var request = CreateValidRequest(title: "Meeting With Participants") with
+        {
+            Participants = new List<CreateMeetingParticipantRequest>
+            {
+                new(participantId, MeetingRole.Participant)
+            }
+        };
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var result = await response.Content.ReadFromJsonAsync<MeetingResponse>();
+        result.Should().NotBeNull();
+        result!.Participants.Should().Contain(p => p.UserId == TestUserId && p.Role == MeetingRole.Host);
+        result.Participants.Should().Contain(p => p.UserId == participantId && p.Role == MeetingRole.Participant);
+
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var participantRows = await db.MeetingParticipants
+            .IgnoreQueryFilters()
+            .Where(p => p.MeetingId == result.Id)
+            .ToListAsync();
+        participantRows.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task CreateMeeting_OverlapsExistingHostMeeting_ShouldReturnConflictWithDetails()
+    {
+        // Arrange
+        var start = DateTime.UtcNow.AddDays(1).Date.AddHours(10);
+        var existingMeeting = await SeedMeetingWithParticipantAsync(
+            TestOrganizationId,
+            TestUserId,
+            start,
+            start.AddHours(1),
+            "Existing Host Meeting");
+        var request = CreateValidRequest(
+            title: "Conflicting Meeting",
+            start: start.AddMinutes(15),
+            end: start.AddMinutes(45));
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var error = await response.Content.ReadFromJsonAsync<StandardErrorResponse>();
+        error.Should().NotBeNull();
+        error!.Title.Should().Be("Scheduling conflict detected.");
+        error.Errors.Should().ContainKey("ScheduledStartUtc");
+
+        var json = await response.Content.ReadAsStringAsync();
+        json.Should().Contain("conflicts");
+        json.Should().Contain(existingMeeting.Id.ToString());
+    }
+
+    [Fact]
+    public async Task CreateMeeting_SelectedParticipantHasOverlap_ShouldReturnConflictAndNotCreateMeeting()
+    {
+        // Arrange
+        var participantId = Guid.NewGuid();
+        var otherHostId = Guid.NewGuid();
+        await SeedUserAndMembershipAsync(participantId, TestOrganizationId);
+        await SeedUserAndMembershipAsync(otherHostId, TestOrganizationId);
+
+        var start = DateTime.UtcNow.AddDays(1).Date.AddHours(10);
+        var existingMeeting = await SeedMeetingWithParticipantAsync(
+            TestOrganizationId,
+            participantId,
+            start,
+            start.AddHours(1),
+            "Participant Conflict");
+        await SeedMeetingWithParticipantAsync(
+            TestOrganizationId,
+            otherHostId,
+            start.AddHours(4),
+            start.AddHours(5),
+            "Other Host Meeting");
+
+        var request = CreateValidRequest(
+            title: "Participant Conflict Create",
+            start: start.AddMinutes(15),
+            end: start.AddMinutes(45)) with
+        {
+            Participants = new List<CreateMeetingParticipantRequest>
+            {
+                new(participantId, MeetingRole.Participant)
+            }
+        };
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var json = await response.Content.ReadAsStringAsync();
+        json.Should().Contain("conflicts");
+        json.Should().Contain(existingMeeting.Id.ToString());
+
+        using var scope = Factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var created = await db.Meetings
+            .IgnoreQueryFilters()
+            .AnyAsync(m => m.Title == "Participant Conflict Create");
+        created.Should().BeFalse();
     }
 
     [Fact]

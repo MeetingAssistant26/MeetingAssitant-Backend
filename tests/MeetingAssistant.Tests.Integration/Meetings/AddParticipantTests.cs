@@ -59,18 +59,25 @@ public class AddParticipantTests : IntegrationTestBase
         return user;
     }
 
-    private async Task<Meeting> SeedMeetingAsync(Guid orgId, MeetingStatus status = MeetingStatus.Scheduled)
+    private async Task<Meeting> SeedMeetingAsync(
+        Guid orgId,
+        MeetingStatus status = MeetingStatus.Scheduled,
+        DateTime? scheduledStart = null,
+        DateTime? scheduledEnd = null)
     {
         using var scope = Factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var start = scheduledStart ?? DateTime.UtcNow.AddDays(1);
+        var end = scheduledEnd ?? start.AddHours(1);
 
         var meeting = new Meeting
         {
             Id = Guid.NewGuid(),
             OrganizationId = orgId,
             Title = "Integration Test Meeting",
-            ScheduledStartUtc = DateTime.UtcNow.AddDays(1),
-            ScheduledEndUtc = DateTime.UtcNow.AddDays(1).AddHours(1),
+            ScheduledStartUtc = start,
+            ScheduledEndUtc = end,
             Status = status
         };
 
@@ -133,6 +140,39 @@ public class AddParticipantTests : IntegrationTestBase
         var dbParticipant = await db.MeetingParticipants.IgnoreQueryFilters().FirstOrDefaultAsync(p => p.MeetingId == meeting.Id && p.UserId == targetUserId);
         dbParticipant.Should().NotBeNull();
         dbParticipant!.MeetingRole.Should().Be(MeetingRole.Participant);
+    }
+
+    [Fact]
+    public async Task AddParticipant_TargetUserHasOverlappingMeeting_ShouldReturnConflictWithDetails()
+    {
+        // Arrange
+        var targetUserId = Guid.NewGuid();
+        var otherHostId = Guid.NewGuid();
+        await SeedUserAndMembershipAsync(targetUserId, TestOrganizationId);
+        await SeedUserAndMembershipAsync(otherHostId, TestOrganizationId);
+
+        var start = DateTime.UtcNow.AddDays(1).Date.AddHours(10);
+        var meeting = await SeedMeetingAsync(TestOrganizationId, scheduledStart: start, scheduledEnd: start.AddHours(1));
+        await SeedMeetingParticipantAsync(meeting.Id, TestOrganizationId, TestUserId, MeetingRole.Host);
+
+        var existingMeeting = await SeedMeetingAsync(TestOrganizationId, scheduledStart: start.AddMinutes(15), scheduledEnd: start.AddMinutes(45));
+        await SeedMeetingParticipantAsync(existingMeeting.Id, TestOrganizationId, otherHostId, MeetingRole.Host);
+        await SeedMeetingParticipantAsync(existingMeeting.Id, TestOrganizationId, targetUserId, MeetingRole.Participant);
+
+        var request = new AddParticipantRequest(targetUserId, MeetingRole.Participant);
+
+        // Act
+        var response = await Client.PostAsJsonAsync($"/api/meetings/{meeting.Id}/participants", request);
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var error = await response.Content.ReadFromJsonAsync<StandardErrorResponse>();
+        error.Should().NotBeNull();
+        error!.Title.Should().Be("Scheduling conflict detected.");
+
+        var json = await response.Content.ReadAsStringAsync();
+        json.Should().Contain("conflicts");
+        json.Should().Contain(existingMeeting.Id.ToString());
     }
 
     [Fact]

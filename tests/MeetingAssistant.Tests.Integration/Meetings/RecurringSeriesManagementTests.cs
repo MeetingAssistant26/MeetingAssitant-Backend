@@ -106,6 +106,40 @@ public class RecurringSeriesManagementTests : IntegrationTestBase
         return result;
     }
 
+    private async Task<Meeting> SeedMeetingWithParticipantAsync(
+        Guid orgId,
+        Guid userId,
+        DateTime scheduledStart,
+        DateTime scheduledEnd,
+        string title = "Existing Meeting")
+    {
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+
+        var meeting = new Meeting
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = orgId,
+            Title = title,
+            ScheduledStartUtc = scheduledStart,
+            ScheduledEndUtc = scheduledEnd,
+            Status = MeetingStatus.Scheduled
+        };
+
+        meeting.Participants.Add(new MeetingParticipant
+        {
+            Id = Guid.NewGuid(),
+            MeetingId = meeting.Id,
+            OrganizationId = orgId,
+            UserId = userId,
+            MeetingRole = MeetingRole.Host
+        });
+
+        db.Meetings.Add(meeting);
+        await db.SaveChangesAsync();
+        return meeting;
+    }
+
     [Fact]
     public async Task ListAndGetRecurringSeries_ShouldReturnSeriesIdentityAndOccurrences()
     {
@@ -189,6 +223,47 @@ public class RecurringSeriesManagementTests : IntegrationTestBase
         body.Occurrences.Should().Contain(o => !originalFutureIds.Contains(o.Id));
         body.Occurrences.Where(o => originalFutureIds.Contains(o.Id)).Should().OnlyContain(o => o.Status == MeetingStatus.Cancelled);
         body.Occurrences.Where(o => !originalFutureIds.Contains(o.Id)).Should().OnlyContain(o => o.Status == MeetingStatus.Scheduled && o.Title == "Pattern After");
+    }
+
+    [Fact]
+    public async Task UpdateRecurringSeries_PatternChangeOverlapsExistingMeeting_ShouldReturnConflictAndLeaveOccurrencesUnchanged()
+    {
+        var created = await CreateSeriesAsync("Pattern Conflict Before");
+        var originalFutureIds = created.Meetings.Select(m => m.Id).ToHashSet();
+        var start = FutureTimeOfDay().Add(TimeSpan.FromHours(2));
+        if (start >= TimeSpan.FromDays(1))
+            start = TimeSpan.FromHours(3);
+        var existingStart = DateTime.UtcNow.Date.AddDays(2).Add(start);
+        var existingMeeting = await SeedMeetingWithParticipantAsync(
+            TestOrganizationId,
+            TestUserId,
+            existingStart,
+            existingStart.AddMinutes(30),
+            "Series Update Conflict");
+
+        var update = new UpdateRecurringSeriesRequest(
+            "Pattern Conflict After",
+            "Should not persist",
+            start,
+            start.Add(TimeSpan.FromMinutes(30)),
+            new RecurrenceConfigDto(RecurrenceFrequency.Daily, 1, null, DateTime.UtcNow.Date.AddDays(4)),
+            null);
+
+        var response = await Client.PutAsJsonAsync($"/api/organizations/{TestOrganizationId}/meetings/recurring/{created.SeriesId}", update);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var json = await response.Content.ReadAsStringAsync();
+        json.Should().Contain("recurringConflicts");
+        json.Should().Contain(existingMeeting.Id.ToString());
+
+        await using var verifyScope = Factory.Services.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var occurrences = await verifyDb.Meetings.IgnoreQueryFilters()
+            .Where(m => m.RecurringSeriesId == created.SeriesId)
+            .ToListAsync();
+
+        occurrences.Select(m => m.Id).ToHashSet().Should().BeEquivalentTo(originalFutureIds);
+        occurrences.Should().OnlyContain(m => m.Status == MeetingStatus.Scheduled && m.Title == "Pattern Conflict Before");
     }
 
     [Fact]
