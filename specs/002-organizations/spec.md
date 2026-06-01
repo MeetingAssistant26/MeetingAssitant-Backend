@@ -238,12 +238,12 @@ Any organization member can view the list of active meeting tags. This is needed
 - **FR-020**: System MUST implement organization-scoped authorization policies: `RequireOrgAdmin` (only Admin role), `RequireOrgMember` (Admin or Member), `RequireOrgAccess` (Admin, Member, or Guest).
 - **FR-021**: System MUST use the Partial Controller Pattern for all endpoints — one endpoint per file via partial classes. Controller definition files contain `[ApiController]`, `[Route]`, base class, constructor, and shared dependencies. Endpoint files contain exactly one action method.
 - **FR-022**: System MUST use `result.ToProblem(correlationIdProvider)` for all endpoint error responses. Endpoints MUST NOT manually construct `StandardErrorResponse`.
-- **FR-023**: System MUST allow Organization Admins to create meeting tags with a name (1-50 chars) and optional color (hex format #RRGGBB). Name MUST be unique per organization (case-insensitive, unique constraint `WHERE IsActive = true`).
+- **FR-023**: System MUST allow Organization Admins to create meeting tags with a name (1-50 chars) and optional color (hex format #RGB or #RRGGBB, with or without a leading #). Name MUST be unique per organization (case-insensitive, unique constraint `WHERE IsActive = true`).
 - **FR-024**: System MUST reject duplicate tag names within the same organization with 409 Conflict. Error code: `MeetingTag.DuplicateName`.
 - **FR-025**: System MUST allow Organization Admins to update meeting tags via partial update (PUT) — only provided fields (name and/or color) are modified. Name uniqueness constraint applies excluding the current tag.
 - **FR-026**: System MUST allow Organization Admins to soft-delete tags (set `IsActive = false`). Deleted tags MUST NOT appear in list endpoints. Deleted tag names MUST be available for reuse (unique constraint excludes inactive tags).
 - **FR-027**: System MUST allow any organization member (Admin, Member, or Guest) to list active meeting tags. List MUST be ordered by `CreatedAtUtc ASC` (oldest first).
-- **FR-028**: System MUST validate color format using regex `^#[0-9A-Fa-f]{6}$` when color is provided. Setting color to `null` MUST clear the color.
+- **FR-028**: System MUST validate color format using regex `^#?(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$` when color is provided. Setting color to `null` MUST clear the color.
 - **FR-029**: System MUST emit `MeetingTagCreatedEvent`, `MeetingTagUpdatedEvent`, and `MeetingTagDeletedEvent` domain events for tag state changes.
 
 ### Key Entities
@@ -289,8 +289,8 @@ Any organization member can view the list of active meeting tags. This is needed
 ### Session 2026-04-06 (MeetingTag)
 - Q: What happens when a tag is soft-deleted but meetings still reference it? → **Resolved**: Meetings retain the reference via the junction table. The tag name is preserved for historical context. If the same name is recreated, it's a new tag with a new ID — existing meetings keep the old tag reference.
 - Q: Can a soft-deleted tag be reactivated? → **Resolved**: No. Reactivation is not supported. Admins should create a new tag if needed. This prevents confusion between old and new tag contexts.
-- Q: What color format should be stored and returned? → **Resolved**: Always uppercase hex with hash prefix (e.g., "#4CAF50"). API accepts any case but normalizes to uppercase.
-- Q: Should color be validated as a "real" color or just format? → **Resolved**: Only format validation (regex `^#[0-9A-Fa-f]{6}$`). No semantic validation (e.g., "#000000" is valid even if black).
+- Q: What color format should be stored and returned? → **Resolved**: Always uppercase six-character hex with hash prefix (e.g., "#4CAF50"). API accepts any case, accepts optional leading hash, and expands shorthand (e.g., "#ccc" or "ccc" normalize to "#CCCCCC").
+- Q: Should color be validated as a "real" color or just format? → **Resolved**: Only format validation (regex `^#?(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$`). No semantic validation (e.g., "#000000" is valid even if black).
 
 ## Assumptions
 

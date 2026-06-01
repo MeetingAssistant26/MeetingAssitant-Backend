@@ -14,7 +14,7 @@ namespace MeetingAssistant.Features.Organizations.Validators
                 .When(x => x.Name != null);
 
             RuleFor(x => x.Color.Value)
-                .Matches("^#[0-9A-Fa-f]{6}$").WithMessage("Color must be a valid hex code (e.g., #FF0000).")
+                .Matches(MeetingTagColor.ValidationPattern).WithMessage("Color must be a valid hex code (e.g., #CCC or #FF0000).")
                 .When(x => x.Color.HasValue && !string.IsNullOrEmpty(x.Color.Value));
         }
     }

@@ -38,7 +38,7 @@ namespace MeetingAssistant.Features.Organizations.Services
             {
                 OrganizationId = orgId,
                 Name = trimmedName,
-                Color = request.Color?.ToUpperInvariant(),
+                Color = MeetingTagColor.Normalize(request.Color),
                 IsActive = true
             };
 
@@ -82,7 +82,7 @@ namespace MeetingAssistant.Features.Organizations.Services
             }
 
             if (request.Color.HasValue)
-                tag.Color = request.Color.Value?.ToUpperInvariant();
+                tag.Color = MeetingTagColor.Normalize(request.Color.Value);
 
             tag.RaiseDomainEvent(new MeetingTagUpdatedEvent(orgId, tag.Id));
             await _dbContext.SaveChangesAsync(ct);
