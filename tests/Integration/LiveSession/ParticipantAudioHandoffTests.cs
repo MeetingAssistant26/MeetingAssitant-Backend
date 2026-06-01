@@ -82,6 +82,11 @@ namespace tests.Integration.LiveSession
 
             pendingTracks.Should().HaveCount(participantIds.Count);
             pendingTracks.Should().OnlyContain(x => x.Status == ParticipantAudioTrackStatus.Pending);
+            db.DbContext.ParticipantAudioFragments
+                .Where(x => x.MeetingId == meetingId)
+                .Should()
+                .HaveCount(participantIds.Count)
+                .And.OnlyContain(x => x.Status == ParticipantAudioFragmentStatus.Pending);
             webhookJobs.CreatedJobs.Should().HaveCount(participantIds.Count);
 
             var ingestPublisher = new CollectingPublisher();
@@ -92,10 +97,10 @@ namespace tests.Integration.LiveSession
 
             foreach (var job in webhookJobs.CreatedJobs.Where(x => x.Type == typeof(IngestParticipantAudioJob)))
             {
-                var trackId = (Guid)job.Args[0];
+                var fragmentId = (Guid)job.Args[0];
                 var sourceUrl = (string)job.Args[1];
                 var sizeBytes = (long?)job.Args[2];
-                await ingestJob.RunAsync(trackId, sourceUrl, sizeBytes);
+                await ingestJob.RunFragmentAsync(fragmentId, sourceUrl, sizeBytes);
             }
 
             var completedTracks = db.DbContext.ParticipantAudioTracks
@@ -104,6 +109,11 @@ namespace tests.Integration.LiveSession
 
             completedTracks.Should().HaveCount(participantIds.Count);
             completedTracks.Should().OnlyContain(x => x.Status == ParticipantAudioTrackStatus.Available);
+            db.DbContext.ParticipantAudioFragments
+                .Where(x => x.MeetingId == meetingId)
+                .Should()
+                .HaveCount(participantIds.Count)
+                .And.OnlyContain(x => x.Status == ParticipantAudioFragmentStatus.Available);
 
             db.DbContext.SessionEvents
                 .Count(x => x.MeetingId == meetingId && x.EventType == SessionEventType.ParticipantAudioReady)
@@ -146,6 +156,13 @@ namespace tests.Integration.LiveSession
                 .ContainSingle()
                 .Which.Status.Should().Be(ParticipantAudioTrackStatus.Pending);
 
+            db.DbContext.ParticipantAudioFragments
+                .Where(x => x.MeetingId == meetingId && x.ParticipantUserId == participantId)
+                .OrderBy(x => x.TrackSid)
+                .Select(x => x.TrackSid)
+                .Should()
+                .Equal("TR_AUDIO_1", "TR_AUDIO_2");
+
             db.DbContext.SessionEvents
                 .Count(x => x.MeetingId == meetingId && x.EventType == SessionEventType.TrackPublished)
                 .Should()
@@ -183,6 +200,13 @@ namespace tests.Integration.LiveSession
                 .Should()
                 .ContainSingle();
 
+            db.DbContext.ParticipantAudioFragments
+                .Where(x => x.MeetingId == meetingId && x.ParticipantUserId == participantId)
+                .OrderBy(x => x.TrackPublishedAtUtc)
+                .Select(x => x.TrackSid)
+                .Should()
+                .Equal("TR_BEFORE_MUTE", "TR_AFTER_REJOIN");
+
             egress.Starts.Select(x => x.TrackId)
                 .Should()
                 .BeEquivalentTo("TR_BEFORE_MUTE", "TR_AFTER_REJOIN");
@@ -214,6 +238,11 @@ namespace tests.Integration.LiveSession
                 "{}");
 
             db.DbContext.ParticipantAudioTracks
+                .Where(x => x.MeetingId == meetingId)
+                .Should()
+                .BeEmpty();
+
+            db.DbContext.ParticipantAudioFragments
                 .Where(x => x.MeetingId == meetingId)
                 .Should()
                 .BeEmpty();
@@ -267,7 +296,141 @@ namespace tests.Integration.LiveSession
                 .Should()
                 .BeEmpty();
 
+            db.DbContext.ParticipantAudioFragments
+                .Where(x => x.MeetingId == meetingId)
+                .Should()
+                .BeEmpty();
+
             webhookJobs.CreatedJobs.Should().BeEmpty();
+        }
+
+        [Fact]
+        public async Task EgressEnded_ForPublishedTrack_ShouldUpdateMatchingFragmentAndEnqueueIngestOnce()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var participantId = db.SeedUser("participant");
+            db.AddParticipant(meetingId, orgId, participantId);
+
+            var jobs = new FakeBackgroundJobClient();
+            var webhookService = new WebhookService(
+                db.DbContext,
+                jobs,
+                Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
+                new FakeEgressService(),
+                NullLogger<WebhookService>.Instance);
+
+            const string trackSid = "TR_SUCCESS_FRAGMENT";
+            await webhookService.ProcessAsync(
+                WebhookEventFactory.TrackPublished(meetingId, "evt-track-success", participantId, trackSid),
+                "{}");
+
+            var sourceUrl = $"https://egress.example/bucket/tracks/mtg:{meetingId}/user:{participantId}/track-{trackSid}.ogg";
+            var evt = WebhookEventFactory.EgressEnded(
+                meetingId,
+                "evt-egress-success",
+                EgressStatus.EgressComplete,
+                participantId,
+                sourceUrl);
+
+            var rawPayload = JsonSerializer.Serialize(new
+            {
+                egressInfo = new
+                {
+                    egressId = "EG_success",
+                    trackId = trackSid,
+                    startedAt = DateTimeOffset.UtcNow.AddSeconds(-30).ToUnixTimeSeconds(),
+                    endedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    fileResults = new[]
+                    {
+                        new
+                        {
+                            filename = $"tracks/mtg:{meetingId}/user:{participantId}/track-{trackSid}.ogg",
+                            location = sourceUrl,
+                            size = 4096L
+                        }
+                    }
+                }
+            });
+
+            await webhookService.ProcessAsync(evt, rawPayload);
+            await webhookService.ProcessAsync(evt, rawPayload);
+
+            var fragment = db.DbContext.ParticipantAudioFragments
+                .Single(x => x.MeetingId == meetingId && x.TrackSid == trackSid);
+
+            fragment.EgressId.Should().Be("EG_success");
+            fragment.StorageLocation.Should().Be(sourceUrl);
+            fragment.StorageObjectKey.Should().Be($"tracks/mtg:{meetingId}/user:{participantId}/track-{trackSid}.ogg");
+            fragment.Status.Should().Be(ParticipantAudioFragmentStatus.Pending);
+
+            jobs.CreatedJobs.Should().ContainSingle();
+        }
+
+        [Fact]
+        public async Task EgressEnded_FailureForPublishedTrack_ShouldMarkFragmentFailedAndPreserveFailureInfo()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var participantId = db.SeedUser("participant");
+            db.AddParticipant(meetingId, orgId, participantId);
+
+            var jobs = new FakeBackgroundJobClient();
+            var webhookService = new WebhookService(
+                db.DbContext,
+                jobs,
+                Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
+                new FakeEgressService(),
+                NullLogger<WebhookService>.Instance);
+
+            const string trackSid = "TR_FAILED_FRAGMENT";
+            await webhookService.ProcessAsync(
+                WebhookEventFactory.TrackPublished(meetingId, "evt-track-failed", participantId, trackSid),
+                "{}");
+
+            var evt = new WebhookEvent
+            {
+                Event = "egress_ended",
+                Id = "evt-egress-failed",
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                EgressInfo = new EgressInfo
+                {
+                    RoomName = $"mtg:{meetingId}",
+                    Status = EgressStatus.EgressFailed
+                }
+            };
+
+            var rawPayload = JsonSerializer.Serialize(new
+            {
+                egressInfo = new
+                {
+                    egressId = "EG_failed",
+                    trackId = trackSid,
+                    endedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    errorCode = "egress_worker_failed",
+                    error = "egress worker terminated before upload"
+                }
+            });
+
+            await webhookService.ProcessAsync(evt, rawPayload);
+            await webhookService.ProcessAsync(evt, rawPayload);
+
+            var fragment = db.DbContext.ParticipantAudioFragments
+                .Single(x => x.MeetingId == meetingId && x.TrackSid == trackSid);
+
+            fragment.Status.Should().Be(ParticipantAudioFragmentStatus.Failed);
+            fragment.EgressId.Should().Be("EG_failed");
+            fragment.FailureCode.Should().Be("egress_worker_failed");
+            fragment.FailureMessage.Should().Be("egress worker terminated before upload");
+            fragment.FailedAtUtc.Should().NotBeNull();
+
+            db.DbContext.ParticipantAudioTracks
+                .Single(x => x.MeetingId == meetingId && x.ParticipantUserId == participantId)
+                .Status.Should().Be(ParticipantAudioTrackStatus.Failed);
+
+            jobs.CreatedJobs.Should().BeEmpty();
         }
     }
 }

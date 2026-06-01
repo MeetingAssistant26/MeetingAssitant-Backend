@@ -56,6 +56,7 @@ namespace tests.Unit.LiveSession
 
             db.DbContext.SessionEvents.Count().Should().Be(1);
             db.DbContext.ParticipantAudioTracks.Count().Should().Be(1);
+            db.DbContext.ParticipantAudioFragments.Count().Should().Be(1);
             jobs.CreatedJobs.Count.Should().Be(1);
         }
 
@@ -101,6 +102,7 @@ namespace tests.Unit.LiveSession
 
             db.DbContext.SessionEvents.Count().Should().Be(1);
             db.DbContext.ParticipantAudioTracks.Count().Should().Be(1);
+            db.DbContext.ParticipantAudioFragments.Count().Should().Be(1);
             jobs.CreatedJobs.Count.Should().Be(1);
         }
 
@@ -129,6 +131,7 @@ namespace tests.Unit.LiveSession
                 .Should()
                 .Be(1);
             db.DbContext.ParticipantAudioTracks.Count().Should().Be(1);
+            db.DbContext.ParticipantAudioFragments.Count().Should().Be(1);
             egress.Starts.Should().ContainSingle(x => x.TrackId == "TR_DUPLICATE");
         }
     }

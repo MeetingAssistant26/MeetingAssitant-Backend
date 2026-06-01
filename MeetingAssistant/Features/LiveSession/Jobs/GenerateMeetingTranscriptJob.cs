@@ -21,6 +21,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         private readonly IPublisher _publisher = publisher;
         private readonly ILogger<GenerateMeetingTranscriptJob> _logger = logger;
 
+        private const int MaxSttParallelism = 1;
+
         private static readonly Regex TrackSidFromObjectKeyRegex = new(
             @"(?:^|/)track-(?<sid>[^/.\\]+)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -30,24 +32,29 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             Guid organizationId,
             CancellationToken cancellationToken = default)
         {
-            var tracks = await _dbContext.ParticipantAudioTracks
+            var fragments = await _dbContext.ParticipantAudioFragments
                 .IgnoreQueryFilters()
                 .Where(x => x.MeetingId == meetingId
                             && x.OrganizationId == organizationId
-                            && x.Status == ParticipantAudioTrackStatus.Available
+                            && x.Status == ParticipantAudioFragmentStatus.Available
                             && x.StorageObjectKey != null)
                 .Select(x => new
                 {
                     x.Id,
                     x.ParticipantUserId,
-                    x.StorageObjectKey
+                    x.ParticipantAudioTrackId,
+                    x.TrackSid,
+                    x.StorageObjectKey,
+                    x.TrackPublishedAtUtc,
+                    x.EgressStartedAtUtc,
+                    x.StorageAvailableAtUtc
                 })
                 .ToListAsync(cancellationToken);
 
-            if (tracks.Count == 0)
+            if (fragments.Count == 0)
             {
                 _logger.LogInformation(
-                    "Transcript generation skipped because no available participant tracks were found. MeetingId={MeetingId}",
+                    "Transcript generation skipped because no available participant audio fragments were found. MeetingId={MeetingId}",
                     meetingId);
                 return;
             }
@@ -80,29 +87,42 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     .Select(x => (DateTime?)x.OccurredAtUtc)
                     .FirstOrDefault();
 
-            var tracksWithTiming = tracks
-                .Select(track => new
-                {
-                    track.Id,
-                    track.ParticipantUserId,
-                    track.StorageObjectKey,
-                    Timing = ResolveTrackTiming(
-                        track.ParticipantUserId,
-                        track.StorageObjectKey!,
+            var fragmentsWithTiming = fragments
+                .Select(fragment => new FragmentTranscriptionInput(
+                    fragment.Id,
+                    fragment.ParticipantUserId,
+                    fragment.ParticipantAudioTrackId,
+                    fragment.TrackSid,
+                    fragment.StorageObjectKey!,
+                    Timing: ResolveTrackTiming(
+                        fragment.ParticipantUserId,
+                        fragment.TrackSid,
+                        fragment.StorageObjectKey!,
                         roomActivatedAtUtc,
+                        fragment.TrackPublishedAtUtc,
+                        fragment.EgressStartedAtUtc,
+                        fragment.StorageAvailableAtUtc,
                         timingEvents)
-                })
+                ))
+                .OrderBy(x => x.Timing.RoomRelativeStartOffsetMs)
+                .ThenBy(x => x.ParticipantUserId)
+                .ThenBy(x => x.TrackSid, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.StorageObjectKey, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             var allSegments = new ConcurrentBag<NormalizedTranscriptSegment>();
             var sttModels = new ConcurrentBag<string>();
+            var failedFragments = new ConcurrentBag<FailedFragmentTranscription>();
 
             await Parallel.ForEachAsync(
-                tracksWithTiming,
+                fragmentsWithTiming,
                 new ParallelOptions
                 {
                     CancellationToken = cancellationToken,
-                    MaxDegreeOfParallelism = 4
+                    // ai_work STT is a CPU-bound local service and can fail under concurrent
+                    // multipart transcription requests. Process fragments one at a time while
+                    // still isolating failures per fragment.
+                    MaxDegreeOfParallelism = MaxSttParallelism
                 },
                 async (track, ct) =>
                 {
@@ -118,26 +138,67 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         {
                             allSegments.Add(NormalizeSegment(
                                 segment,
-                                track.Id,
+                                track.ParticipantAudioTrackId,
+                                track.FragmentId,
                                 roomActivatedAtUtc,
                                 track.Timing));
                         }
                     }
                     catch (Exception ex)
                     {
+                        failedFragments.Add(new FailedFragmentTranscription(
+                            track.FragmentId,
+                            TruncateFailureMessage(ex.GetBaseException().Message)));
+
                         _logger.LogWarning(
                             ex,
-                            "STT transcription failed for participant track. MeetingId={MeetingId} ParticipantUserId={ParticipantUserId}",
+                            "STT transcription failed for participant audio fragment. MeetingId={MeetingId} FragmentId={FragmentId} ParticipantUserId={ParticipantUserId} TrackSid={TrackSid}",
                             meetingId,
-                            track.ParticipantUserId);
+                            track.FragmentId,
+                            track.ParticipantUserId,
+                            track.TrackSid);
                     }
                 });
+
+            var failedFragmentIds = failedFragments
+                .Select(x => x.FragmentId)
+                .Distinct()
+                .ToList();
+
+            if (failedFragmentIds.Count > 0)
+            {
+                var failuresById = failedFragments
+                    .GroupBy(x => x.FragmentId)
+                    .ToDictionary(x => x.Key, x => x.Last().FailureMessage);
+
+                var failedRows = await _dbContext.ParticipantAudioFragments
+                    .IgnoreQueryFilters()
+                    .Where(x => failedFragmentIds.Contains(x.Id))
+                    .ToListAsync(cancellationToken);
+
+                var failedAtUtc = DateTime.UtcNow;
+                foreach (var fragment in failedRows)
+                {
+                    fragment.Status = ParticipantAudioFragmentStatus.Failed;
+                    fragment.FailedAtUtc = failedAtUtc;
+                    fragment.FailureCode = "stt_failed";
+                    fragment.FailureMessage = failuresById.TryGetValue(fragment.Id, out var message)
+                        ? message
+                        : "STT transcription failed.";
+                }
+            }
 
             if (allSegments.IsEmpty)
             {
                 _logger.LogWarning(
                     "Transcript generation skipped because all participant transcriptions failed. MeetingId={MeetingId}",
                     meetingId);
+
+                if (failedFragmentIds.Count > 0)
+                {
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                }
+
                 return;
             }
 
@@ -182,6 +243,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     2,
                     segment.ParticipantUserId,
                     segment.ParticipantAudioTrackId,
+                    segment.ParticipantAudioFragmentId,
                     segment.TrackRelativeStartMs,
                     segment.TrackRelativeEndMs,
                     segment.RoomRelativeStartMs,
@@ -230,7 +292,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
         private static NormalizedTranscriptSegment NormalizeSegment(
             TranscriptSegment segment,
-            Guid participantAudioTrackId,
+            Guid? participantAudioTrackId,
+            Guid participantAudioFragmentId,
             DateTime? roomActivatedAtUtc,
             TrackTiming timing)
         {
@@ -247,6 +310,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             return new NormalizedTranscriptSegment(
                 segment.ParticipantUserId,
                 participantAudioTrackId,
+                participantAudioFragmentId,
                 segment.StartMs,
                 segment.EndMs,
                 roomRelativeStartMs,
@@ -260,8 +324,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
         private static TrackTiming ResolveTrackTiming(
             Guid participantUserId,
+            string trackSid,
             string storageObjectKey,
             DateTime? roomActivatedAtUtc,
+            DateTime? fragmentTrackPublishedAtUtc,
+            DateTime? fragmentEgressStartedAtUtc,
+            DateTime? fragmentStorageAvailableAtUtc,
             IReadOnlyList<TranscriptTimingEvent> timingEvents)
         {
             if (!roomActivatedAtUtc.HasValue)
@@ -269,11 +337,16 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return new TrackTiming(0, null, TimestampOffsetSources.LegacyUnknown);
             }
 
+            if (fragmentTrackPublishedAtUtc.HasValue)
+            {
+                return CreateTiming(roomActivatedAtUtc.Value, fragmentTrackPublishedAtUtc.Value, TimestampOffsetSources.FragmentTrackPublished);
+            }
+
             var participantEvents = timingEvents
                 .Where(x => x.ParticipantUserId == participantUserId)
                 .ToList();
 
-            var trackSid = TryExtractTrackSid(storageObjectKey);
+            trackSid = string.IsNullOrWhiteSpace(trackSid) ? TryExtractTrackSid(storageObjectKey) ?? string.Empty : trackSid;
             TranscriptTimingEvent? trackPublished = null;
 
             if (!string.IsNullOrWhiteSpace(trackSid))
@@ -295,6 +368,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return CreateTiming(roomActivatedAtUtc.Value, trackPublished.OccurredAtUtc, TimestampOffsetSources.TrackPublished);
             }
 
+            if (fragmentEgressStartedAtUtc.HasValue)
+            {
+                return CreateTiming(roomActivatedAtUtc.Value, fragmentEgressStartedAtUtc.Value, TimestampOffsetSources.FragmentEgressStarted);
+            }
+
             var participantJoined = participantEvents
                 .Where(x => x.EventType == SessionEventType.ParticipantJoined)
                 .OrderByDescending(x => x.OccurredAtUtc)
@@ -302,7 +380,20 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
             return participantJoined is not null
                 ? CreateTiming(roomActivatedAtUtc.Value, participantJoined.OccurredAtUtc, TimestampOffsetSources.ParticipantJoined)
+                : fragmentStorageAvailableAtUtc.HasValue
+                    ? CreateTiming(roomActivatedAtUtc.Value, fragmentStorageAvailableAtUtc.Value, TimestampOffsetSources.FragmentStorageAvailable)
                 : new TrackTiming(0, null, TimestampOffsetSources.LegacyUnknown);
+        }
+
+        private static string TruncateFailureMessage(string? message)
+        {
+            const int maxLength = 2000;
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return "STT transcription failed.";
+            }
+
+            return message.Length <= maxLength ? message : message[..maxLength];
         }
 
         private static TrackTiming CreateTiming(DateTime roomActivatedAtUtc, DateTime anchorUtc, string source)
@@ -336,10 +427,23 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
         private static class TimestampOffsetSources
         {
+            public const string FragmentTrackPublished = "fragment_track_published";
             public const string TrackPublished = "track_published";
+            public const string FragmentEgressStarted = "fragment_egress_started";
             public const string ParticipantJoined = "participant_joined";
+            public const string FragmentStorageAvailable = "fragment_storage_available";
             public const string LegacyUnknown = "legacy_unknown";
         }
+
+        private sealed record FragmentTranscriptionInput(
+            Guid FragmentId,
+            Guid ParticipantUserId,
+            Guid? ParticipantAudioTrackId,
+            string TrackSid,
+            string StorageObjectKey,
+            TrackTiming Timing);
+
+        private sealed record FailedFragmentTranscription(Guid FragmentId, string FailureMessage);
 
         private sealed record TrackTiming(
             long RoomRelativeStartOffsetMs,
@@ -355,7 +459,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
         private sealed record NormalizedTranscriptSegment(
             Guid ParticipantUserId,
-            Guid ParticipantAudioTrackId,
+            Guid? ParticipantAudioTrackId,
+            Guid ParticipantAudioFragmentId,
             long TrackRelativeStartMs,
             long TrackRelativeEndMs,
             long RoomRelativeStartMs,
@@ -373,7 +478,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         private sealed record PersistedTranscriptSegment(
             int Version,
             Guid ParticipantUserId,
-            Guid ParticipantAudioTrackId,
+            Guid? ParticipantAudioTrackId,
+            Guid ParticipantAudioFragmentId,
             long TrackRelativeStartMs,
             long TrackRelativeEndMs,
             long RoomRelativeStartMs,

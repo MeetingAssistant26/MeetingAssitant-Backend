@@ -114,11 +114,15 @@ namespace tests.Integration.LiveSession
         private readonly IReadOnlyDictionary<string, Exception> _failuresByObjectKey = failuresByObjectKey
             ?? new Dictionary<string, Exception>();
 
+        public ConcurrentBag<string> Calls { get; } = new();
+
         public Task<TrackTranscriptionResult> TranscribeTrackAsync(
             Guid participantUserId,
             string storageObjectKey,
             CancellationToken ct = default)
         {
+            Calls.Add(storageObjectKey);
+
             if (_failuresByObjectKey.TryGetValue(storageObjectKey, out var failure))
             {
                 throw failure;
@@ -245,6 +249,35 @@ namespace tests.Integration.LiveSession
                 MeetingRole = role
             });
             DbContext.SaveChanges();
+        }
+
+        public Guid AddAvailableAudioFragment(
+            Guid meetingId,
+            Guid organizationId,
+            Guid participantUserId,
+            string storageObjectKey,
+            string trackSid,
+            DateTime? trackPublishedAtUtc = null,
+            Guid? participantAudioTrackId = null)
+        {
+            var fragment = new ParticipantAudioFragment
+            {
+                MeetingId = meetingId,
+                OrganizationId = organizationId,
+                ParticipantUserId = participantUserId,
+                ParticipantAudioTrackId = participantAudioTrackId,
+                TrackSid = trackSid,
+                StorageObjectKey = storageObjectKey,
+                StorageLocation = $"s3://recordings/{storageObjectKey}",
+                Status = ParticipantAudioFragmentStatus.Available,
+                TrackPublishedAtUtc = trackPublishedAtUtc,
+                StorageAvailableAtUtc = trackPublishedAtUtc?.AddSeconds(5),
+                SizeBytes = 1024
+            };
+
+            DbContext.ParticipantAudioFragments.Add(fragment);
+            DbContext.SaveChanges();
+            return fragment.Id;
         }
 
         public async ValueTask DisposeAsync()

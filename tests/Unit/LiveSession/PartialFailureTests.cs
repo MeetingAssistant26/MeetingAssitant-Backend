@@ -30,32 +30,9 @@ namespace tests.Unit.LiveSession
             var key2 = $"tracks/{meetingId}/{user2}.ogg";
             var key3 = $"tracks/{meetingId}/{user3}.ogg";
 
-            db.DbContext.ParticipantAudioTracks.AddRange(
-                new ParticipantAudioTrack
-                {
-                    MeetingId = meetingId,
-                    OrganizationId = orgId,
-                    ParticipantUserId = user1,
-                    Status = ParticipantAudioTrackStatus.Available,
-                    StorageObjectKey = key1
-                },
-                new ParticipantAudioTrack
-                {
-                    MeetingId = meetingId,
-                    OrganizationId = orgId,
-                    ParticipantUserId = user2,
-                    Status = ParticipantAudioTrackStatus.Available,
-                    StorageObjectKey = key2
-                },
-                new ParticipantAudioTrack
-                {
-                    MeetingId = meetingId,
-                    OrganizationId = orgId,
-                    ParticipantUserId = user3,
-                    Status = ParticipantAudioTrackStatus.Available,
-                    StorageObjectKey = key3
-                });
-            await db.DbContext.SaveChangesAsync();
+            db.AddAvailableAudioFragment(meetingId, orgId, user1, key1, "TR_USER_1");
+            var failedFragmentId = db.AddAvailableAudioFragment(meetingId, orgId, user2, key2, "TR_USER_2");
+            db.AddAvailableAudioFragment(meetingId, orgId, user3, key3, "TR_USER_3");
 
             var stt = new StubSttService(
                 new Dictionary<string, TrackTranscriptionResult>
@@ -85,6 +62,18 @@ namespace tests.Unit.LiveSession
             transcript.FullText.Should().Contain("alice update");
             transcript.FullText.Should().Contain("carol decision");
             transcript.FullText.Should().NotContain("Bob");
+
+            var failedFragment = db.DbContext.ParticipantAudioFragments.Single(x => x.Id == failedFragmentId);
+            failedFragment.Status.Should().Be(ParticipantAudioFragmentStatus.Failed);
+            failedFragment.FailureCode.Should().Be("stt_failed");
+            failedFragment.FailureMessage.Should().Contain("simulated stt failure");
+            failedFragment.FailedAtUtc.Should().NotBeNull();
+
+            db.DbContext.ParticipantAudioFragments
+                .Where(x => x.Id != failedFragmentId)
+                .Select(x => x.Status)
+                .Should()
+                .OnlyContain(x => x == ParticipantAudioFragmentStatus.Available);
 
             publisher.Notifications
                 .OfType<MeetingTranscriptReadyEvent>()
