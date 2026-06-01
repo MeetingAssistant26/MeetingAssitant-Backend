@@ -591,6 +591,9 @@ namespace MeetingAssistant.Migrations
                     b.Property<Guid>("OrganizationId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("RoomActivatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime>("ScheduledEndUtc")
                         .HasColumnType("timestamp with time zone");
 

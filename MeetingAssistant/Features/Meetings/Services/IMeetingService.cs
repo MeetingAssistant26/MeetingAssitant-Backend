@@ -31,5 +31,15 @@ namespace MeetingAssistant.Features.Meetings.Services
         Task<Result<MeetingResponse>> GetMeetingAsync(
             Guid meetingId,
             CancellationToken cancellationToken = default);
+
+        Task<Result<MeetingResponse>> StartMeetingAsync(
+            Guid meetingId,
+            Guid userId,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<MeetingResponse>> EndMeetingAsync(
+            Guid meetingId,
+            Guid userId,
+            CancellationToken cancellationToken = default);
     }
 }

@@ -4,6 +4,7 @@ using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
+using MeetingAssistant.Features.Meetings.Models.Events;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
 using Microsoft.EntityFrameworkCore;
@@ -92,9 +93,12 @@ namespace MeetingAssistant.Features.LiveSession.Services
             switch (eventType)
             {
                 case SessionEventType.RoomStarted:
+                    meeting.RoomActivatedAtUtc ??= occurredAtUtc;
+
                     if (meeting.Status == Features.Meetings.Models.MeetingStatus.Scheduled)
                     {
                         meeting.Status = Features.Meetings.Models.MeetingStatus.InProgress;
+                        meeting.RaiseDomainEvent(new MeetingStartedEvent(meeting.OrganizationId, meeting.Id));
                     }
                     break;
 
@@ -102,6 +106,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     if (meeting.Status != Features.Meetings.Models.MeetingStatus.Completed)
                     {
                         meeting.Status = Features.Meetings.Models.MeetingStatus.Completed;
+                        meeting.RaiseDomainEvent(new MeetingEndedEvent(meeting.OrganizationId, meeting.Id));
                     }
                     break;
 

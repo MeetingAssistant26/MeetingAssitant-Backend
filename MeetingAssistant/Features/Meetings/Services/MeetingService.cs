@@ -214,6 +214,83 @@ namespace MeetingAssistant.Features.Meetings.Services
             return Result.Success(await LoadMeetingResponseAsync(meetingId, cancellationToken));
         }
 
+        public async Task<Result<MeetingResponse>> StartMeetingAsync(
+            Guid meetingId,
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var orgId = GetOrganizationId();
+
+            var meeting = await _dbContext.Meetings
+                .Include(m => m.Participants)
+                .FirstOrDefaultAsync(m => m.Id == meetingId, cancellationToken);
+
+            if (meeting == null)
+                return Result.Failure<MeetingResponse>(MeetingErrors.NotFound);
+
+            var authorizationResult = await EnsureLifecycleControlAllowedAsync(meeting, orgId, userId, cancellationToken);
+            if (authorizationResult.IsFailure)
+                return Result.Failure<MeetingResponse>(authorizationResult.Error);
+
+            if (meeting.Status == MeetingStatus.Scheduled)
+            {
+                meeting.Status = MeetingStatus.InProgress;
+                meeting.RoomActivatedAtUtc ??= DateTime.UtcNow;
+                meeting.RaiseDomainEvent(new MeetingStartedEvent(orgId, meeting.Id));
+
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return Result.Success(await LoadMeetingResponseAsync(meeting.Id, cancellationToken));
+            }
+
+            if (meeting.Status == MeetingStatus.InProgress)
+            {
+                if (meeting.RoomActivatedAtUtc == null)
+                {
+                    meeting.RoomActivatedAtUtc = DateTime.UtcNow;
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                }
+
+                return Result.Success(await LoadMeetingResponseAsync(meeting.Id, cancellationToken));
+            }
+
+            return Result.Failure<MeetingResponse>(MeetingErrors.InvalidLifecycleTransition);
+        }
+
+        public async Task<Result<MeetingResponse>> EndMeetingAsync(
+            Guid meetingId,
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var orgId = GetOrganizationId();
+
+            var meeting = await _dbContext.Meetings
+                .Include(m => m.Participants)
+                .FirstOrDefaultAsync(m => m.Id == meetingId, cancellationToken);
+
+            if (meeting == null)
+                return Result.Failure<MeetingResponse>(MeetingErrors.NotFound);
+
+            var authorizationResult = await EnsureLifecycleControlAllowedAsync(meeting, orgId, userId, cancellationToken);
+            if (authorizationResult.IsFailure)
+                return Result.Failure<MeetingResponse>(authorizationResult.Error);
+
+            if (meeting.Status == MeetingStatus.InProgress)
+            {
+                meeting.Status = MeetingStatus.Completed;
+                meeting.RaiseDomainEvent(new MeetingEndedEvent(orgId, meeting.Id));
+
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return Result.Success(await LoadMeetingResponseAsync(meeting.Id, cancellationToken));
+            }
+
+            if (meeting.Status == MeetingStatus.Completed)
+            {
+                return Result.Success(await LoadMeetingResponseAsync(meeting.Id, cancellationToken));
+            }
+
+            return Result.Failure<MeetingResponse>(MeetingErrors.InvalidLifecycleTransition);
+        }
+
         private async Task<Result> ValidateAndAssociateTagsAsync(
             Meeting meeting,
             List<Guid> tagIds,
@@ -249,6 +326,31 @@ namespace MeetingAssistant.Features.Meetings.Services
                 .FirstAsync(m => m.Id == meetingId, cancellationToken);
 
             return meeting.Adapt<MeetingResponse>();
+        }
+
+        private async Task<Result> EnsureLifecycleControlAllowedAsync(
+            Meeting meeting,
+            Guid orgId,
+            Guid userId,
+            CancellationToken cancellationToken)
+        {
+            var membershipRole = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .Where(m => m.UserId == userId && m.OrganizationId == orgId && m.IsEnabled)
+                .Select(m => (OrganizationRole?)m.OrgRole)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (membershipRole is null)
+                return Result.Failure(MeetingErrors.NotOrgMember);
+
+            if (membershipRole == OrganizationRole.Admin)
+                return Result.Success();
+
+            var callerParticipant = meeting.Participants.FirstOrDefault(p => p.UserId == userId);
+            if (callerParticipant is { MeetingRole: MeetingRole.Host or MeetingRole.CoHost })
+                return Result.Success();
+
+            return Result.Failure(MeetingErrors.LifecycleControlForbidden);
         }
 
         private Guid GetOrganizationId()

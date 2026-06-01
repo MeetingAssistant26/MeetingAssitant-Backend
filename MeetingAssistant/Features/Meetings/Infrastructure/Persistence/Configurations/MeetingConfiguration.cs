@@ -17,6 +17,8 @@ namespace MeetingAssistant.Features.Meetings.Infrastructure.Persistence.Configur
             builder.Property(m => m.Description)
                 .HasMaxLength(2000);
 
+            builder.Property(m => m.RoomActivatedAtUtc);
+
             builder.HasIndex(m => m.OrganizationId)
                 .HasDatabaseName("IX_Meetings_OrganizationId");
 

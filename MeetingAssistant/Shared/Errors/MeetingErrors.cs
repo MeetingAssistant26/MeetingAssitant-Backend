@@ -15,6 +15,16 @@ namespace MeetingAssistant.Shared.Errors
             "The operation is invalid for the current meeting status.",
             StatusCodes.Status400BadRequest);
 
+        public static readonly Error InvalidLifecycleTransition = new(
+            "Meetings.InvalidLifecycleTransition",
+            "The requested meeting lifecycle transition is invalid for the current meeting status.",
+            StatusCodes.Status409Conflict);
+
+        public static readonly Error LifecycleControlForbidden = new(
+            "Meetings.LifecycleControlForbidden",
+            "Caller must be a meeting host, co-host, or organization admin to control the meeting lifecycle.",
+            StatusCodes.Status403Forbidden);
+
         public static readonly Error NotParticipant = new(
             "Meetings.NotParticipant",
             "You are not a participant of this meeting.",
