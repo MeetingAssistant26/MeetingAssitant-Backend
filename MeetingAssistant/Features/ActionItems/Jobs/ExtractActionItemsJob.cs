@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Hangfire;
 using MeetingAssistant.Features.ActionItems.Models;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
@@ -10,6 +11,7 @@ using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Models;
+using MeetingAssistant.Features.Rag.Jobs;
 using MeetingAssistant.Infrastructure.AI;
 using MeetingAssistant.Infrastructure.AI.DTOs;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
@@ -33,6 +35,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
         private readonly IPromptProvider _promptProvider;
         private readonly ILogger<ExtractActionItemsJob> _logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker;
+        private readonly IBackgroundJobClient? _backgroundJobClient;
         private readonly string _model;
 
         public ExtractActionItemsJob(
@@ -41,13 +44,15 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             IPromptProvider promptProvider,
             IOptions<OpenAiCompatibleOptions> options,
             ILogger<ExtractActionItemsJob> logger,
-            IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
+            IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
+            IBackgroundJobClient? backgroundJobClient = null)
         {
             _dbContext = dbContext;
             _llmService = llmService;
             _promptProvider = promptProvider;
             _logger = logger;
             _postMeetingProcessingTracker = postMeetingProcessingTracker;
+            _backgroundJobClient = backgroundJobClient;
             _model = options.Value.Llm.Model;
         }
 
@@ -85,6 +90,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: existingIds),
                         cancellationToken: cancellationToken);
                 }
+
+                await EnqueueKnowledgeReindexAsync(
+                    organizationId,
+                    meetingId,
+                    "Knowledge indexing job enqueued after action extraction found existing items.",
+                    cancellationToken);
 
                 _logger.LogInformation("Action items already exist for meeting {MeetingId}. Skipping.", meetingId);
                 return;
@@ -150,6 +161,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                             cancellationToken: cancellationToken);
                     }
 
+                    await EnqueueKnowledgeReindexAsync(
+                        organizationId,
+                        meetingId,
+                        "Knowledge indexing job enqueued after action extraction completed with no items.",
+                        cancellationToken);
+
                     _logger.LogInformation("No action items extracted for meeting {MeetingId}", meetingId);
                     return;
                 }
@@ -200,6 +217,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                             cancellationToken: cancellationToken);
                     }
 
+                    await EnqueueKnowledgeReindexAsync(
+                        organizationId,
+                        meetingId,
+                        "Knowledge indexing job enqueued after action extraction completed with no usable items.",
+                        cancellationToken);
+
                     _logger.LogInformation("No usable action items extracted for meeting {MeetingId}", meetingId);
                     return;
                 }
@@ -220,6 +243,13 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: createdIds),
                         cancellationToken: cancellationToken);
                 }
+
+                await EnqueueKnowledgeReindexAsync(
+                    organizationId,
+                    meetingId,
+                    "Knowledge indexing job enqueued after action extraction.",
+                    cancellationToken);
+
                 _logger.LogInformation("Extracted {Count} action items for meeting {MeetingId}", createdCount, meetingId);
             }
             catch (Exception ex)
@@ -238,6 +268,29 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                 _logger.LogError(ex, "Failed to extract action items for meeting {MeetingId}", meetingId);
                 throw;
             }
+        }
+
+        private async Task EnqueueKnowledgeReindexAsync(
+            Guid organizationId,
+            Guid meetingId,
+            string message,
+            CancellationToken cancellationToken)
+        {
+            var knowledgeJobId = _backgroundJobClient?.Enqueue<ReindexMeetingKnowledgeJob>(
+                job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
+
+            if (knowledgeJobId is null || _postMeetingProcessingTracker is null)
+            {
+                return;
+            }
+
+            await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                organizationId,
+                meetingId,
+                PostMeetingProcessingStepType.KnowledgeIndexing,
+                message: message,
+                relatedHangfireJobId: knowledgeJobId,
+                cancellationToken: cancellationToken);
         }
 
         private ExtractedTasksDto ParseResponse(LLMResponse response, Guid meetingId)

@@ -6,6 +6,7 @@ namespace MeetingAssistant.Features.Rag.Models
         Summary = 1,
         ActionItem = 2,
         Decision = 3,
-        Note = 4
+        Note = 4,
+        ConfirmedMeetingTags = 5
     }
 }

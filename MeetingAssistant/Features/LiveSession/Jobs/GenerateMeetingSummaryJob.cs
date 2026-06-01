@@ -1,7 +1,9 @@
+using Hangfire;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using MeetingAssistant.Features.Rag.Jobs;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.EntityFrameworkCore;
 
@@ -11,12 +13,14 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         ApplicationDbContext dbContext,
         ISummarizerService summarizerService,
         ILogger<GenerateMeetingSummaryJob> logger,
-        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
+        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
+        IBackgroundJobClient? backgroundJobClient = null)
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ISummarizerService _summarizerService = summarizerService;
         private readonly ILogger<GenerateMeetingSummaryJob> _logger = logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
+        private readonly IBackgroundJobClient? _backgroundJobClient = backgroundJobClient;
 
         public async Task RunAsync(
             Guid meetingId,
@@ -108,6 +112,20 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     PostMeetingProcessingStepType.SummaryGeneration,
                     message: "Summary generated.",
                     artifact: new PostMeetingArtifactLink("meeting_summary", summary.Id),
+                    cancellationToken: cancellationToken);
+            }
+
+            var knowledgeJobId = _backgroundJobClient?.Enqueue<ReindexMeetingKnowledgeJob>(
+                job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
+
+            if (knowledgeJobId is not null && _postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.KnowledgeIndexing,
+                    message: "Knowledge indexing job enqueued after summary generation.",
+                    relatedHangfireJobId: knowledgeJobId,
                     cancellationToken: cancellationToken);
             }
         }
