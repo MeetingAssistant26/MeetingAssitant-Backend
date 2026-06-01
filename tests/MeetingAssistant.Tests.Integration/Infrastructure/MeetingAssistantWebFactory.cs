@@ -19,6 +19,17 @@ namespace MeetingAssistant.Tests.Integration.Infrastructure;
 public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant.Api.Program>
 {
     private SqliteConnection? _connection;
+    private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
+
+    public MeetingAssistantWebFactory()
+        : this(new Dictionary<string, string?>())
+    {
+    }
+
+    protected MeetingAssistantWebFactory(IReadOnlyDictionary<string, string?> configurationOverrides)
+    {
+        _configurationOverrides = configurationOverrides;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -26,7 +37,7 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
 
         builder.ConfigureAppConfiguration((context, config) =>
         {
-            config.AddInMemoryCollection(new Dictionary<string, string?>
+            var settings = new Dictionary<string, string?>
             {
                 ["Jwt:SigningKey"] = TestJwtTokenHelper.TestSigningKey,
                 ["Jwt:Issuer"] = TestJwtTokenHelper.TestIssuer,
@@ -45,7 +56,12 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
                 ["LiveKit:ApiSecret"] = "0123456789abcdef0123456789abcdef",
                 ["LiveKit:ServerUrl"] = "wss://test.livekit.local",
                 ["LiveKit:WebhookSecret"] = "0123456789abcdef0123456789abcdef"
-            });
+            };
+
+            foreach (var setting in _configurationOverrides)
+                settings[setting.Key] = setting.Value;
+
+            config.AddInMemoryCollection(settings);
         });
 
         builder.ConfigureTestServices(services =>

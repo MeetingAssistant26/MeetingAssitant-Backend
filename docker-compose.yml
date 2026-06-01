@@ -82,7 +82,6 @@ services:
       LiveKit__WebhookSecret: ${LiveKit__WebhookSecret:-}
       LiveKit__EgressHost: ${LiveKit__EgressHost:-http://livekit:7880}
       LiveKit__AgentName: ${LiveKit__AgentName:-meeting-assistant}
-      LiveKit__AiAssistantDefaultEnabled: ${LiveKit__AiAssistantDefaultEnabled:-true}
 
     ports:
       - "8080:8080"

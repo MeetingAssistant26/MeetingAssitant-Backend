@@ -26,6 +26,7 @@ namespace MeetingAssistant.Features.Identity.Services
         IEmailSender emailSender,
         IConfiguration configuration,
         IOptions<JwtSettings> jwtSettingsOptions,
+        IOptions<AuthSettings> authSettingsOptions,
         ApplicationDbContext Context,
         MediatR.IPublisher publisher,
         IBackgroundJobClient backgroundJobClient
@@ -40,6 +41,7 @@ namespace MeetingAssistant.Features.Identity.Services
         private readonly ApplicationDbContext _context = Context;
         private readonly MediatR.IPublisher _publisher = publisher;
         private readonly int _refreshTokenExpiryDays = jwtSettingsOptions.Value.RefreshTokenExpiryDays;
+        private readonly bool _autoConfirmNewAccounts = authSettingsOptions.Value.AutoConfirmNewAccounts;
         private readonly IBackgroundJobClient _backgroundJobClient = backgroundJobClient;
 
         public async Task<Result<AuthTokenResponse>> LoginAsync(LoginRequest request, CancellationToken cancellationToken)
@@ -216,14 +218,22 @@ namespace MeetingAssistant.Features.Identity.Services
             user.UserName = request.Email;
             user.DisplayName = request.DisplayName;
             user.CreatedAtUtc = DateTime.UtcNow;
+            user.EmailConfirmed = _autoConfirmNewAccounts;
 
             var result = await _userManager.CreateAsync(user, request.Password);
             if (result.Succeeded)
             {
-                var code = await _userManager.GenerateEmailConfirmationTokenAsync(user);
-                code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
-                _logger.LogInformation("confirmation code: {code}, UserId: {UserId}", code, user.Id);
-                SendConfirmationEmail(user, code);
+                if (_autoConfirmNewAccounts)
+                {
+                    _logger.LogInformation("User email auto-confirmed during registration. UserId: {UserId}", user.Id);
+                }
+                else
+                {
+                    var code = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+                    code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
+                    _logger.LogInformation("confirmation code: {code}, UserId: {UserId}", code, user.Id);
+                    SendConfirmationEmail(user, code);
+                }
 
 
                 _logger.LogInformation("User registered successfully. UserId: {UserId}, Email: {Email}", user.Id, user.Email);

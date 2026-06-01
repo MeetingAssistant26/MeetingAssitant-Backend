@@ -48,6 +48,9 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                     "AgentJwt settings must include SigningKey (>= 32 chars), Issuer, Audience, and TokenExpiryMinutes > 0.")
                 .ValidateOnStart();
 
+            services.AddOptions<AuthSettings>()
+                .BindConfiguration("Auth");
+
             var jwtSettings = configuration.GetSection("Jwt").Get<JwtSettings>();
             if (jwtSettings is null || string.IsNullOrWhiteSpace(jwtSettings.SigningKey))
             {
