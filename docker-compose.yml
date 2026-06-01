@@ -191,7 +191,9 @@ services:
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=${LiveKit__ApiKey:-devkey}
       - LIVEKIT_API_SECRET=${LiveKit__ApiSecret:-devsecret_devsecret_devsecret_32chars}
-      - STT_URL=${STT_URL:-http://stt:8000/v1}
+      - STT_URL=${OpenAiCompatible__Stt__BaseUrl:-http://stt:8000/v1}
+      - STT_API_KEY=${OpenAiCompatible__Stt__ApiKey:-local-ai-key}
+      - STT_MODEL=${OpenAiCompatible__Stt__Model:-whisper-1}
       - LLM_URL=${LLM_URL:-http://llm:8000/v1}
       - TTS_URL=${TTS_URL:-http://tts:8000/v1}
       # AI debug tracing: backend metadata must also enable tracing; AI_TRACE_ENABLED=false is a local agent kill switch.
