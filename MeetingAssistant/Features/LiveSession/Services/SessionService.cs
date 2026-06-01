@@ -85,20 +85,32 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             if (meetingData.AiAssistantEnabled && _aiAssistantDispatchService is not null)
             {
-                var dispatchResult = await _aiAssistantDispatchService.EnsureDispatchedForMeetingAsync(
-                    meetingData.OrganizationId,
-                    meetingData.Id,
-                    callerUserId,
-                    cancellationToken);
-
-                if (dispatchResult.IsFailure)
+                try
                 {
-                    _logger?.LogWarning(
-                        "Failed to auto-dispatch LiveKit AI assistant while issuing join token. OrganizationId={OrganizationId} MeetingId={MeetingId} UserId={UserId} ErrorCode={ErrorCode}",
+                    var dispatchResult = await _aiAssistantDispatchService.EnsureDispatchedForMeetingAsync(
                         meetingData.OrganizationId,
                         meetingData.Id,
                         callerUserId,
-                        dispatchResult.Error.Code);
+                        cancellationToken);
+
+                    if (dispatchResult.IsFailure)
+                    {
+                        _logger?.LogWarning(
+                            "Failed to auto-dispatch LiveKit AI assistant while issuing join token. OrganizationId={OrganizationId} MeetingId={MeetingId} UserId={UserId} ErrorCode={ErrorCode}",
+                            meetingData.OrganizationId,
+                            meetingData.Id,
+                            callerUserId,
+                            dispatchResult.Error.Code);
+                    }
+                }
+                catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    _logger?.LogWarning(
+                        ex,
+                        "Failed to auto-dispatch LiveKit AI assistant while issuing join token. OrganizationId={OrganizationId} MeetingId={MeetingId} UserId={UserId}",
+                        meetingData.OrganizationId,
+                        meetingData.Id,
+                        callerUserId);
                 }
             }
 

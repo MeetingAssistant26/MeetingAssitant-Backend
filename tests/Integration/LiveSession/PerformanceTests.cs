@@ -139,7 +139,10 @@ namespace tests.Integration.LiveSession
                 Title = "Performance Meeting",
                 ScheduledStartUtc = DateTime.UtcNow.AddMinutes(5),
                 ScheduledEndUtc = DateTime.UtcNow.AddMinutes(65),
-                Status = MeetingStatus.Scheduled
+                Status = MeetingStatus.Scheduled,
+                // These tests measure join-token issuance latency only. AI assistant dispatch
+                // is covered with a fake LiveKit handler in AiAssistantDispatchServiceTests.
+                AiAssistantEnabled = false
             };
 
             db.Meetings.Add(meeting);
@@ -167,7 +170,9 @@ namespace tests.Integration.LiveSession
                 Title = "Perf 50",
                 ScheduledStartUtc = DateTime.UtcNow.AddMinutes(5),
                 ScheduledEndUtc = DateTime.UtcNow.AddMinutes(65),
-                Status = MeetingStatus.Scheduled
+                Status = MeetingStatus.Scheduled,
+                // Keep this performance scenario independent from external LiveKit dispatch.
+                AiAssistantEnabled = false
             };
 
             db.Meetings.Add(meeting);

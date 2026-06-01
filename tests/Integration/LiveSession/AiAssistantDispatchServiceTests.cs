@@ -63,6 +63,22 @@ namespace tests.Integration.LiveSession
         }
 
         [Fact]
+        public async Task EnableAsync_LiveKitTransportFailure_ShouldReturnLiveKitCallFailed()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var sut = CreateService(fixture, new ThrowingLiveKitDispatchHandler());
+
+            var result = await sut.EnableAsync(orgId, meetingId, userId);
+
+            result.IsFailure.Should().BeTrue();
+            result.Error.Code.Should().Be("LiveSession.LiveKitCallFailed");
+        }
+
+        [Fact]
         public async Task DisableAsync_ExistingDispatch_ShouldDeleteNamedDispatch()
         {
             await using var fixture = await LiveSessionTestDb.CreateAsync();
@@ -150,7 +166,7 @@ namespace tests.Integration.LiveSession
 
         private static AiAssistantDispatchService CreateService(
             LiveSessionTestDb fixture,
-            FakeLiveKitDispatchHandler handler,
+            HttpMessageHandler handler,
             bool aiDebugEnabled = false,
             bool persistPayloads = true)
         {
@@ -298,6 +314,16 @@ namespace tests.Integration.LiveSession
                   ]
                 }
                 """;
+        }
+
+        private sealed class ThrowingLiveKitDispatchHandler : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                throw new HttpRequestException("LiveKit host unavailable");
+            }
         }
     }
 }

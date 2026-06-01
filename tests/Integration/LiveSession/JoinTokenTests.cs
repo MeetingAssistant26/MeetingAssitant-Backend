@@ -64,6 +64,24 @@ namespace tests.Integration.LiveSession
         }
 
         [Fact]
+        public async Task DefaultEnabledMeeting_WhenAutoDispatchThrows_ShouldStillIssueJoinToken()
+        {
+            await using var fixture = await TestFixture.CreateAsync();
+
+            var callerId = fixture.SeedMeetingWithParticipantRole(MeetingRole.Participant, MeetingStatus.Scheduled);
+            var dispatcher = new StubAiAssistantDispatchService(
+                Result.Success(new AiAssistantStatusResponse(true, false, null)),
+                new HttpRequestException("LiveKit is unavailable"));
+            var sut = new SessionService(fixture.DbContext, new StubTokenIssuer(), dispatcher);
+
+            var result = await sut.IssueJoinTokenAsync(fixture.MeetingId, callerId, "Caller Name");
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.RoomName.Should().Be($"mtg:{fixture.MeetingId}");
+            dispatcher.Calls.Should().ContainSingle();
+        }
+
+        [Fact]
         public async Task DisabledMeeting_Request_ShouldNotAutoDispatchAssistant()
         {
             await using var fixture = await TestFixture.CreateAsync();
@@ -141,7 +159,8 @@ namespace tests.Integration.LiveSession
         }
 
         private sealed class StubAiAssistantDispatchService(
-            Result<AiAssistantStatusResponse> ensureResult) : IAiAssistantDispatchService
+            Result<AiAssistantStatusResponse> ensureResult,
+            Exception? ensureException = null) : IAiAssistantDispatchService
         {
             public List<EnsureCall> Calls { get; } = [];
 
@@ -170,6 +189,11 @@ namespace tests.Integration.LiveSession
                 CancellationToken cancellationToken = default)
             {
                 Calls.Add(new EnsureCall(organizationId, meetingId, requestedByUserId));
+                if (ensureException is not null)
+                {
+                    throw ensureException;
+                }
+
                 return Task.FromResult(ensureResult);
             }
         }

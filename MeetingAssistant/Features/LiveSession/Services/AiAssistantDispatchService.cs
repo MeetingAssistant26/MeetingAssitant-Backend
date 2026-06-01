@@ -394,19 +394,38 @@ namespace MeetingAssistant.Features.LiveSession.Services
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", CreateRoomCreateToken());
             request.Content = JsonContent.Create(new CreateRoomRequest(roomName), options: JsonOptions);
 
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            if (response.IsSuccessStatusCode)
+            try
             {
-                return Result.Success();
-            }
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    return Result.Success();
+                }
 
-            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            _logger.LogWarning(
-                "LiveKit room creation API call failed. RoomName={RoomName} StatusCode={StatusCode} Body={Body}",
-                roomName,
-                (int)response.StatusCode,
-                errorBody);
-            return Result.Failure(LiveSessionErrors.LiveKitCallFailed);
+                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogWarning(
+                    "LiveKit room creation API call failed. RoomName={RoomName} StatusCode={StatusCode} Body={Body}",
+                    roomName,
+                    (int)response.StatusCode,
+                    errorBody);
+                return Result.Failure(LiveSessionErrors.LiveKitCallFailed);
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "LiveKit room creation API call failed. RoomName={RoomName}",
+                    roomName);
+                return Result.Failure(LiveSessionErrors.LiveKitCallFailed);
+            }
+            catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "LiveKit room creation API call timed out. RoomName={RoomName}",
+                    roomName);
+                return Result.Failure(LiveSessionErrors.LiveKitCallFailed);
+            }
         }
 
         private async Task<Result<T>> SendDispatchRequestAsync<T>(
@@ -440,26 +459,45 @@ namespace MeetingAssistant.Features.LiveSession.Services
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", CreateRoomAdminToken(roomName));
             request.Content = JsonContent.Create(body, options: JsonOptions);
 
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            try
             {
-                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                _logger.LogWarning(
-                    "LiveKit agent dispatch API call failed. Method={Method} StatusCode={StatusCode} Body={Body}",
-                    method,
-                    (int)response.StatusCode,
-                    errorBody);
-                if (method == "ListDispatch" && IsLiveKitRoomUnavailable(errorBody))
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode)
                 {
-                    return Result.Failure<T>(LiveSessionErrors.LiveKitRoomUnavailable);
+                    var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                    _logger.LogWarning(
+                        "LiveKit agent dispatch API call failed. Method={Method} StatusCode={StatusCode} Body={Body}",
+                        method,
+                        (int)response.StatusCode,
+                        errorBody);
+                    if (method == "ListDispatch" && IsLiveKitRoomUnavailable(errorBody))
+                    {
+                        return Result.Failure<T>(LiveSessionErrors.LiveKitRoomUnavailable);
+                    }
+
+                    return Result.Failure<T>(LiveSessionErrors.LiveKitCallFailed);
                 }
 
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                return Result.Success(parse(document));
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "LiveKit agent dispatch API call failed. Method={Method}",
+                    method);
                 return Result.Failure<T>(LiveSessionErrors.LiveKitCallFailed);
             }
-
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            return Result.Success(parse(document));
+            catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "LiveKit agent dispatch API call timed out. Method={Method}",
+                    method);
+                return Result.Failure<T>(LiveSessionErrors.LiveKitCallFailed);
+            }
         }
 
         private string CreateRoomAdminToken(string roomName)
