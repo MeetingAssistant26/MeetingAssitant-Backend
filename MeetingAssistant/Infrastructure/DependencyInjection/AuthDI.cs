@@ -1,12 +1,16 @@
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.AgentApi.Services;
 using MeetingAssistant.Api.Infrastructure.Configuration;
+using MeetingAssistant.Api.Infrastructure.Services;
+using MeetingAssistant.Api.Shared;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Authorization;
 using System.Text;
+using System.Text.Json;
+using System.Net.Mime;
 
 namespace MeetingAssistant.Infrastructure.DependencyInjection
 {
@@ -93,6 +97,7 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                         IssuerSigningKeys = issuerSigningKeys,
                         ClockSkew = TimeSpan.Zero
                  };
+                 options.Events = CreateProblemDetailsJwtEvents();
 
             })
                 .AddJwtBearer(AgentAuthenticationDefaults.Scheme, options =>
@@ -109,6 +114,7 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(agentJwtSettings.SigningKey!)),
                         ClockSkew = TimeSpan.Zero
                     };
+                    options.Events = CreateProblemDetailsJwtEvents();
                 });
 
             services.Configure<IdentityOptions>(options =>
@@ -153,6 +159,59 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
             });
 
             return services;
+        }
+
+        private static JwtBearerEvents CreateProblemDetailsJwtEvents() => new()
+        {
+            OnChallenge = async context =>
+            {
+                context.HandleResponse();
+
+                if (context.Response.HasStarted)
+                    return;
+
+                await WriteAuthProblemAsync(
+                    context.HttpContext,
+                    StatusCodes.Status401Unauthorized,
+                    "Unauthorized",
+                    "Authentication is required to access this resource.");
+            },
+            OnForbidden = async context =>
+            {
+                if (context.Response.HasStarted)
+                    return;
+
+                await WriteAuthProblemAsync(
+                    context.HttpContext,
+                    StatusCodes.Status403Forbidden,
+                    "Forbidden",
+                    "You do not have permission to access this resource.");
+            }
+        };
+
+        private static async Task WriteAuthProblemAsync(HttpContext httpContext, int statusCode, string type, string title)
+        {
+            var correlationIdProvider = httpContext.RequestServices.GetService<ICorrelationIdProvider>();
+            var response = new StandardErrorResponse
+            {
+                Type = type,
+                Title = title,
+                Status = statusCode,
+                CorrelationId = correlationIdProvider?.CorrelationId,
+                Errors = new Dictionary<string, string[]>
+                {
+                    [type] = new[] { title }
+                }
+            };
+
+            httpContext.Response.StatusCode = statusCode;
+            httpContext.Response.ContentType = MediaTypeNames.Application.Json;
+
+            await JsonSerializer.SerializeAsync(
+                httpContext.Response.Body,
+                response,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web),
+                httpContext.RequestAborted);
         }
     }
 }
