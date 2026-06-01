@@ -13,5 +13,14 @@ namespace MeetingAssistant.Features.LiveSession.Contracts.Responses
         long StartMs,
         long EndMs,
         string Text,
-        double? AvgLogProb);
+        double? AvgLogProb,
+        int? Version = null,
+        Guid? ParticipantAudioTrackId = null,
+        long? TrackRelativeStartMs = null,
+        long? TrackRelativeEndMs = null,
+        long? RoomRelativeStartMs = null,
+        long? RoomRelativeEndMs = null,
+        DateTime? AbsoluteStartUtc = null,
+        DateTime? AbsoluteEndUtc = null,
+        string? TimestampOffsetSource = null);
 }

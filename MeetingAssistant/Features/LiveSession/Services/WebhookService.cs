@@ -10,6 +10,8 @@ using MeetingAssistant.Shared.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace MeetingAssistant.Features.LiveSession.Services
@@ -89,6 +91,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             _dbContext.SessionEvents.Add(sessionEvent);
 
             var ingestEnqueues = new List<(Guid TrackId, string S3LocationUrl, long? SizeBytes)>();
+            var egressStarts = new List<(Guid MeetingId, string RoomName, string TrackSid, string ParticipantIdentity)>();
 
             switch (eventType)
             {
@@ -120,21 +123,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     var egressIdentity = ExtractEgressParticipantIdentity(rawPayload);
                     var egressOk = webhookEvent.EgressInfo?.Status == EgressStatus.EgressComplete;
 
-                    var resolvedParticipantUserId = await ResolveParticipantUserIdAsync(
-                        meeting.Id,
-                        egressIdentity,
-                        cancellationToken);
-
-                    if (resolvedParticipantUserId is null)
-                    {
-                        _logger.LogWarning(
-                            "Skipping egress payload because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity} FileResultCount={FileResultCount}",
-                            meeting.Id,
-                            egressIdentity,
-                            fileResults.Count);
-                        break;
-                    }
-
                     foreach (var file in fileResults)
                     {
                         if (!string.IsNullOrWhiteSpace(file.Location)
@@ -143,7 +131,26 @@ namespace MeetingAssistant.Features.LiveSession.Services
                             _logger.LogWarning(
                                 "Skipping non-audio file in egress payload. MeetingId={MeetingId} ParticipantUserId={ParticipantUserId} FileLocation={FileLocation}",
                                 meeting.Id,
-                                resolvedParticipantUserId.Value,
+                                null,
+                                file.Location);
+                            continue;
+                        }
+
+                        var fileIdentity = ExtractParticipantIdentityFromEgressPath(file.Filename)
+                            ?? ExtractParticipantIdentityFromEgressPath(file.Location)
+                            ?? egressIdentity;
+
+                        var resolvedParticipantUserId = await ResolveParticipantUserIdAsync(
+                            meeting.Id,
+                            fileIdentity,
+                            cancellationToken);
+
+                        if (resolvedParticipantUserId is null)
+                        {
+                            _logger.LogWarning(
+                                "Skipping egress file because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity} FileLocation={FileLocation}",
+                                meeting.Id,
+                                fileIdentity,
                                 file.Location);
                             continue;
                         }
@@ -181,12 +188,29 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         var identity = webhookEvent.Participant?.Identity;
                         if (!string.IsNullOrWhiteSpace(trackSid) && !string.IsNullOrWhiteSpace(identity))
                         {
-                            _ = _egressService.StartTrackEgressAsync(
+                            var resolvedParticipantUserId = participantUserId;
+                            if (resolvedParticipantUserId is null)
+                            {
+                                _logger.LogWarning(
+                                    "Skipping track egress because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity} TrackSid={TrackSid}",
+                                    meeting.Id,
+                                    identity,
+                                    trackSid);
+                                break;
+                            }
+
+                            await UpsertParticipantAudioTrackAsync(
+                                meeting.Id,
+                                meeting.OrganizationId,
+                                resolvedParticipantUserId.Value,
+                                ParticipantAudioTrackStatus.Pending,
+                                cancellationToken);
+
+                            egressStarts.Add((
                                 meeting.Id,
                                 webhookEvent.Room?.Name ?? $"mtg:{meeting.Id}",
                                 trackSid,
-                                identity,
-                                cancellationToken);
+                                identity));
                         }
                     }
                     break;
@@ -209,6 +233,28 @@ namespace MeetingAssistant.Features.LiveSession.Services
             {
                 _backgroundJobClient.Enqueue<IngestParticipantAudioJob>(
                     job => job.RunAsync(trackId, s3LocationUrl, sizeBytes, CancellationToken.None));
+            }
+
+            foreach (var egressStart in egressStarts)
+            {
+                try
+                {
+                    await _egressService.StartTrackEgressAsync(
+                        egressStart.MeetingId,
+                        egressStart.RoomName,
+                        egressStart.TrackSid,
+                        egressStart.ParticipantIdentity,
+                        cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Failed to start track egress. MeetingId={MeetingId} TrackSid={TrackSid} ParticipantIdentity={ParticipantIdentity}",
+                        egressStart.MeetingId,
+                        egressStart.TrackSid,
+                        egressStart.ParticipantIdentity);
+                }
             }
 
             return Result.Success();
@@ -269,12 +315,40 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
         private static string ResolveExternalEventId(WebhookEvent webhookEvent, SessionEventType eventType, Guid meetingId)
         {
+            if (eventType == SessionEventType.TrackPublished
+                && !string.IsNullOrWhiteSpace(webhookEvent.Track?.Sid))
+            {
+                return $"track-published:{meetingId}:{webhookEvent.Track.Sid}";
+            }
+
+            if (eventType == SessionEventType.EgressEnded)
+            {
+                var fileSignature = string.Join(
+                    '|',
+                    (webhookEvent.EgressInfo?.FileResults ?? [])
+                    .Select(file => string.IsNullOrWhiteSpace(file.Filename) ? file.Location : file.Filename)
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Order(StringComparer.Ordinal));
+
+                if (!string.IsNullOrWhiteSpace(fileSignature))
+                {
+                    var signature = $"{meetingId}:{webhookEvent.EgressInfo?.Status}:{fileSignature}";
+                    return $"egress-ended:{meetingId}:{HashExternalEventSignature(signature)}";
+                }
+            }
+
             if (!string.IsNullOrWhiteSpace(webhookEvent.Id))
             {
                 return webhookEvent.Id;
             }
 
             return $"{eventType}:{meetingId}:{webhookEvent.CreatedAt}";
+        }
+
+        private static string HashExternalEventSignature(string signature)
+        {
+            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(signature));
+            return Convert.ToHexString(hash)[..16].ToLowerInvariant();
         }
 
         private static bool TryResolveMeetingId(WebhookEvent webhookEvent, out Guid meetingId)
@@ -335,20 +409,20 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     && fileResults.ValueKind == JsonValueKind.Array
                     && fileResults.GetArrayLength() > 0)
                 {
-                    var firstFile = fileResults[0];
-                    var path = firstFile.TryGetProperty("filename", out var filename)
-                        ? filename.GetString()
-                        : firstFile.TryGetProperty("location", out var location)
-                            ? new Uri(location.GetString()!).AbsolutePath
-                            : null;
-
-                    if (!string.IsNullOrWhiteSpace(path))
+                    foreach (var file in fileResults.EnumerateArray())
                     {
-                        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-                        // tracks/room/user:{guid}/file.ogg → identity is index 2
-                        if (segments.Length >= 3)
+                        if (file.TryGetProperty("filename", out var filename))
                         {
-                            var identity = segments[2];
+                            var identity = ExtractParticipantIdentityFromEgressPath(filename.GetString());
+                            if (!string.IsNullOrWhiteSpace(identity))
+                            {
+                                return identity;
+                            }
+                        }
+
+                        if (file.TryGetProperty("location", out var location))
+                        {
+                            var identity = ExtractParticipantIdentityFromEgressPath(location.GetString());
                             if (!string.IsNullOrWhiteSpace(identity))
                             {
                                 return identity;
@@ -363,6 +437,37 @@ namespace MeetingAssistant.Features.LiveSession.Services
             {
                 return null;
             }
+        }
+
+        private static string? ExtractParticipantIdentityFromEgressPath(string? pathOrUrl)
+        {
+            if (string.IsNullOrWhiteSpace(pathOrUrl))
+            {
+                return null;
+            }
+
+            string path;
+            if (Uri.TryCreate(pathOrUrl, UriKind.Absolute, out var uri))
+            {
+                path = uri.AbsolutePath;
+            }
+            else
+            {
+                path = pathOrUrl;
+            }
+
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+            var userSegment = segments.FirstOrDefault(segment =>
+                segment.StartsWith("user:", StringComparison.OrdinalIgnoreCase));
+
+            if (!string.IsNullOrWhiteSpace(userSegment))
+            {
+                return userSegment;
+            }
+
+            // Expected egress path format: tracks/{roomName}/{participantIdentity}/track-{trackId}.ogg.
+            return segments.Length >= 3 ? segments[2] : null;
         }
 
         private async Task<Guid?> ResolveParticipantUserIdAsync(

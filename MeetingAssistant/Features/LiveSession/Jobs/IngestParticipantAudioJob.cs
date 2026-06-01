@@ -140,9 +140,14 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 if (segments.Length < 2)
                     return null;
 
+                var tracksSegmentIndex = Array.FindIndex(
+                    segments,
+                    segment => segment.Equals("tracks", StringComparison.OrdinalIgnoreCase));
+                if (tracksSegmentIndex >= 0)
+                    return string.Join('/', segments.Skip(tracksSegmentIndex));
+
                 // Path-style: /bucket/key/parts → skip bucket segment
-                // Virtual-hosted: /key/parts → first segment is already the key start
-                // Heuristic: if the first segment looks like a bucket (no dots), skip it
+                // Fallback for legacy paths without the expected tracks/ prefix: skip bucket segment.
                 // In practice for MinIO with ForcePathStyle, it's always path-style.
                 var key = string.Join('/', segments.Skip(1));
                 return key;

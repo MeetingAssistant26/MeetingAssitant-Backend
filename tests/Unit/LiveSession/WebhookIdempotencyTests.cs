@@ -58,5 +58,78 @@ namespace tests.Unit.LiveSession
             db.DbContext.ParticipantAudioTracks.Count().Should().Be(1);
             jobs.CreatedJobs.Count.Should().Be(1);
         }
+
+        [Fact]
+        public async Task DuplicateEgressEnded_WithDifferentWebhookIdsForSameFile_ShouldEnqueueOnce()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser();
+            db.AddParticipant(meetingId, orgId, userId);
+
+            var jobs = new FakeBackgroundJobClient();
+            var sut = new WebhookService(
+                db.DbContext,
+                jobs,
+                Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
+                new FakeEgressService(),
+                NullLogger<WebhookService>.Instance);
+
+            const string sourceUrl = "https://example.com/bucket/tracks/mtg-room/user-speaker/track.ogg";
+            var rawPayload = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                egressInfo = new
+                {
+                    fileResults = new[]
+                    {
+                        new
+                        {
+                            filename = $"tracks/mtg-{meetingId}/user:{userId}/file.ogg",
+                            location = sourceUrl
+                        }
+                    }
+                }
+            });
+
+            await sut.ProcessAsync(
+                WebhookEventFactory.EgressEnded(meetingId, "evt-egress-a", Livekit.Server.Sdk.Dotnet.EgressStatus.EgressComplete, userId, sourceUrl),
+                rawPayload);
+            await sut.ProcessAsync(
+                WebhookEventFactory.EgressEnded(meetingId, "evt-egress-b", Livekit.Server.Sdk.Dotnet.EgressStatus.EgressComplete, userId, sourceUrl),
+                rawPayload);
+
+            db.DbContext.SessionEvents.Count().Should().Be(1);
+            db.DbContext.ParticipantAudioTracks.Count().Should().Be(1);
+            jobs.CreatedJobs.Count.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task DuplicateTrackPublished_WithDifferentWebhookIds_ShouldStartEgressOnce()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser();
+            db.AddParticipant(meetingId, orgId, userId);
+
+            var egress = new FakeEgressService();
+            var sut = new WebhookService(
+                db.DbContext,
+                new FakeBackgroundJobClient(),
+                Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
+                egress,
+                NullLogger<WebhookService>.Instance);
+
+            await sut.ProcessAsync(WebhookEventFactory.TrackPublished(meetingId, "evt-track-a", userId, "TR_DUPLICATE"), "{}");
+            await sut.ProcessAsync(WebhookEventFactory.TrackPublished(meetingId, "evt-track-b", userId, "TR_DUPLICATE"), "{}");
+
+            db.DbContext.SessionEvents
+                .Count(x => x.EventType == MeetingAssistant.Features.LiveSession.Models.SessionEventType.TrackPublished)
+                .Should()
+                .Be(1);
+            db.DbContext.ParticipantAudioTracks.Count().Should().Be(1);
+            egress.Starts.Should().ContainSingle(x => x.TrackId == "TR_DUPLICATE");
+        }
     }
 }

@@ -76,8 +76,13 @@ namespace tests.Integration.LiveSession
 
     internal sealed class FakeEgressService : IEgressService
     {
+        public List<(Guid MeetingId, string RoomName, string TrackId, string ParticipantIdentity)> Starts { get; } = new();
+
         public Task StartTrackEgressAsync(Guid meetingId, string roomName, string trackId, string participantIdentity, CancellationToken ct = default)
-            => Task.CompletedTask;
+        {
+            Starts.Add((meetingId, roomName, trackId, participantIdentity));
+            return Task.CompletedTask;
+        }
     }
 
     internal sealed class FakeStorageService : MeetingAssistant.Features.LiveSession.Services.IStorageService
@@ -315,6 +320,22 @@ namespace tests.Integration.LiveSession
                 CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 Room = new Room { Name = $"mtg:{meetingId}" },
                 Participant = new ParticipantInfo { Identity = $"user:{userId}" }
+            };
+
+        public static WebhookEvent TrackPublished(Guid meetingId, string eventId, Guid userId, string trackSid)
+            => new()
+            {
+                Event = "track_published",
+                Id = eventId,
+                CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                Room = new Room { Name = $"mtg:{meetingId}" },
+                Participant = new ParticipantInfo { Identity = $"user:{userId}" },
+                Track = new TrackInfo
+                {
+                    Sid = trackSid,
+                    Type = TrackType.Audio,
+                    Source = TrackSource.Microphone
+                }
             };
     }
 }
