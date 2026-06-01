@@ -59,6 +59,9 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
 
+      # Auth
+      Auth__AutoConfirmNewAccounts: ${Auth__AutoConfirmNewAccounts:-true}
+
       # Database
       ConnectionStrings__DefaultConnection: ${ConnectionStrings__DefaultConnection:-Host=postgres;Port=5432;Database=meetingassistant;Username=meetingassistant;Password=meetingassistant}
 
@@ -78,6 +81,8 @@ services:
       LiveKit__ServerUrl: ${LiveKit__ServerUrl:-}
       LiveKit__WebhookSecret: ${LiveKit__WebhookSecret:-}
       LiveKit__EgressHost: ${LiveKit__EgressHost:-http://livekit:7880}
+      LiveKit__AgentName: ${LiveKit__AgentName:-meeting-assistant}
+      LiveKit__AiAssistantDefaultEnabled: ${LiveKit__AiAssistantDefaultEnabled:-true}
 
     ports:
       - "8080:8080"

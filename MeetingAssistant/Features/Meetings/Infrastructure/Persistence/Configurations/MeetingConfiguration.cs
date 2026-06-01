@@ -19,6 +19,9 @@ namespace MeetingAssistant.Features.Meetings.Infrastructure.Persistence.Configur
 
             builder.Property(m => m.RoomActivatedAtUtc);
 
+            builder.Property(m => m.AiAssistantEnabled)
+                .HasDefaultValue(true);
+
             builder.HasOne(m => m.RecurringSeries)
                 .WithMany(s => s.Meetings)
                 .HasForeignKey(m => m.RecurringSeriesId)

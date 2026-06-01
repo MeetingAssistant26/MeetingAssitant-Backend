@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mapster;
 using MeetingAssistant.Api.Infrastructure.Services;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.Meetings.Contracts.Requests;
 using MeetingAssistant.Features.Meetings.Contracts.Responses;
 using MeetingAssistant.Features.Meetings.Models;
@@ -14,15 +15,18 @@ using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Shared.Errors;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace MeetingAssistant.Features.Meetings.Services
 {
     public class RecurrenceService(
         ApplicationDbContext dbContext,
-        ITenantProvider tenantProvider) : IRecurrenceService
+        ITenantProvider tenantProvider,
+        IOptions<LiveKitOptions> liveKitOptions) : IRecurrenceService
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ITenantProvider _tenantProvider = tenantProvider;
+        private readonly LiveKitOptions _liveKitOptions = liveKitOptions.Value;
 
         private Guid GetOrganizationId()
         {
@@ -111,6 +115,7 @@ namespace MeetingAssistant.Features.Meetings.Services
                     ScheduledStartUtc = startUtc,
                     ScheduledEndUtc = endUtc,
                     Status = MeetingStatus.Scheduled,
+                    AiAssistantEnabled = _liveKitOptions.AiAssistantDefaultEnabled,
                     RecurringSeriesId = series.Id,
                     RecurringOccurrenceIndex = occurrenceIndex++,
                     RecurrenceConfig = new RecurrenceConfig

@@ -9,6 +9,7 @@ namespace MeetingAssistant.Features.Meetings.Contracts.Responses
         DateTime ScheduledStartUtc,
         DateTime ScheduledEndUtc,
         MeetingStatus Status,
+        bool AiAssistantEnabled,
         List<ParticipantResponse> Participants,
         List<Guid> TagIds);
 }

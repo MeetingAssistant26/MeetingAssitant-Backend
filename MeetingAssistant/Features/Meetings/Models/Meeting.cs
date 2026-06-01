@@ -17,6 +17,8 @@ namespace MeetingAssistant.Features.Meetings.Models
 
         public MeetingStatus Status { get; set; } = MeetingStatus.Scheduled;
 
+        public bool AiAssistantEnabled { get; set; } = true;
+
         /// <summary>
         /// Canonical UTC timestamp for room/session activation. Set once by the first
         /// successful REST start or verified LiveKit room_started webhook and never moved

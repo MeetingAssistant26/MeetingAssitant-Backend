@@ -95,6 +95,7 @@ public class CreateMeetingTests : IntegrationTestBase
         result!.Title.Should().Be(request.Title);
         result.Description.Should().Be(request.Description);
         result.Status.Should().Be(MeetingStatus.Scheduled);
+        result.AiAssistantEnabled.Should().BeTrue();
         result.ScheduledStartUtc.Should().BeCloseTo(request.ScheduledStartUtc, TimeSpan.FromSeconds(1));
         result.ScheduledEndUtc.Should().BeCloseTo(request.ScheduledEndUtc, TimeSpan.FromSeconds(1));
         
@@ -104,6 +105,7 @@ public class CreateMeetingTests : IntegrationTestBase
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         var dbMeeting = await db.Meetings.IgnoreQueryFilters().FirstOrDefaultAsync(m => m.Id == result.Id);
         dbMeeting.Should().NotBeNull();
+        dbMeeting!.AiAssistantEnabled.Should().BeTrue();
         var dbParticipant = await db.MeetingParticipants.IgnoreQueryFilters().FirstOrDefaultAsync(p => p.MeetingId == result.Id && p.UserId == TestUserId);
         dbParticipant.Should().NotBeNull();
     }

@@ -128,6 +128,7 @@ public class CreateRecurringMeetingTests : IntegrationTestBase
         result.Count.Should().BeGreaterThan(0);
         result.Meetings.Should().HaveCount(result.Count);
         result.Meetings.Should().OnlyContain(m => m.Status == MeetingStatus.Scheduled);
+        result.Meetings.Should().OnlyContain(m => m.AiAssistantEnabled);
         result.Meetings.Should().OnlyContain(m => m.Title == request.Title);
         result.Meetings.Should().OnlyContain(m => m.Participants.Any(p => p.UserId == TestUserId && p.Role == MeetingRole.Host));
 
@@ -138,6 +139,7 @@ public class CreateRecurringMeetingTests : IntegrationTestBase
         var dbMeetings = await db.Meetings.IgnoreQueryFilters().Where(m => createdMeetingIds.Contains(m.Id)).ToListAsync();
         dbMeetings.Should().HaveCount(result.Count);
         dbMeetings.Should().OnlyContain(m => m.Status == MeetingStatus.Scheduled);
+        dbMeetings.Should().OnlyContain(m => m.AiAssistantEnabled);
         dbMeetings.Should().OnlyContain(m => m.RecurringSeriesId == result.SeriesId);
         dbMeetings.Select(m => m.RecurringOccurrenceIndex).Should().OnlyContain(i => i.HasValue);
 

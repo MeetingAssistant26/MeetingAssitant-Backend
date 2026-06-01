@@ -5,15 +5,20 @@ using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Shared.Errors;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace MeetingAssistant.Features.LiveSession.Services
 {
     public class SessionService(
         ApplicationDbContext dbContext,
-        ILiveKitTokenIssuer tokenIssuer) : ISessionService
+        ILiveKitTokenIssuer tokenIssuer,
+        IAiAssistantDispatchService? aiAssistantDispatchService = null,
+        ILogger<SessionService>? logger = null) : ISessionService
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ILiveKitTokenIssuer _tokenIssuer = tokenIssuer;
+        private readonly IAiAssistantDispatchService? _aiAssistantDispatchService = aiAssistantDispatchService;
+        private readonly ILogger<SessionService>? _logger = logger;
 
         public async Task<Result<JoinTokenResponse>> IssueJoinTokenAsync(
             Guid meetingId,
@@ -28,6 +33,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     m.Id,
                     m.Status,
                     m.OrganizationId,
+                    m.AiAssistantEnabled,
                     Participant = m.Participants
                         .Where(p => p.UserId == callerUserId)
                         .Select(p => new
@@ -75,6 +81,25 @@ namespace MeetingAssistant.Features.LiveSession.Services
             if (issueResult.IsFailure)
             {
                 return Result.Failure<JoinTokenResponse>(issueResult.Error);
+            }
+
+            if (meetingData.AiAssistantEnabled && _aiAssistantDispatchService is not null)
+            {
+                var dispatchResult = await _aiAssistantDispatchService.EnsureDispatchedForMeetingAsync(
+                    meetingData.OrganizationId,
+                    meetingData.Id,
+                    callerUserId,
+                    cancellationToken);
+
+                if (dispatchResult.IsFailure)
+                {
+                    _logger?.LogWarning(
+                        "Failed to auto-dispatch LiveKit AI assistant while issuing join token. OrganizationId={OrganizationId} MeetingId={MeetingId} UserId={UserId} ErrorCode={ErrorCode}",
+                        meetingData.OrganizationId,
+                        meetingData.Id,
+                        callerUserId,
+                        dispatchResult.Error.Code);
+                }
             }
 
             return Result.Success(new JoinTokenResponse(

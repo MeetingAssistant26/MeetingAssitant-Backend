@@ -16,6 +16,7 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<ISessionService, SessionService>();
             services.AddScoped<IMeetingArtifactService, MeetingArtifactService>();
             services.AddScoped<ILiveKitTokenIssuer, LiveKitTokenIssuer>();
+            services.AddScoped<IAiAssistantDispatchService, AiAssistantDispatchService>();
             services.AddScoped<ILiveKitWebhookValidator, LiveKitWebhookValidator>();
             services.AddScoped<IWebhookService, WebhookService>();
             services.AddScoped<IStorageService, StorageService>();
@@ -28,6 +29,7 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<GenerateMeetingSummaryJob>();
             services.AddHttpClient("openai-stt");
             services.AddHttpClient("openai-llm");
+            services.AddHttpClient("livekit-agent-dispatch");
 
             return services;
         }

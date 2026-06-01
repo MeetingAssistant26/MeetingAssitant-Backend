@@ -1,5 +1,6 @@
 using FluentAssertions;
 using MediatR;
+using MeetingAssistant.Features.LiveSession.Contracts.Responses;
 using MeetingAssistant.Api.Infrastructure.Services;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.LiveSession.Models;
@@ -42,6 +43,42 @@ namespace tests.Integration.LiveSession
             result.Value.Permissions.CanModerate.Should().Be(canModerate);
             result.Value.Permissions.CanPublishData.Should().Be(canPublishData);
             result.Value.RoomName.Should().Be($"mtg:{fixture.MeetingId}");
+        }
+
+        [Fact]
+        public async Task DefaultEnabledMeeting_Request_ShouldAutoDispatchAssistantWithoutBlockingJoinToken()
+        {
+            await using var fixture = await TestFixture.CreateAsync();
+
+            var callerId = fixture.SeedMeetingWithParticipantRole(MeetingRole.Participant, MeetingStatus.Scheduled);
+            var dispatcher = new StubAiAssistantDispatchService(Result.Success(new AiAssistantStatusResponse(true, false, "dispatch-1")));
+            var sut = new SessionService(fixture.DbContext, new StubTokenIssuer(), dispatcher);
+
+            var result = await sut.IssueJoinTokenAsync(fixture.MeetingId, callerId, "Caller Name");
+
+            result.IsSuccess.Should().BeTrue();
+            dispatcher.Calls.Should().ContainSingle();
+            dispatcher.Calls[0].OrganizationId.Should().Be(fixture.OrganizationId);
+            dispatcher.Calls[0].MeetingId.Should().Be(fixture.MeetingId);
+            dispatcher.Calls[0].RequestedByUserId.Should().Be(callerId);
+        }
+
+        [Fact]
+        public async Task DisabledMeeting_Request_ShouldNotAutoDispatchAssistant()
+        {
+            await using var fixture = await TestFixture.CreateAsync();
+
+            var callerId = fixture.SeedMeetingWithParticipantRole(
+                MeetingRole.Participant,
+                MeetingStatus.Scheduled,
+                aiAssistantEnabled: false);
+            var dispatcher = new StubAiAssistantDispatchService(Result.Success(new AiAssistantStatusResponse(true, false, "dispatch-1")));
+            var sut = new SessionService(fixture.DbContext, new StubTokenIssuer(), dispatcher);
+
+            var result = await sut.IssueJoinTokenAsync(fixture.MeetingId, callerId, "Caller Name");
+
+            result.IsSuccess.Should().BeTrue();
+            dispatcher.Calls.Should().BeEmpty();
         }
 
         [Fact]
@@ -103,6 +140,42 @@ namespace tests.Integration.LiveSession
             }
         }
 
+        private sealed class StubAiAssistantDispatchService(
+            Result<AiAssistantStatusResponse> ensureResult) : IAiAssistantDispatchService
+        {
+            public List<EnsureCall> Calls { get; } = [];
+
+            public Task<Result<AiAssistantStatusResponse>> GetStatusAsync(
+                Guid organizationId,
+                Guid meetingId,
+                Guid callerUserId,
+                CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+            public Task<Result<AiAssistantStatusResponse>> EnableAsync(
+                Guid organizationId,
+                Guid meetingId,
+                Guid callerUserId,
+                CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+            public Task<Result<AiAssistantStatusResponse>> DisableAsync(
+                Guid organizationId,
+                Guid meetingId,
+                Guid callerUserId,
+                CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+            public Task<Result<AiAssistantStatusResponse>> EnsureDispatchedForMeetingAsync(
+                Guid organizationId,
+                Guid meetingId,
+                Guid? requestedByUserId = null,
+                CancellationToken cancellationToken = default)
+            {
+                Calls.Add(new EnsureCall(organizationId, meetingId, requestedByUserId));
+                return Task.FromResult(ensureResult);
+            }
+        }
+
+        private sealed record EnsureCall(Guid OrganizationId, Guid MeetingId, Guid? RequestedByUserId);
+
         private sealed class StaticTenantProvider(Guid organizationId) : ITenantProvider
         {
             public Guid? CurrentOrganizationId => organizationId;
@@ -157,7 +230,10 @@ namespace tests.Integration.LiveSession
                 return new TestFixture(organizationId, meetingId, dbContext, connection);
             }
 
-            public Guid SeedMeetingWithParticipantRole(MeetingRole role, MeetingStatus status)
+            public Guid SeedMeetingWithParticipantRole(
+                MeetingRole role,
+                MeetingStatus status,
+                bool aiAssistantEnabled = true)
             {
                 var org = new Organization
                 {
@@ -181,7 +257,8 @@ namespace tests.Integration.LiveSession
                     Title = "Live Session Test",
                     ScheduledStartUtc = DateTime.UtcNow.AddMinutes(10),
                     ScheduledEndUtc = DateTime.UtcNow.AddMinutes(40),
-                    Status = status
+                    Status = status,
+                    AiAssistantEnabled = aiAssistantEnabled
                 };
 
                 var participant = new MeetingParticipant

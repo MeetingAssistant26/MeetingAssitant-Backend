@@ -25,6 +25,11 @@ namespace MeetingAssistant.Shared.Errors
             "Unable to issue a LiveKit credential at this time.",
             StatusCodes.Status502BadGateway);
 
+        public static readonly Error LiveKitRoomUnavailable = new(
+            "LiveSession.LiveKitRoomUnavailable",
+            "The LiveKit room is not available yet.",
+            StatusCodes.Status409Conflict);
+
         public static readonly Error MeetingNotFound = new(
             "LiveSession.MeetingNotFound",
             "The specified meeting was not found.",

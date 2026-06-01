@@ -1,5 +1,6 @@
 using Mapster;
 using MeetingAssistant.Api.Infrastructure.Services;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.Meetings.Contracts.Requests;
 using MeetingAssistant.Features.Meetings.Contracts.Responses;
 using MeetingAssistant.Features.Meetings.Models;
@@ -9,14 +10,17 @@ using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Shared.Errors;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 namespace MeetingAssistant.Features.Meetings.Services
 {
     public class MeetingService(
         ApplicationDbContext dbContext,
-        ITenantProvider tenantProvider) : IMeetingService
+        ITenantProvider tenantProvider,
+        IOptions<LiveKitOptions> liveKitOptions) : IMeetingService
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ITenantProvider _tenantProvider = tenantProvider;
+        private readonly LiveKitOptions _liveKitOptions = liveKitOptions.Value;
 
         public async Task<Result<MeetingResponse>> CreateMeetingAsync(
             CreateMeetingRequest request,
@@ -42,7 +46,8 @@ namespace MeetingAssistant.Features.Meetings.Services
                 Description = request.Description,
                 ScheduledStartUtc = request.ScheduledStartUtc,
                 ScheduledEndUtc = request.ScheduledEndUtc,
-                Status = MeetingStatus.Scheduled
+                Status = MeetingStatus.Scheduled,
+                AiAssistantEnabled = _liveKitOptions.AiAssistantDefaultEnabled
             };
 
             // Auto-add creator as Host
