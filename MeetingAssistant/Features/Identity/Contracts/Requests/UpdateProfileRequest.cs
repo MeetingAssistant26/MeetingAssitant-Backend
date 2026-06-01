@@ -1,4 +1,4 @@
 namespace MeetingAssistant.Features.Identity.Models.Requests
 {
-    public record UpdateProfileRequest(string DisplayName);
+    public record UpdateProfileRequest(string DisplayName, string? ProfileAvatarUrl = null);
 }

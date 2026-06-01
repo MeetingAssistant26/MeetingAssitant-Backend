@@ -47,6 +47,12 @@ namespace MeetingAssistant.Features.Identity.Services
             }
 
             user.DisplayName = request.DisplayName;
+            if (request.ProfileAvatarUrl is not null)
+            {
+                user.ProfileAvatarUrl = string.IsNullOrWhiteSpace(request.ProfileAvatarUrl)
+                    ? null
+                    : request.ProfileAvatarUrl.Trim();
+            }
             user.UpdatedAtUtc = DateTime.UtcNow;
 
             await _userManager.UpdateAsync(user);
