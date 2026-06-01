@@ -10,8 +10,8 @@ namespace MeetingAssistant.Shared.Errors
         public static readonly Error LastAdmin = new("Organization.LastAdmin", "Cannot remove or demote the last admin of the organization.", StatusCodes.Status403Forbidden);
         public static readonly Error MemberNotFound = new("Organization.MemberNotFound", "Member not found in this organization.", StatusCodes.Status404NotFound);
         public static readonly Error InvitationNotFound = new("Invitation.NotFound", "Invitation not found or has expired.", StatusCodes.Status404NotFound);
-        public static readonly Error InvitationExpired = new("Invitation.Expired", "This invitation has expired.", StatusCodes.Status403Forbidden);
-        public static readonly Error InvitationRevoked = new("Invitation.Revoked", "This invitation has been revoked.", StatusCodes.Status403Forbidden);
+        public static readonly Error InvitationExpired = new("Invitation.Expired", "This invitation has expired.", StatusCodes.Status410Gone);
+        public static readonly Error InvitationRevoked = new("Invitation.Revoked", "This invitation has been revoked.", StatusCodes.Status410Gone);
         public static readonly Error EmailNotWhitelisted = new("Invitation.EmailNotWhitelisted", "Your email is not on the invitation whitelist.", StatusCodes.Status403Forbidden);
         public static readonly Error Unauthorized = new("Organization.Unauthorized", "You do not have permission to perform this action.", StatusCodes.Status403Forbidden);
     }

@@ -77,6 +77,31 @@ namespace MeetingAssistant.Features.Organizations.Services
             return Result.Success();
         }
 
+        public async Task<Result<InvitationPreviewResponse>> PreviewInvitationAsync(
+            string token,
+            CancellationToken cancellationToken = default)
+        {
+            var invitation = await _dbContext.Invitations
+                .IgnoreQueryFilters()
+                .Include(i => i.Organization)
+                .FirstOrDefaultAsync(i => i.Token == token, cancellationToken);
+
+            if (invitation is null)
+                return Result.Failure<InvitationPreviewResponse>(OrganizationErrors.InvitationNotFound);
+
+            if (invitation.RevokedAtUtc.HasValue)
+                return Result.Failure<InvitationPreviewResponse>(OrganizationErrors.InvitationRevoked);
+
+            if (invitation.ExpiresAtUtc < DateTime.UtcNow)
+                return Result.Failure<InvitationPreviewResponse>(OrganizationErrors.InvitationExpired);
+
+            return Result.Success(new InvitationPreviewResponse(
+                invitation.Organization.Name,
+                invitation.Organization.Slug,
+                invitation.ExpiresAtUtc
+            ));
+        }
+
         public async Task<Result<MemberResponse>> JoinInvitationAsync(
             string token,
             Guid userId,

@@ -18,6 +18,10 @@ namespace MeetingAssistant.Features.Organizations.Services
             Guid invitationId,
             CancellationToken cancellationToken = default);
 
+        Task<Result<InvitationPreviewResponse>> PreviewInvitationAsync(
+            string token,
+            CancellationToken cancellationToken = default);
+
         Task<Result<MemberResponse>> JoinInvitationAsync(
             string token,
             Guid userId,

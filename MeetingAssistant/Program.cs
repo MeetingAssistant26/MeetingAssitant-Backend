@@ -101,10 +101,10 @@ namespace MeetingAssistant.Api
             app.UseMiddleware<CorrelationIdMiddleware>();
             app.UseMiddleware<ExceptionHandlingMiddleware>();
 
+            app.UseCors();
             app.UseAuthentication();
             app.UseRateLimiter();
             app.UseAuthorization();
-            app.UseCors();
 
             app.MapControllers();
             app.MapHub<NotificationHub>("/hubs/notifications").RequireAuthorization();
@@ -132,7 +132,6 @@ namespace MeetingAssistant.Api
         }
     }
 }
-
 
 
 
