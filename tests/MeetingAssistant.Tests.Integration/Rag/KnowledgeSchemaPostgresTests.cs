@@ -1,6 +1,9 @@
 using FluentAssertions;
 using MediatR;
 using MeetingAssistant.Api.Infrastructure.Services;
+using MeetingAssistant.Features.Meetings.Models;
+using MeetingAssistant.Features.Organizations.Models;
+using MeetingAssistant.Features.Rag.Models;
 using MeetingAssistant.Features.Rag.Services;
 using MeetingAssistant.Infrastructure.AI;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
@@ -59,6 +62,111 @@ public sealed class KnowledgeSchemaPostgresTests
                 );
             """);
         indexCount.Should().Be(4);
+    }
+
+    [Fact]
+    public async Task Ef_can_persist_vector_literal_to_pgvector_column()
+    {
+        var connectionString = GetConnectionStringOrSkip();
+        if (connectionString is null)
+        {
+            return;
+        }
+
+        await using var db = CreateDbContext(connectionString);
+        await db.Database.MigrateAsync();
+
+        var orgId = Guid.NewGuid();
+        var meetingId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var artifactId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        try
+        {
+            db.Organizations.Add(new Organization
+            {
+                Id = orgId,
+                Name = "Vector Persist Org",
+                Slug = $"vector-persist-{orgId:N}",
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            });
+            db.Meetings.Add(new Meeting
+            {
+                Id = meetingId,
+                OrganizationId = orgId,
+                Title = "Vector Persist Meeting",
+                ScheduledStartUtc = now,
+                ScheduledEndUtc = now.AddHours(1),
+                Status = MeetingStatus.Completed,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                AiAssistantEnabled = true
+            });
+            db.KnowledgeDocuments.Add(new KnowledgeDocument
+            {
+                Id = documentId,
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                ArtifactType = KnowledgeArtifactType.Summary,
+                ArtifactId = artifactId,
+                ArtifactVersion = 1,
+                Title = "Vector Persist Summary",
+                ContentHash = $"doc-{documentId:N}",
+                IndexGenerationId = Guid.NewGuid(),
+                Visibility = KnowledgeVisibility.Published,
+                IsCurrent = true,
+                EmbeddingProvider = "deterministic-test",
+                EmbeddingModel = EmbeddingModel,
+                EmbeddingDimension = 3,
+                MetadataJson = "{}",
+                GeneratedAtUtc = now,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now,
+                Chunks =
+                [
+                    new KnowledgeChunk
+                    {
+                        Id = Guid.NewGuid(),
+                        OrganizationId = orgId,
+                        MeetingId = meetingId,
+                        ArtifactType = KnowledgeArtifactType.Summary,
+                        ArtifactId = artifactId,
+                        ArtifactVersion = 1,
+                        ChunkIndex = 0,
+                        Text = "Vector literal persisted through EF.",
+                        CharacterCount = "Vector literal persisted through EF.".Length,
+                        ContentHash = $"chunk-{Guid.NewGuid():N}",
+                        EmbeddingProvider = "deterministic-test",
+                        EmbeddingModel = EmbeddingModel,
+                        EmbeddingDimension = 3,
+                        IndexGenerationId = Guid.NewGuid(),
+                        Visibility = KnowledgeVisibility.Published,
+                        IsCurrent = true,
+                        MetadataJson = "{}",
+                        GeneratedAtUtc = now,
+                        CreatedAtUtc = now,
+                        UpdatedAtUtc = now,
+                        EmbeddingVectorText = "[0.1,0.2,0.3]"
+                    }
+                ]
+            });
+
+            await db.SaveChangesAsync();
+
+            var persisted = await ScalarAsync<string>(db, """
+                SELECT "Embedding"::text
+                FROM "KnowledgeChunks"
+                WHERE "DocumentId" = @documentId;
+                """, ("documentId", documentId));
+            persisted.Should().Be("[0.1,0.2,0.3]");
+        }
+        finally
+        {
+            await transaction.RollbackAsync();
+        }
     }
 
     [Fact]
@@ -509,7 +617,7 @@ public sealed class KnowledgeSchemaPostgresTests
             new NoopPublisher());
     }
 
-    private static async Task<T> ScalarAsync<T>(ApplicationDbContext db, string sql)
+    private static async Task<T> ScalarAsync<T>(ApplicationDbContext db, string sql, params (string Name, object Value)[] parameters)
     {
         var connection = db.Database.GetDbConnection();
         if (connection.State == ConnectionState.Closed)
@@ -519,9 +627,17 @@ public sealed class KnowledgeSchemaPostgresTests
 
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
-        var value = await command.ExecuteScalarAsync();
-        value.Should().NotBeNull();
-        return (T)Convert.ChangeType(value, typeof(T));
+        foreach (var (name, parameterValue) in parameters)
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = parameterValue;
+            command.Parameters.Add(parameter);
+        }
+
+        var scalarValue = await command.ExecuteScalarAsync();
+        scalarValue.Should().NotBeNull();
+        return (T)Convert.ChangeType(scalarValue, typeof(T));
     }
 
     private static async Task ExecuteAsync(ApplicationDbContext db, string sql, params (string Name, object Value)[] parameters)
