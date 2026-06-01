@@ -334,21 +334,27 @@ namespace MeetingAssistant.Features.LiveSession.Services
             Guid? requestedByUserId,
             CancellationToken cancellationToken)
         {
+            var lifetime = TimeSpan.FromMinutes(Math.Max(_agentJwtSettings.TokenExpiryMinutes, 1));
+            var tokenResult = await _agentAuthService.MintTokenAsync(
+                organizationId,
+                meetingId,
+                lifetime,
+                cancellationToken);
+
+            if (tokenResult.IsFailure)
+            {
+                return Result.Failure<string>(tokenResult.Error);
+            }
+
+            var agentApi = new
+            {
+                enabled = true,
+                agentToken = tokenResult.Value
+            };
+
             object? aiDebug = null;
             if (_aiDebugOptions.Enabled)
             {
-                var lifetime = TimeSpan.FromMinutes(Math.Max(_agentJwtSettings.TokenExpiryMinutes, 1));
-                var tokenResult = await _agentAuthService.MintTokenAsync(
-                    organizationId,
-                    meetingId,
-                    lifetime,
-                    cancellationToken);
-
-                if (tokenResult.IsFailure)
-                {
-                    return Result.Failure<string>(tokenResult.Error);
-                }
-
                 aiDebug = new
                 {
                     enabled = true,
@@ -362,13 +368,15 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 {
                     organizationId,
                     meetingId,
-                    requestedByUserId
+                    requestedByUserId,
+                    agentApi
                 }, JsonOptions)
                 : JsonSerializer.Serialize(new
                 {
                     organizationId,
                     meetingId,
                     requestedByUserId,
+                    agentApi,
                     aiDebug
                 }, JsonOptions);
 

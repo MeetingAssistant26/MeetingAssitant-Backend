@@ -1,8 +1,12 @@
 using Mapster;
+using System.Text;
+using MeetingAssistant.Features.AgentApi.Models.Requests;
 using MeetingAssistant.Features.AgentApi.Models.Responses;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Contracts.Responses;
 using MeetingAssistant.Features.Organizations.Models;
+using MeetingAssistant.Features.Rag.Models;
+using MeetingAssistant.Features.Rag.Services;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
 using MeetingAssistant.Shared.Errors;
@@ -10,9 +14,15 @@ using Microsoft.EntityFrameworkCore;
 
 namespace MeetingAssistant.Features.AgentApi.Services
 {
-    public class AgentContextService(ApplicationDbContext dbContext) : IAgentContextService
+    public class AgentContextService(
+        ApplicationDbContext dbContext,
+        IKnowledgeRetrievalService knowledgeRetrievalService) : IAgentContextService
     {
+        private const int DefaultTopK = 5;
+        private const int MaxTopK = 10;
+        private const int RetrievalOverflowTopK = 20;
         private readonly ApplicationDbContext _dbContext = dbContext;
+        private readonly IKnowledgeRetrievalService _knowledgeRetrievalService = knowledgeRetrievalService;
 
         public async Task<Result<AgentOrganizationResponse>> GetOrganizationAsync(
             Guid organizationId,
@@ -179,6 +189,43 @@ namespace MeetingAssistant.Features.AgentApi.Services
             return Result.Success<IReadOnlyList<MeetingTagResponse>>(tags.Adapt<List<MeetingTagResponse>>());
         }
 
+        public async Task<Result<AgentMeetingContextQueryResponse>> QueryMeetingContextAsync(
+            AgentMeetingContextQueryRequest request,
+            Guid organizationId,
+            Guid meetingId,
+            CancellationToken cancellationToken = default)
+        {
+            var meetingExists = await _dbContext.Meetings
+                .AsNoTracking()
+                .AnyAsync(m => m.Id == meetingId && m.OrganizationId == organizationId, cancellationToken);
+
+            if (!meetingExists)
+            {
+                return Result.Failure<AgentMeetingContextQueryResponse>(MeetingErrors.NotFound);
+            }
+
+            var topK = NormalizeTopK(request.TopK);
+            var sourceTypes = NormalizeSourceTypes(request.SourceTypes);
+            var retrievalTopK = sourceTypes.Count > 0 ? RetrievalOverflowTopK : topK;
+
+            var results = await _knowledgeRetrievalService.RetrieveAsync(
+                new KnowledgeRetrievalRequest(
+                    organizationId,
+                    BuildQueryText(request.Question, request.Transcript),
+                    retrievalTopK,
+                    meetingId,
+                    NormalizePreferredTagIds(request.PreferredTagIds)),
+                cancellationToken);
+
+            var snippets = results
+                .Where(result => sourceTypes.Count == 0 || sourceTypes.Contains(result.SourceType))
+                .Take(topK)
+                .Select(MapSnippet)
+                .ToList();
+
+            return Result.Success(new AgentMeetingContextQueryResponse(meetingId, topK, snippets));
+        }
+
         private async Task<List<AgentMemberResponse>> BuildMemberResponsesAsync(
             Guid organizationId,
             IReadOnlyCollection<MeetingParticipant> participants,
@@ -203,6 +250,70 @@ namespace MeetingAssistant.Features.AgentApi.Services
                     };
                 })
                 .ToList();
+        }
+
+        private static int NormalizeTopK(int? topK) => Math.Clamp(topK ?? DefaultTopK, 1, MaxTopK);
+
+        private static IReadOnlyCollection<Guid>? NormalizePreferredTagIds(IReadOnlyCollection<Guid>? preferredTagIds)
+        {
+            var normalized = preferredTagIds?
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .ToArray() ?? [];
+
+            return normalized.Length == 0 ? null : normalized;
+        }
+
+        private static HashSet<KnowledgeArtifactType> NormalizeSourceTypes(IReadOnlyCollection<string>? sourceTypes)
+        {
+            if (sourceTypes is null || sourceTypes.Count == 0)
+            {
+                return [];
+            }
+
+            return sourceTypes
+                .Where(type => Enum.TryParse<KnowledgeArtifactType>(type, ignoreCase: true, out _))
+                .Select(type => Enum.Parse<KnowledgeArtifactType>(type, ignoreCase: true))
+                .ToHashSet();
+        }
+
+        private static string BuildQueryText(string question, string? transcript)
+        {
+            if (string.IsNullOrWhiteSpace(transcript))
+            {
+                return question.Trim();
+            }
+
+            var builder = new StringBuilder();
+            builder.AppendLine("Question:");
+            builder.AppendLine(question.Trim());
+            builder.AppendLine();
+            builder.AppendLine("Current transcript/context:");
+            builder.Append(transcript.Trim());
+            return builder.ToString();
+        }
+
+        private static AgentMeetingContextSnippetResponse MapSnippet(KnowledgeRetrievalResult result)
+        {
+            return new AgentMeetingContextSnippetResponse(
+                result.ChunkId,
+                result.DocumentId,
+                new AgentMeetingContextSourceResponse(
+                    result.SourceMeetingId,
+                    result.SourceMeetingTitle,
+                    result.SourceMeetingScheduledStartUtc,
+                    result.SourceType.ToString()),
+                result.DocumentTitle,
+                result.ChunkText,
+                result.Tags
+                    .Select(tag => new AgentMeetingContextTagResponse(tag.Id, tag.Name, tag.Color))
+                    .ToList(),
+                new AgentMeetingContextScoreResponse(
+                    result.VectorDistance,
+                    result.SharedTagCount,
+                    result.TagBoost,
+                    result.RankingScore,
+                    result.IsTagPreferredResult));
         }
     }
 }

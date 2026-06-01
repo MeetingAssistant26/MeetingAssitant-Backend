@@ -142,6 +142,29 @@ namespace tests.Integration.LiveSession
         }
 
         [Fact]
+        public async Task EnableAsync_ShouldIncludeAgentApiMetadataWithAgentTokenForRag()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler();
+            var sut = CreateService(fixture, handler);
+
+            var result = await sut.EnableAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            using var requestBody = JsonDocument.Parse(handler.RequestBodies.Last());
+            var metadataJson = requestBody.RootElement.GetProperty("metadata").GetString();
+            using var metadata = JsonDocument.Parse(metadataJson!);
+            var agentApi = metadata.RootElement.GetProperty("agentApi");
+            agentApi.GetProperty("enabled").GetBoolean().Should().BeTrue();
+            agentApi.GetProperty("agentToken").GetString().Should().Be("debug-agent-token");
+            metadata.RootElement.TryGetProperty("aiDebug", out _).Should().BeFalse();
+        }
+
+        [Fact]
         public async Task EnableAsync_WhenAiDebugEnabled_ShouldIncludeDebugMetadataWithAgentToken()
         {
             await using var fixture = await LiveSessionTestDb.CreateAsync();
@@ -158,6 +181,9 @@ namespace tests.Integration.LiveSession
             using var requestBody = JsonDocument.Parse(handler.RequestBodies.Last());
             var metadataJson = requestBody.RootElement.GetProperty("metadata").GetString();
             using var metadata = JsonDocument.Parse(metadataJson!);
+            var agentApi = metadata.RootElement.GetProperty("agentApi");
+            agentApi.GetProperty("enabled").GetBoolean().Should().BeTrue();
+            agentApi.GetProperty("agentToken").GetString().Should().Be("debug-agent-token");
             var aiDebug = metadata.RootElement.GetProperty("aiDebug");
             aiDebug.GetProperty("enabled").GetBoolean().Should().BeTrue();
             aiDebug.GetProperty("persistPayloads").GetBoolean().Should().BeFalse();

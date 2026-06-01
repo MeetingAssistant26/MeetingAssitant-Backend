@@ -1,4 +1,5 @@
 using MeetingAssistant.Features.AgentApi.Models.Responses;
+using MeetingAssistant.Features.AgentApi.Models.Requests;
 using MeetingAssistant.Features.Organizations.Contracts.Responses;
 using MeetingAssistant.Shared.Abstractions;
 
@@ -33,6 +34,12 @@ namespace MeetingAssistant.Features.AgentApi.Services
 
         Task<Result<IReadOnlyList<MeetingTagResponse>>> ListMeetingTagsAsync(
             Guid organizationId,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<AgentMeetingContextQueryResponse>> QueryMeetingContextAsync(
+            AgentMeetingContextQueryRequest request,
+            Guid organizationId,
+            Guid meetingId,
             CancellationToken cancellationToken = default);
     }
 }

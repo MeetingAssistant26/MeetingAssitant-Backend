@@ -196,6 +196,13 @@ services:
       - TTS_URL=${TTS_URL:-http://tts:8000/v1}
       # AI debug tracing: backend metadata must also enable tracing; AI_TRACE_ENABLED=false is a local agent kill switch.
       - BACKEND_AGENT_API_URL=${BACKEND_AGENT_API_URL:-http://api:8080}
+      # Backend-owned RAG context retrieval. Auth/config failures fail closed; transient failures continue without RAG.
+      - AGENT_RAG_ENABLED=${AGENT_RAG_ENABLED:-true}
+      - AGENT_RAG_TOP_K=${AGENT_RAG_TOP_K:-5}
+      - AGENT_RAG_TIMEOUT_MS=${AGENT_RAG_TIMEOUT_MS:-2500}
+      - AGENT_RAG_MAX_SNIPPETS=${AGENT_RAG_MAX_SNIPPETS:-5}
+      - AGENT_RAG_MAX_SNIPPET_CHARS=${AGENT_RAG_MAX_SNIPPET_CHARS:-900}
+      - AGENT_RAG_MAX_TOTAL_CONTEXT_CHARS=${AGENT_RAG_MAX_TOTAL_CONTEXT_CHARS:-3000}
       - AI_TRACE_ENABLED=${AI_TRACE_ENABLED:-true}
       - DEPENDENCY_READY_MAX_ATTEMPTS=${DEPENDENCY_READY_MAX_ATTEMPTS:-60}
       - DEPENDENCY_READY_INTERVAL_MS=${DEPENDENCY_READY_INTERVAL_MS:-5000}
