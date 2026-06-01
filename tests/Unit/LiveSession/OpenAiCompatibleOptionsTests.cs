@@ -1,6 +1,9 @@
+using System.Net;
 using FluentAssertions;
 using MeetingAssistant.Features.LiveSession;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
+using MeetingAssistant.Infrastructure.AI;
+using MeetingAssistant.Infrastructure.AI.DTOs;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -47,6 +50,32 @@ public class OpenAiCompatibleOptionsTests
             .WithMessage("*OpenAiCompatible:Stt and OpenAiCompatible:Llm*");
     }
 
+    [Fact]
+    public async Task OpenAiLLMService_PostsToOpenAiCompatibleLlmEndpoint()
+    {
+        var handler = new CapturingHandler();
+        var service = new OpenAiLLMService(
+            new HttpClient(handler),
+            Options.Create(new OpenAiCompatibleOptions
+            {
+                Llm = new OpenAiCompatibleOptions.ProviderConfig
+                {
+                    BaseUrl = "http://llm.test/v1/",
+                    ApiKey = "test-key",
+                    Model = "local"
+                }
+            }));
+
+        await service.CompleteAsync(new LLMRequest
+        {
+            Model = "local",
+            Messages = [new ChatMessage { Role = "user", Content = "Extract tasks." }]
+        }, CancellationToken.None);
+
+        handler.RequestUri.Should().Be("http://llm.test/v1/chat/completions");
+        handler.Authorization.Should().Be("Bearer test-key");
+    }
+
     private static ServiceProvider BuildProvider(IReadOnlyDictionary<string, string?> settings)
     {
         var configuration = new ConfigurationBuilder()
@@ -57,5 +86,25 @@ public class OpenAiCompatibleOptionsTests
         services.AddLiveSessionFeature(configuration);
 
         return services.BuildServiceProvider(validateScopes: true);
+    }
+
+    private sealed class CapturingHandler : HttpMessageHandler
+    {
+        public string? RequestUri { get; private set; }
+        public string? Authorization { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            RequestUri = request.RequestUri?.ToString();
+            Authorization = request.Headers.Authorization?.ToString();
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"{}\"}}]}")
+            });
+        }
     }
 }

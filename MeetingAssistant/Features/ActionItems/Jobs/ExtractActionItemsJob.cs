@@ -1,8 +1,10 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using MeetingAssistant.Features.ActionItems.Models;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.Meetings.Models;
@@ -10,13 +12,12 @@ using MeetingAssistant.Infrastructure.AI;
 using MeetingAssistant.Infrastructure.AI.DTOs;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace MeetingAssistant.Features.ActionItems.Jobs
 {
     public class ExtractActionItemsJob
     {
-        private const string NeedsAssigneeReviewReason = "NeedsAssignee";
         private const int MaxTitleLength = 200;
         private const int MaxDescriptionLength = 2000;
 
@@ -35,14 +36,14 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             ApplicationDbContext dbContext,
             ILLMService llmService,
             IPromptProvider promptProvider,
-            IConfiguration configuration,
+            IOptions<OpenAiCompatibleOptions> options,
             ILogger<ExtractActionItemsJob> logger)
         {
             _dbContext = dbContext;
             _llmService = llmService;
             _promptProvider = promptProvider;
             _logger = logger;
-            _model = configuration["AI:Model"] ?? "gpt-4o-mini";
+            _model = options.Value.Llm.Model;
         }
 
         [Hangfire.AutomaticRetry(Attempts = 3)]
@@ -95,7 +96,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                 var response = await _llmService.CompleteAsync(llmRequest, cancellationToken);
                 var result = ParseResponse(response, meetingId);
 
-                if (result == null || result.Tasks.Count == 0)
+                if (result.Tasks.Count == 0)
                 {
                     _logger.LogInformation("No action items extracted for meeting {MeetingId}", meetingId);
                     return;
@@ -112,6 +113,9 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
                     var assignee = ResolveAssignee(item.Assignee, participantCandidates);
                     var dueDateUtc = ParseDueDateUtc(item.DueDate, out var invalidDueDate);
+                    var reviewReason = ActionItemReviewReasons.From(
+                        assignee.RequiresReview ? ActionItemReviewReasons.NeedsAssignee : string.Empty,
+                        invalidDueDate ? ActionItemReviewReasons.InvalidDueDate : string.Empty);
 
                     var actionItem = new ActionItem
                     {
@@ -123,7 +127,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         AssignedToUserId = assignee.UserId,
                         DueDateUtc = dueDateUtc,
                         Status = ActionItemStatus.PendingReview,
-                        SyncMissingAssigneeReason = assignee.RequiresReview ? NeedsAssigneeReviewReason : null,
+                        SyncMissingAssigneeReason = reviewReason,
                         ExtractedAtUtc = DateTime.UtcNow
                     };
 
@@ -147,23 +151,31 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             }
         }
 
-        private ExtractedTasksDto? ParseResponse(LLMResponse response, Guid meetingId)
+        private ExtractedTasksDto ParseResponse(LLMResponse response, Guid meetingId)
         {
             var content = response.Choices?.FirstOrDefault()?.Message?.Content;
             if (string.IsNullOrWhiteSpace(content))
             {
                 _logger.LogWarning("LLM returned no action item content for meeting {MeetingId}", meetingId);
-                return null;
+                throw new InvalidOperationException("LLM returned no action item content.");
             }
 
             try
             {
-                return JsonSerializer.Deserialize<ExtractedTasksDto>(content, JsonOptions);
+                var result = JsonSerializer.Deserialize<ExtractedTasksDto>(content, JsonOptions)
+                    ?? throw new InvalidOperationException("LLM action item JSON deserialized to null.");
+
+                if (result.Tasks == null)
+                {
+                    throw new InvalidOperationException("LLM action item JSON must contain a tasks array.");
+                }
+
+                return result;
             }
             catch (JsonException ex)
             {
                 _logger.LogWarning(ex, "LLM returned malformed action item JSON for meeting {MeetingId}", meetingId);
-                return null;
+                throw new InvalidOperationException("LLM returned malformed action item JSON.", ex);
             }
         }
 
@@ -249,7 +261,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
         private sealed class ExtractedTasksDto
         {
             [JsonPropertyName("tasks")]
-            public List<ExtractedTaskDto> Tasks { get; set; } = new();
+            public List<ExtractedTaskDto> Tasks { get; set; } = null!;
         }
 
         private sealed class ExtractedTaskDto

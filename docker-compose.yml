@@ -76,10 +76,9 @@ services:
       Redis__ConnectionString: ${Redis__ConnectionString:-redis:6379}
 
       # AI (optional)
-      # Generic LLM client used by post-meeting action extraction. The service appends /v1.
+      # Generic legacy embedding client. Post-meeting LLM jobs use OpenAiCompatible__Llm below.
       AI__ApiKey: ${AI__ApiKey:-local-ai-key}
       AI__BaseUrl: ${AI__BaseUrl:-http://llm:8000}
-      AI__Model: ${AI__Model:-local}
 
       # OpenAI-compatible post-meeting providers.
       # Start ../ai_work first so stt/llm resolve on the external ai_work_ai-network.

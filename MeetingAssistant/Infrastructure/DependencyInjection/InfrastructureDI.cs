@@ -1,10 +1,12 @@
 using MeetingAssistant.Api.Infrastructure.Configuration;
 using MeetingAssistant.Api.Infrastructure.Services;
 using MeetingAssistant.Features.DevSeeding;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Infrastructure.AI;
 using MeetingAssistant.Shared.Errors;
 using MeetingAssistant.Shared.Settings;
 using Microsoft.Extensions.Http;
+using Microsoft.Extensions.Options;
 using Polly;
 using Polly.Extensions.Http;
 using System.Reflection;
@@ -46,12 +48,12 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
             services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly()));
 
             // AI services with typed HttpClient + Polly policies
-            services.AddHttpClient<ILLMService, OpenAiLLMService>(client =>
+            services.AddHttpClient<ILLMService, OpenAiLLMService>((serviceProvider, client) =>
             {
-                var aiSettings = configuration.GetSection("AI").Get<AiSettings>();
-                if (!string.IsNullOrEmpty(aiSettings?.ApiKey))
+                var llmSettings = serviceProvider.GetRequiredService<IOptions<OpenAiCompatibleOptions>>().Value.Llm;
+                if (!string.IsNullOrEmpty(llmSettings.ApiKey))
                     client.DefaultRequestHeaders.Authorization =
-                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", aiSettings.ApiKey);
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", llmSettings.ApiKey);
             })
             .AddPolicyHandler(GetRetryPolicy())
             .AddPolicyHandler(GetCircuitBreakerPolicy());

@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text.Json;
-using MeetingAssistant.Api.Infrastructure.Configuration;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Infrastructure.AI.DTOs;
 using Microsoft.Extensions.Options;
 
@@ -8,15 +9,21 @@ namespace MeetingAssistant.Infrastructure.AI
 {
     public sealed class OpenAiLLMService(
         HttpClient httpClient,
-        IOptions<AiSettings> aiSettings) : ILLMService
+        IOptions<OpenAiCompatibleOptions> openAiCompatibleOptions) : ILLMService
     {
         private readonly HttpClient _httpClient = httpClient;
-        private readonly AiSettings _aiSettings = aiSettings.Value;
+        private readonly OpenAiCompatibleOptions.ProviderConfig _llm = openAiCompatibleOptions.Value.Llm;
 
         public async Task<LLMResponse> CompleteAsync(LLMRequest request, CancellationToken cancellationToken)
         {
+            if (!string.IsNullOrWhiteSpace(_llm.ApiKey)
+                && _httpClient.DefaultRequestHeaders.Authorization == null)
+            {
+                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _llm.ApiKey);
+            }
+
             var response = await _httpClient.PostAsJsonAsync(
-                $"{_aiSettings.BaseUrl}/v1/chat/completions",
+                $"{NormalizeBaseUrl(_llm.BaseUrl)}/chat/completions",
                 request,
                 cancellationToken);
 
@@ -42,6 +49,11 @@ namespace MeetingAssistant.Infrastructure.AI
 
             return JsonSerializer.Deserialize<T>(content)
                 ?? throw new InvalidOperationException($"Failed to deserialize LLM response to {typeof(T).Name}.");
+        }
+
+        private static string NormalizeBaseUrl(string baseUrl)
+        {
+            return (baseUrl ?? string.Empty).TrimEnd('/');
         }
     }
 }

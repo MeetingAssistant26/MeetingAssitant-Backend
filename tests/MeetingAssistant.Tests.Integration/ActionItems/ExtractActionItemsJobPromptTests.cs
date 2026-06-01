@@ -1,15 +1,17 @@
 using FluentAssertions;
 using MeetingAssistant.Features.ActionItems.Jobs;
+using MeetingAssistant.Features.ActionItems.Models;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Infrastructure.AI;
 using MeetingAssistant.Infrastructure.AI.DTOs;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using tests.Integration.LiveSession;
 using Xunit;
 
@@ -44,6 +46,7 @@ public sealed class ExtractActionItemsJobPromptTests
         await job.RunAsync(meetingId, organizationId, CancellationToken.None);
 
         llm.LastRequest.Should().NotBeNull();
+        llm.LastRequest!.Model.Should().Be("openai-compatible-local");
         var message = llm.LastRequest!.Messages.Should().ContainSingle().Subject;
         message.Content.Should().Contain("You are an AI meeting assistant specialized in extracting action items.");
         message.Content.Should().Contain($"Transcript:{Environment.NewLine}[00:00:01 Alice] I will review the dataset by 2026-06-10T15:30:00+02:00.");
@@ -61,8 +64,9 @@ public sealed class ExtractActionItemsJobPromptTests
 
     [Theory]
     [InlineData("not json")]
-    [InlineData("{\"tasks\":[]}")]
-    public async Task RunAsync_HandlesMalformedJsonAndNoTasksWithoutPersistingRows(string llmContent)
+    [InlineData("{}")]
+    [InlineData("{\"tasks\":null}")]
+    public async Task RunAsync_MalformedJsonFailsJobInsteadOfBeingTreatedAsNoTasks(string llmContent)
     {
         await using var db = await LiveSessionTestDb.CreateAsync();
         var organizationId = db.SeedOrganization();
@@ -81,6 +85,34 @@ public sealed class ExtractActionItemsJobPromptTests
         await db.DbContext.SaveChangesAsync();
 
         var job = CreateJob(db, new FakeLlmService(llmContent));
+
+        await job.Invoking(x => x.RunAsync(meetingId, organizationId, CancellationToken.None))
+            .Should()
+            .ThrowAsync<InvalidOperationException>();
+
+        db.DbContext.ActionItems.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_ValidEmptyTasksDoesNotFailOrPersistRows()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var userId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, userId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] We discussed the dataset.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new FakeLlmService("{\"tasks\":[]}"));
 
         await job.Invoking(x => x.RunAsync(meetingId, organizationId, CancellationToken.None))
             .Should()
@@ -118,7 +150,39 @@ public sealed class ExtractActionItemsJobPromptTests
         item.AssignedToParticipantId.Should().BeNull();
         item.AssignedToUserId.Should().BeNull();
         item.Status.Should().Be(ActionItemStatus.PendingReview);
-        item.SyncMissingAssigneeReason.Should().Be("NeedsAssignee");
+        item.SyncMissingAssigneeReason.Should().Be(ActionItemReviewReasons.NeedsAssignee);
+    }
+
+    [Fact]
+    public async Task RunAsync_InvalidDueDateWithKnownAssigneePersistsExplicitReviewBlocker()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] Alice will prepare the deployment plan by not-a-date.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new FakeLlmService("""
+            {"tasks":[{"assignee":"Alice","task":"prepare the deployment plan","due_date":"not-a-date","status":"pending"}]}
+            """));
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
+        item.AssignedToUserId.Should().Be(aliceId);
+        item.DueDateUtc.Should().BeNull();
+        item.SyncMissingAssigneeReason.Should().Be(ActionItemReviewReasons.InvalidDueDate);
+        item.Description.Should().Contain("AI due date: not-a-date (could not parse to UTC)");
     }
 
     [Fact]
@@ -149,22 +213,27 @@ public sealed class ExtractActionItemsJobPromptTests
         var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
         item.AssignedToUserId.Should().BeNull();
         item.DueDateUtc.Should().BeNull();
-        item.SyncMissingAssigneeReason.Should().Be("NeedsAssignee");
+        item.SyncMissingAssigneeReason.Should().Be(
+            $"{ActionItemReviewReasons.NeedsAssignee};{ActionItemReviewReasons.InvalidDueDate}");
         item.Description.Should().Contain("AI assignee: Layla");
         item.Description.Should().Contain("AI due date: not-a-date (could not parse to UTC)");
     }
 
     private static ExtractActionItemsJob CreateJob(LiveSessionTestDb db, ILLMService llmService)
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["AI:Model"] = "local" })
-            .Build();
-
         return new ExtractActionItemsJob(
             db.DbContext,
             llmService,
             new PromptProvider(new TestHostEnvironment(AppContext.BaseDirectory)),
-            configuration,
+            Options.Create(new OpenAiCompatibleOptions
+            {
+                Llm = new OpenAiCompatibleOptions.ProviderConfig
+                {
+                    BaseUrl = "http://llm.test/v1",
+                    ApiKey = "test-key",
+                    Model = "openai-compatible-local"
+                }
+            }),
             NullLogger<ExtractActionItemsJob>.Instance);
     }
 

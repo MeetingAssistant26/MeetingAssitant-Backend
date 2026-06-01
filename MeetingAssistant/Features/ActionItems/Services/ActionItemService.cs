@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using Hangfire;
 using MeetingAssistant.Features.ActionItems.Jobs;
+using MeetingAssistant.Features.ActionItems.Models;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.ActionItems.Models.Requests;
@@ -16,8 +17,6 @@ namespace MeetingAssistant.Features.ActionItems.Services
 {
     public class ActionItemService : IActionItemService
     {
-        private const string NeedsAssigneeReviewReason = "NeedsAssignee";
-
         private readonly ApplicationDbContext _dbContext;
         private readonly ITaskProviderFactory _providerFactory;
         private readonly IBackgroundJobClient _backgroundJobClient;
@@ -185,16 +184,32 @@ namespace MeetingAssistant.Features.ActionItems.Services
                 item.AssignedToUserId = participant?.UserId;
 
                 if (item.AssignedToUserId.HasValue
-                    && string.Equals(item.SyncMissingAssigneeReason, NeedsAssigneeReviewReason, StringComparison.Ordinal))
+                    && ActionItemReviewReasons.Has(item.SyncMissingAssigneeReason, ActionItemReviewReasons.NeedsAssignee))
                 {
-                    item.SyncMissingAssigneeReason = null;
+                    item.SyncMissingAssigneeReason = ActionItemReviewReasons.Remove(
+                        item.SyncMissingAssigneeReason,
+                        ActionItemReviewReasons.NeedsAssignee);
                 }
             }
-            if (request.DueDateUtc.HasValue) item.DueDateUtc = request.DueDateUtc;
+            if (request.DueDateUtc.HasValue)
+            {
+                item.DueDateUtc = request.DueDateUtc;
+                item.SyncMissingAssigneeReason = ActionItemReviewReasons.Remove(
+                    item.SyncMissingAssigneeReason,
+                    ActionItemReviewReasons.InvalidDueDate);
+            }
+            else if (request.ClearDueDateReview)
+            {
+                item.DueDateUtc = null;
+                item.SyncMissingAssigneeReason = ActionItemReviewReasons.Remove(
+                    item.SyncMissingAssigneeReason,
+                    ActionItemReviewReasons.InvalidDueDate);
+            }
+
             if (request.Status != null && Enum.TryParse<ActionItemStatus>(request.Status, out var status))
             {
-                if (status == ActionItemStatus.Approved && RequiresAssigneeReview(item))
-                    return Result.Failure<ActionItemResponse>(new Error("Conflict", "Action item requires assignee review before approval.", 409));
+                if (status == ActionItemStatus.Approved && ActionItemReviewReasons.BlocksApprovalOrSync(item))
+                    return Result.Failure<ActionItemResponse>(new Error("Conflict", "Action item requires review before approval.", 409));
 
                 if (IsValidTransition(item.Status, status))
                     item.Status = status;
@@ -273,6 +288,9 @@ namespace MeetingAssistant.Features.ActionItems.Services
 
             if (item.Status != ActionItemStatus.Approved)
                 return Result.Failure<SyncResultResponse>(new Error("Conflict", "Only approved action items can be synced.", 409));
+
+            if (ActionItemReviewReasons.BlocksApprovalOrSync(item))
+                return Result.Failure<SyncResultResponse>(new Error("Conflict", "Action item requires review before sync.", 409));
 
             var integration = await _dbContext.OrganizationIntegrations
                 .FirstOrDefaultAsync(i => i.OrganizationId == organizationId, cancellationToken);
@@ -505,8 +523,8 @@ namespace MeetingAssistant.Features.ActionItems.Services
             if (etagValidation.IsFailure)
                 return Result.Failure<ActionItemResponse>(etagValidation.Error);
 
-            if (newStatus == ActionItemStatus.Approved && RequiresAssigneeReview(item))
-                return Result.Failure<ActionItemResponse>(new Error("Conflict", "Action item requires assignee review before approval.", 409));
+            if (newStatus == ActionItemStatus.Approved && ActionItemReviewReasons.BlocksApprovalOrSync(item))
+                return Result.Failure<ActionItemResponse>(new Error("Conflict", "Action item requires review before approval.", 409));
 
             if (item.Status == ActionItemStatus.Synced || item.Status == ActionItemStatus.SyncedNoAssignee)
                 return Result.Failure<ActionItemResponse>(new Error("Conflict", "Action item has already been synced and is immutable.", 409));
@@ -535,10 +553,6 @@ namespace MeetingAssistant.Features.ActionItems.Services
 
             return true;
         }
-
-        private static bool RequiresAssigneeReview(ActionItem item)
-            => string.Equals(item.SyncMissingAssigneeReason, NeedsAssigneeReviewReason, StringComparison.Ordinal)
-               && !item.AssignedToUserId.HasValue;
 
         private static ActionItemResponse MapToResponse(ActionItem item)
         {

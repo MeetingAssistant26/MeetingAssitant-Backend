@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using MeetingAssistant.Features.ActionItems.Models;
 using FluentAssertions;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
@@ -139,6 +140,69 @@ public class ActionItemReviewTests : IntegrationTestBase
         var body = await approveResponse.Content.ReadFromJsonAsync<ActionItemResponse>();
         body!.Status.Should().Be(ActionItemStatus.Approved.ToString());
         body.SyncMissingAssigneeReason.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task InvalidDueDateReviewBlocker_ShouldBlockApprovalAndSyncUntilCorrectedOrCleared()
+    {
+        var meeting = await SeedMeetingAsync(TestOrganizationId);
+        await SeedMeetingParticipantAsync(meeting.Id, TestOrganizationId, TestUserId, MeetingRole.Host);
+        var invalidDueDateItem = await SeedActionItemAsync(
+            TestOrganizationId,
+            meeting.Id,
+            TestUserId,
+            "Needs due date review",
+            syncMissingAssigneeReason: ActionItemReviewReasons.InvalidDueDate);
+
+        var blockedApprove = new HttpRequestMessage(HttpMethod.Patch,
+            $"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}/action-items/{invalidDueDateItem.Id}/approve");
+        blockedApprove.Headers.TryAddWithoutValidation("If-Match", await GetCurrentEtagAsync(meeting.Id, invalidDueDateItem.Id));
+        var blockedApproveResponse = await Client.SendAsync(blockedApprove);
+        blockedApproveResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var updateRequest = new HttpRequestMessage(HttpMethod.Patch,
+            $"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}/action-items/{invalidDueDateItem.Id}");
+        updateRequest.Headers.TryAddWithoutValidation("If-Match", await GetCurrentEtagAsync(meeting.Id, invalidDueDateItem.Id));
+        updateRequest.Content = JsonContent.Create(new { dueDateUtc = DateTime.UtcNow.AddDays(3) });
+        var updateResponse = await Client.SendAsync(updateRequest);
+        updateResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var updatedBody = await updateResponse.Content.ReadFromJsonAsync<ActionItemResponse>();
+        updatedBody!.SyncMissingAssigneeReason.Should().BeNull();
+
+        var approveAfterCorrection = new HttpRequestMessage(HttpMethod.Patch,
+            $"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}/action-items/{invalidDueDateItem.Id}/approve");
+        approveAfterCorrection.Headers.TryAddWithoutValidation("If-Match", await GetCurrentEtagAsync(meeting.Id, invalidDueDateItem.Id));
+        var approveAfterCorrectionResponse = await Client.SendAsync(approveAfterCorrection);
+        approveAfterCorrectionResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var approvedButInvalid = await SeedActionItemAsync(
+            TestOrganizationId,
+            meeting.Id,
+            TestUserId,
+            "Approved but still incomplete",
+            status: ActionItemStatus.Approved,
+            syncMissingAssigneeReason: ActionItemReviewReasons.InvalidDueDate);
+        var blockedSync = new HttpRequestMessage(HttpMethod.Post,
+            $"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}/action-items/{approvedButInvalid.Id}/sync");
+        blockedSync.Headers.TryAddWithoutValidation("If-Match", await GetCurrentEtagAsync(meeting.Id, approvedButInvalid.Id));
+        var blockedSyncResponse = await Client.SendAsync(blockedSync);
+        blockedSyncResponse.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var clearOnlyItem = await SeedActionItemAsync(
+            TestOrganizationId,
+            meeting.Id,
+            TestUserId,
+            "Clear invalid due date review",
+            syncMissingAssigneeReason: ActionItemReviewReasons.InvalidDueDate);
+        var clearRequest = new HttpRequestMessage(HttpMethod.Patch,
+            $"/api/organizations/{TestOrganizationId}/meetings/{meeting.Id}/action-items/{clearOnlyItem.Id}");
+        clearRequest.Headers.TryAddWithoutValidation("If-Match", await GetCurrentEtagAsync(meeting.Id, clearOnlyItem.Id));
+        clearRequest.Content = JsonContent.Create(new { clearDueDateReview = true });
+        var clearResponse = await Client.SendAsync(clearRequest);
+        clearResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var clearedBody = await clearResponse.Content.ReadFromJsonAsync<ActionItemResponse>();
+        clearedBody!.DueDateUtc.Should().BeNull();
+        clearedBody.SyncMissingAssigneeReason.Should().BeNull();
     }
 
     [Fact]
