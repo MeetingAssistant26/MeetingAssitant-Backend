@@ -171,6 +171,52 @@ public class CalendarDataTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task GetCalendarData_WithUtcDateTimeWeekInput_SnapsToUtcMonday()
+    {
+        // Arrange — mobile sends the selected week as a full UTC timestamp, not just a date.
+        var targetMonday = GetNextMonday();
+        var utcWeekInput = targetMonday.AddDays(2).AddHours(23).AddMinutes(45); // Wednesday 23:45 UTC
+        var weekParam = Uri.EscapeDataString(utcWeekInput.ToString("O"));
+
+        await using (var scope = Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.Meetings.AddRange(
+                new Meeting
+                {
+                    OrganizationId = TestOrganizationId,
+                    Title = "UTC Week Input Meeting",
+                    ScheduledStartUtc = targetMonday.AddDays(4).AddHours(13),
+                    ScheduledEndUtc = targetMonday.AddDays(4).AddHours(14),
+                    Status = MeetingStatus.Scheduled
+                },
+                new Meeting
+                {
+                    OrganizationId = TestOrganizationId,
+                    Title = "Previous UTC Week Meeting",
+                    ScheduledStartUtc = targetMonday.AddTicks(-1),
+                    ScheduledEndUtc = targetMonday.AddMinutes(30),
+                    Status = MeetingStatus.Scheduled
+                });
+
+            await db.SaveChangesAsync();
+        }
+
+        // Act
+        var response = await Client.GetAsync($"{CalendarUrl}?week={weekParam}");
+
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var result = await response.Content.ReadFromJsonAsync<CalendarDataResponse>();
+        result.Should().NotBeNull();
+        result!.WeekStartUtc.Should().Be(targetMonday);
+        result.WeekStartUtc.Kind.Should().Be(DateTimeKind.Utc);
+        result.WeekEndUtc.Should().Be(targetMonday.AddDays(7));
+        result.Meetings.Select(m => m.Title).Should().ContainSingle().Which.Should().Be("UTC Week Input Meeting");
+    }
+
+    [Fact]
     public async Task GetCalendarData_Unauthenticated_Returns401()
     {
         // Arrange — client with no auth header
@@ -191,6 +237,7 @@ public class CalendarDataTests : IntegrationTestBase
         var userBId = Guid.NewGuid();
         var targetMonday = GetNextMonday();
         var weekParam = targetMonday.ToString("yyyy-MM-dd");
+        Guid orgBMeetingId;
 
         await using (var scope = Factory.Services.CreateAsyncScope())
         {
@@ -228,16 +275,18 @@ public class CalendarDataTests : IntegrationTestBase
             });
 
             // Meeting in Org B (should NOT appear)
-            db.Meetings.Add(new Meeting
+            var orgBMeeting = new Meeting
             {
                 OrganizationId = orgBId,
                 Title = "Org B Meeting",
                 ScheduledStartUtc = targetMonday.AddDays(1).AddHours(10),
                 ScheduledEndUtc = targetMonday.AddDays(1).AddHours(11),
                 Status = MeetingStatus.Scheduled
-            });
+            };
+            db.Meetings.Add(orgBMeeting);
 
             await db.SaveChangesAsync();
+            orgBMeetingId = orgBMeeting.Id;
         }
 
         // Act — authenticated as Org A user, calling Org A endpoint
@@ -249,6 +298,8 @@ public class CalendarDataTests : IntegrationTestBase
         var result = await response.Content.ReadFromJsonAsync<CalendarDataResponse>();
         result!.Meetings.Should().HaveCount(1);
         result.Meetings.Single().Title.Should().Be("Org A Meeting");
+        result.Meetings.Select(m => m.Id).Should().NotContain(orgBMeetingId);
+        result.Meetings.Select(m => m.Title).Should().NotContain("Org B Meeting");
     }
 
     [Fact]

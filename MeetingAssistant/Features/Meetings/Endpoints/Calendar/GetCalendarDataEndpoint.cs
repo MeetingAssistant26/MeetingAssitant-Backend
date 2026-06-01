@@ -11,7 +11,7 @@ namespace MeetingAssistant.Features.Meetings.Endpoints.Calendar
             [FromQuery] DateTime? week,
             CancellationToken cancellationToken)
         {
-            var result = await _calendarService.GetCalendarDataAsync(week, cancellationToken);
+            var result = await _calendarService.GetCalendarDataAsync(orgId, week, cancellationToken);
             
             return result.IsSuccess 
                 ? Ok(result.Value) 
