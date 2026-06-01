@@ -19,6 +19,13 @@ namespace MeetingAssistant.Features.Meetings.Services
             Guid callerId,
             CancellationToken cancellationToken = default);
 
+        Task<Result<ParticipantResponse>> UpdateParticipantRoleAsync(
+            Guid meetingId,
+            Guid userIdToUpdate,
+            UpdateParticipantRoleRequest request,
+            Guid callerId,
+            CancellationToken cancellationToken = default);
+
         Task<Result<List<ConflictResponse>>> CheckConflictsAsync(
             Guid meetingId,
             Guid callerId,

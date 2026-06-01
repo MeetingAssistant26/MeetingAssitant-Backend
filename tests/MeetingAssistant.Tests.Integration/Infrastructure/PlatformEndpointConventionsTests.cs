@@ -28,7 +28,8 @@ public class PlatformEndpointConventionsTests : IntegrationTestBase
         "MeetingAssistant/Features/LiveSession/Endpoints/Artifacts/GetMeetingTranscriptEndpoint.cs",
         "MeetingAssistant/Features/LiveSession/Endpoints/Artifacts/GetMeetingSummaryEndpoint.cs",
         "MeetingAssistant/Features/Tasks/Endpoints/Reminder/ListMyRemindersEndpoint.cs",
-        "MeetingAssistant/Features/Tasks/Endpoints/Reminder/UpdateMyReminderEndpoint.cs"
+        "MeetingAssistant/Features/Tasks/Endpoints/Reminder/UpdateMyReminderEndpoint.cs",
+        "MeetingAssistant/Features/Meetings/Endpoints/Participant/UpdateParticipantRoleEndpoint.cs"
     ];
 
     public PlatformEndpointConventionsTests(MeetingAssistantWebFactory factory) : base(factory)
@@ -62,7 +63,8 @@ public class PlatformEndpointConventionsTests : IntegrationTestBase
             "MeetingAssistant.Features.LiveSession.Endpoints.Artifacts.MeetingArtifactController.GetTranscript",
             "MeetingAssistant.Features.LiveSession.Endpoints.Artifacts.MeetingArtifactController.GetSummary",
             "MeetingAssistant.Features.Tasks.Endpoints.Reminder.ReminderController.ListMyReminders",
-            "MeetingAssistant.Features.Tasks.Endpoints.Reminder.ReminderController.UpdateMyReminder"
+            "MeetingAssistant.Features.Tasks.Endpoints.Reminder.ReminderController.UpdateMyReminder",
+            "MeetingAssistant.Features.Meetings.Endpoints.Participant.ParticipantController.UpdateParticipantRole"
         };
 
         var discoveredActions = assembly.GetTypes()

@@ -50,9 +50,19 @@ namespace MeetingAssistant.Shared.Errors
             "CoHosts can only remove Participants and Observers.",
             StatusCodes.Status403Forbidden);
 
+        public static readonly Error RoleUpdateForbidden = new(
+            "Meetings.RoleUpdateForbidden",
+            "CoHosts can only update Participants and Observers to Participant or Observer roles.",
+            StatusCodes.Status403Forbidden);
+
         public static readonly Error LastHost = new(
             "Meetings.LastHost",
             "Cannot remove the last host of the meeting.",
+            StatusCodes.Status403Forbidden);
+
+        public static readonly Error LastHostRoleChange = new(
+            "Meetings.LastHostRoleChange",
+            "Cannot change the role of the last host of the meeting.",
             StatusCodes.Status403Forbidden);
 
         public static readonly Error InvalidRecurrence = new(
@@ -74,6 +84,11 @@ namespace MeetingAssistant.Shared.Errors
             "Meetings.ParticipantNotFound",
             "The specified participant was not found in the meeting.",
             StatusCodes.Status404NotFound);
+
+        public static readonly Error InvalidParticipantRole = new(
+            "Meetings.InvalidParticipantRole",
+            "MeetingRole is required and must be a valid role.",
+            StatusCodes.Status400BadRequest);
 
         public static readonly Error TagNotFound = new(
             "Meetings.TagNotFound",

@@ -139,6 +139,88 @@ namespace MeetingAssistant.Features.Meetings.Services
             return Result.Success();
         }
 
+        public async Task<Result<ParticipantResponse>> UpdateParticipantRoleAsync(
+            Guid meetingId,
+            Guid userIdToUpdate,
+            UpdateParticipantRoleRequest request,
+            Guid callerId,
+            CancellationToken cancellationToken = default)
+        {
+            var orgId = GetOrganizationId();
+
+            if (!request.MeetingRole.HasValue)
+                return Result.Failure<ParticipantResponse>(MeetingErrors.InvalidParticipantRole);
+
+            var requestedRole = request.MeetingRole.Value;
+
+            var data = await _dbContext.Meetings
+                .Where(m => m.Id == meetingId && m.OrganizationId == orgId)
+                .Select(m => new
+                {
+                    CallerRole = m.Participants
+                        .Where(p => p.UserId == callerId)
+                        .Select(p => (MeetingRole?)p.MeetingRole)
+                        .FirstOrDefault(),
+                    TargetId = m.Participants
+                        .Where(p => p.UserId == userIdToUpdate)
+                        .Select(p => (Guid?)p.Id)
+                        .FirstOrDefault(),
+                    TargetRole = m.Participants
+                        .Where(p => p.UserId == userIdToUpdate)
+                        .Select(p => (MeetingRole?)p.MeetingRole)
+                        .FirstOrDefault(),
+                    HostCount = m.Participants.Count(p => p.MeetingRole == MeetingRole.Host)
+                })
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (data == null)
+                return Result.Failure<ParticipantResponse>(MeetingErrors.NotFound);
+
+            if (data.CallerRole == null)
+                return Result.Failure<ParticipantResponse>(MeetingErrors.NotParticipant);
+
+            if (data.CallerRole != MeetingRole.Host && data.CallerRole != MeetingRole.CoHost)
+                return Result.Failure<ParticipantResponse>(MeetingErrors.NotHost);
+
+            if (data.TargetId == null || data.TargetRole == null)
+                return Result.Failure<ParticipantResponse>(MeetingErrors.ParticipantNotFound);
+
+            var targetIsActiveOrgMember = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .AnyAsync(
+                    m => m.UserId == userIdToUpdate
+                         && m.OrganizationId == orgId
+                         && m.IsEnabled,
+                    cancellationToken);
+
+            if (!targetIsActiveOrgMember)
+                return Result.Failure<ParticipantResponse>(MeetingErrors.NotOrgMember);
+
+            if (data.CallerRole == MeetingRole.CoHost
+                && (data.TargetRole is MeetingRole.Host or MeetingRole.CoHost
+                    || requestedRole is MeetingRole.Host or MeetingRole.CoHost))
+            {
+                return Result.Failure<ParticipantResponse>(MeetingErrors.RoleUpdateForbidden);
+            }
+
+            if (data.TargetRole == MeetingRole.Host
+                && requestedRole != MeetingRole.Host
+                && data.HostCount <= 1)
+            {
+                return Result.Failure<ParticipantResponse>(MeetingErrors.LastHostRoleChange);
+            }
+
+            var participant = await _dbContext.MeetingParticipants
+                .Include(p => p.User)
+                .FirstAsync(p => p.Id == data.TargetId.Value, cancellationToken);
+
+            participant.MeetingRole = requestedRole;
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            return Result.Success(participant.Adapt<ParticipantResponse>());
+        }
+
         public async Task<Result<List<ConflictResponse>>> CheckConflictsAsync(
             Guid meetingId,
             Guid callerId,
