@@ -28,7 +28,7 @@ namespace MeetingAssistant.Features.ActionItems.Services
             CancellationToken cancellationToken = default);
 
         Task<Result<SyncResultResponse>> SyncToProviderAsync(
-            Guid id, Guid userId, Guid organizationId,
+            Guid id, Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default);
 
         Task<Result<BulkSyncResponse>> BulkSyncAsync(

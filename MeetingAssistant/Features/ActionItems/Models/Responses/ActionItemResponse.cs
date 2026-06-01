@@ -16,5 +16,6 @@ namespace MeetingAssistant.Features.ActionItems.Models.Responses
         public string? SyncMissingAssigneeReason { get; set; }
         public DateTime ExtractedAtUtc { get; set; }
         public DateTime? SyncedAtUtc { get; set; }
+        public string? RowVersionEtag { get; set; }
     }
 }

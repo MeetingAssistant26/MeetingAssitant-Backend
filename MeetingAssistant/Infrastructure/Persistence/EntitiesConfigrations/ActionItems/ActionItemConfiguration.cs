@@ -28,7 +28,7 @@ namespace MeetingAssistant.Infrastructure.Persistence.EntitiesConfigrations.Acti
                 .HasMaxLength(50);
 
             builder.Property(x => x.RowVersion)
-                .IsRowVersion();
+                .IsConcurrencyToken();
 
             builder.HasIndex(x => new { x.MeetingId, x.Status })
                 .HasDatabaseName("IX_ActionItems_MeetingId_Status");

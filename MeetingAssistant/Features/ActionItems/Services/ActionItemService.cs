@@ -62,7 +62,8 @@ namespace MeetingAssistant.Features.ActionItems.Services
                     ExternalProvider = x.ExternalProvider.ToString(),
                     SyncMissingAssigneeReason = x.SyncMissingAssigneeReason,
                     ExtractedAtUtc = x.ExtractedAtUtc,
-                    SyncedAtUtc = x.SyncedAtUtc
+                    SyncedAtUtc = x.SyncedAtUtc,
+                    RowVersionEtag = ToRowVersionEtag(x.RowVersion)
                 })
                 .ToListAsync(cancellationToken);
 
@@ -162,7 +163,7 @@ namespace MeetingAssistant.Features.ActionItems.Services
         }
 
         public async Task<Result<SyncResultResponse>> SyncToProviderAsync(
-            Guid id, Guid userId, Guid organizationId,
+            Guid id, Guid userId, Guid organizationId, string? etag,
             CancellationToken cancellationToken = default)
         {
             var item = await _dbContext.ActionItems
@@ -173,6 +174,10 @@ namespace MeetingAssistant.Features.ActionItems.Services
 
             if (!await CanModifyAsync(item.MeetingId, userId, organizationId, cancellationToken))
                 return Result.Failure<SyncResultResponse>(new Error("Forbidden", "You do not have permission to sync this action item.", 403));
+
+            var etagValidation = ValidateEtag(item, etag);
+            if (etagValidation.IsFailure)
+                return Result.Failure<SyncResultResponse>(etagValidation.Error);
 
             if (item.Status != ActionItemStatus.Approved)
                 return Result.Failure<SyncResultResponse>(new Error("Conflict", "Only approved action items can be synced.", 409));
@@ -299,7 +304,12 @@ namespace MeetingAssistant.Features.ActionItems.Services
             {
                 try
                 {
-                    var singleResult = await SyncToProviderAsync(item.Id, userId, organizationId, cancellationToken);
+                    var singleResult = await SyncToProviderAsync(
+                        item.Id,
+                        userId,
+                        organizationId,
+                        ToRowVersionEtag(item.RowVersion),
+                        cancellationToken);
                     if (singleResult.IsSuccess)
                     {
                         results.Add(new BulkSyncItemResult
@@ -373,12 +383,12 @@ namespace MeetingAssistant.Features.ActionItems.Services
             return membership?.OrgRole == OrganizationRole.Admin;
         }
 
-        private static Result ValidateEtag(ActionItem item, string etag)
+        private static Result ValidateEtag(ActionItem item, string? etag)
         {
             if (string.IsNullOrEmpty(etag))
                 return Result.Failure(new Error("PreconditionRequired", "If-Match header is required.", 428));
 
-            var currentEtag = Convert.ToBase64String(item.RowVersion);
+            var currentEtag = ToRowVersionEtag(item.RowVersion);
             if (!etag.Equals(currentEtag, StringComparison.Ordinal))
                 return Result.Failure(new Error("Conflict", "The action item was modified by another user. Please refresh and try again.", 409));
 
@@ -447,8 +457,14 @@ namespace MeetingAssistant.Features.ActionItems.Services
                 ExternalProvider = item.ExternalProvider.ToString(),
                 SyncMissingAssigneeReason = item.SyncMissingAssigneeReason,
                 ExtractedAtUtc = item.ExtractedAtUtc,
-                SyncedAtUtc = item.SyncedAtUtc
+                SyncedAtUtc = item.SyncedAtUtc,
+                RowVersionEtag = ToRowVersionEtag(item.RowVersion)
             };
+        }
+
+        private static string ToRowVersionEtag(byte[] rowVersion)
+        {
+            return Convert.ToBase64String(rowVersion);
         }
     }
 }

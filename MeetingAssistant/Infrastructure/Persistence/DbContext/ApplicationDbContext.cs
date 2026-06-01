@@ -113,6 +113,15 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
                     entityEntry.Property(x => x.UpdatedById).CurrentValue = currentUserId;
                 }
             }
+
+            foreach (var actionItemEntry in ChangeTracker.Entries<ActionItem>())
+            {
+                if (actionItemEntry.State is EntityState.Added or EntityState.Modified)
+                {
+                    actionItemEntry.Entity.RowVersion = Guid.NewGuid().ToByteArray();
+                }
+            }
+
             var result = await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
 
             await DispatchDomainEventsAsync(cancellationToken);
