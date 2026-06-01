@@ -5,6 +5,7 @@ namespace MeetingAssistant.Features.Organizations.Contracts.Responses
         string Name,
         string Slug,
         string Role,
-        DateTime CreatedAtUtc
+        DateTime CreatedAtUtc,
+        DateTime UpdatedAtUtc
     );
 }

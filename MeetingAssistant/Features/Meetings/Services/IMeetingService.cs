@@ -27,5 +27,9 @@ namespace MeetingAssistant.Features.Meetings.Services
             int page,
             int pageSize,
             CancellationToken cancellationToken = default);
+
+        Task<Result<MeetingResponse>> GetMeetingAsync(
+            Guid meetingId,
+            CancellationToken cancellationToken = default);
     }
 }

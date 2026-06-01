@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using MeetingAssistant.Features.Organizations.Infrastructure.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MeetingAssistant.Shared.Abstractions;
@@ -9,6 +10,7 @@ namespace MeetingAssistant.Features.Organizations.Endpoints.Organization
     {
         [HttpPost("{orgId:guid}/leave")]
         [Authorize(Policy = "RequireOrgAccess")]
+        [EnforceOrgAccess]
         public async Task<IActionResult> LeaveOrganization(
             [FromRoute] Guid orgId,
             CancellationToken cancellationToken)

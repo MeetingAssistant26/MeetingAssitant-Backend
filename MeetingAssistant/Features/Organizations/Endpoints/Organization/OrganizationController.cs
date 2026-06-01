@@ -1,13 +1,13 @@
 using MeetingAssistant.Api.Infrastructure.Services;
-using MeetingAssistant.Features.Organizations.Infrastructure.Filters;
 using MeetingAssistant.Features.Organizations.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MeetingAssistant.Features.Organizations.Endpoints.Organization
 {
     [ApiController]
     [Route("api/organizations")]
-    [EnforceOrgAccess]
+    [Authorize]
     public partial class OrganizationController(
         IOrganizationService organizationService,
         ICorrelationIdProvider correlationIdProvider) : ControllerBase

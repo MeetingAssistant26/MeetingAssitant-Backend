@@ -200,6 +200,20 @@ namespace MeetingAssistant.Features.Meetings.Services
             return Result.Success(new MeetingListResponse(items, totalCount, page, pageSize));
         }
 
+        public async Task<Result<MeetingResponse>> GetMeetingAsync(
+            Guid meetingId,
+            CancellationToken cancellationToken = default)
+        {
+            var exists = await _dbContext.Meetings
+                .AsNoTracking()
+                .AnyAsync(m => m.Id == meetingId, cancellationToken);
+
+            if (!exists)
+                return Result.Failure<MeetingResponse>(MeetingErrors.NotFound);
+
+            return Result.Success(await LoadMeetingResponseAsync(meetingId, cancellationToken));
+        }
+
         private async Task<Result> ValidateAndAssociateTagsAsync(
             Meeting meeting,
             List<Guid> tagIds,

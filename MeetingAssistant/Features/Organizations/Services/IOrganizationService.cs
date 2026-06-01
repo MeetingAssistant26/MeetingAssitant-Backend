@@ -11,6 +11,15 @@ namespace MeetingAssistant.Features.Organizations.Services
             Guid userId,
             CancellationToken cancellationToken = default);
 
+        Task<Result<OrganizationListResponse>> ListOrganizationsAsync(
+            Guid userId,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<OrganizationResponse>> GetOrganizationAsync(
+            Guid organizationId,
+            Guid userId,
+            CancellationToken cancellationToken = default);
+
         Task<Result> LeaveOrganizationAsync(
             Guid organizationId,
             Guid userId,

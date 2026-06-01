@@ -51,13 +51,53 @@ namespace MeetingAssistant.Features.Organizations.Services
             _dbContext.UserOrgMemberships.Add(membership);
             await _dbContext.SaveChangesAsync(cancellationToken);
 
-            return Result.Success(new OrganizationResponse(
-                organization.Id,
-                organization.Name,
-                organization.Slug,
-                OrganizationRole.Admin.ToString(),
-                organization.CreatedAtUtc
-            ));
+            return Result.Success(ToResponse(organization, membership.OrgRole));
+        }
+
+        public async Task<Result<OrganizationListResponse>> ListOrganizationsAsync(
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var memberships = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(m => m.UserId == userId && m.IsEnabled)
+                .Include(m => m.Organization)
+                .OrderBy(m => m.Organization.Name)
+                .ThenBy(m => m.OrganizationId)
+                .ToListAsync(cancellationToken);
+
+            var items = memberships
+                .Select(m => ToResponse(m.Organization, m.OrgRole))
+                .ToList();
+
+            return Result.Success(new OrganizationListResponse(items));
+        }
+
+        public async Task<Result<OrganizationResponse>> GetOrganizationAsync(
+            Guid organizationId,
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var organizationExists = await _dbContext.Organizations
+                .AsNoTracking()
+                .AnyAsync(o => o.Id == organizationId, cancellationToken);
+
+            if (!organizationExists)
+                return Result.Failure<OrganizationResponse>(OrganizationErrors.NotFound);
+
+            var membership = await _dbContext.UserOrgMemberships
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Include(m => m.Organization)
+                .FirstOrDefaultAsync(
+                    m => m.OrganizationId == organizationId && m.UserId == userId && m.IsEnabled,
+                    cancellationToken);
+
+            if (membership is null)
+                return Result.Failure<OrganizationResponse>(OrganizationErrors.Unauthorized);
+
+            return Result.Success(ToResponse(membership.Organization, membership.OrgRole));
         }
 
         public async Task<Result> LeaveOrganizationAsync(
@@ -93,5 +133,13 @@ namespace MeetingAssistant.Features.Organizations.Services
 
             return Result.Success();
         }
+
+        private static OrganizationResponse ToResponse(Organization organization, OrganizationRole role) => new(
+            organization.Id,
+            organization.Name,
+            organization.Slug,
+            role.ToString(),
+            organization.CreatedAtUtc,
+            organization.UpdatedAtUtc);
     }
 }

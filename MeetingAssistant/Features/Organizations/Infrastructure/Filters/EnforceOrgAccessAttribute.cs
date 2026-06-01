@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace MeetingAssistant.Features.Organizations.Infrastructure.Filters
 {
-    [AttributeUsage(AttributeTargets.Class)]
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
     public class EnforceOrgAccessAttribute : Attribute, IAsyncActionFilter
     {
         public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
