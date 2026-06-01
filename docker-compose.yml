@@ -122,7 +122,7 @@ services:
         condition: service_started
 
   livekit:
-    image: livekit/livekit-server:latest
+    image: livekit/livekit-server:v1.9.11
     container_name: meetingassistant-livekit
     entrypoint: ["/bin/sh", "-lc"]
     command: ["exec /livekit-server --config-body \"$$LIVEKIT_CONFIG\""]
@@ -150,7 +150,7 @@ services:
       - "7882:7882/udp"
 
   egress:
-    image: livekit/egress:latest
+    image: livekit/egress:v1.12.0
     container_name: meetingassistant-egress
     user: "0:0"
     entrypoint: ["/bin/sh", "-lc"]
