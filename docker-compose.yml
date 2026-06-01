@@ -76,7 +76,7 @@ services:
       Redis__ConnectionString: ${Redis__ConnectionString:-redis:6379}
 
       # AI (optional)
-      # Generic legacy embedding client. Post-meeting LLM jobs use OpenAiCompatible__Llm below.
+      # Generic legacy AI client. Post-meeting LLM jobs and RAG embeddings use OpenAiCompatible__* below.
       AI__ApiKey: ${AI__ApiKey:-local-ai-key}
       AI__BaseUrl: ${AI__BaseUrl:-http://llm:8000}
 
@@ -90,6 +90,7 @@ services:
       OpenAiCompatible__Llm__Model: ${OpenAiCompatible__Llm__Model:-local}
       # RAG embedding metadata/provider. Use deterministic-test locally until an
       # OpenAI-compatible embeddings service is attached to the Docker network.
+      # Production RAG must point at an embeddings endpoint; no ChromaDB/local JSON path is used.
       OpenAiCompatible__Embedding__Provider: ${OpenAiCompatible__Embedding__Provider:-deterministic-test}
       OpenAiCompatible__Embedding__BaseUrl: ${OpenAiCompatible__Embedding__BaseUrl:-}
       OpenAiCompatible__Embedding__ApiKey: ${OpenAiCompatible__Embedding__ApiKey:-local-ai-key}

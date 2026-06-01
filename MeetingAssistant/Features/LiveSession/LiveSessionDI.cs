@@ -2,6 +2,7 @@ using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using MeetingAssistant.Infrastructure.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -18,6 +19,9 @@ namespace MeetingAssistant.Features.LiveSession
                 .Validate(
                     options => IsValidProvider(options.Stt) && IsValidProvider(options.Llm),
                     "OpenAiCompatible:Stt and OpenAiCompatible:Llm must each specify an absolute HTTP(S) BaseUrl and non-empty Model.")
+                .Validate(
+                    options => EmbeddingConfiguration.IsValid(options.Embedding),
+                    "OpenAiCompatible:Embedding must explicitly set Provider ('deterministic-test' for local/tests or 'openai-compatible' for production), Model, Dimension, and an absolute HTTP(S) BaseUrl for openai-compatible providers.")
                 .ValidateOnStart();
             services.Configure<AiDebugOptions>(configuration.GetSection("AiDebug"));
             services.AddScoped<ISessionService, SessionService>();

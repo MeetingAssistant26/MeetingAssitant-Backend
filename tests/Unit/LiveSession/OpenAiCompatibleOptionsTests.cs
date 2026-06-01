@@ -23,7 +23,10 @@ public class OpenAiCompatibleOptionsTests
             ["OpenAiCompatible:Stt:Model"] = "whisper-1",
             ["OpenAiCompatible:Llm:BaseUrl"] = "http://llm:8000/v1",
             ["OpenAiCompatible:Llm:ApiKey"] = "local-ai-key",
-            ["OpenAiCompatible:Llm:Model"] = "local"
+            ["OpenAiCompatible:Llm:Model"] = "local",
+            ["OpenAiCompatible:Embedding:Provider"] = "deterministic-test",
+            ["OpenAiCompatible:Embedding:Model"] = "deterministic-test-v1",
+            ["OpenAiCompatible:Embedding:Dimension"] = "1536"
         });
 
         var options = provider.GetRequiredService<IOptions<OpenAiCompatibleOptions>>().Value;
@@ -32,6 +35,9 @@ public class OpenAiCompatibleOptionsTests
         options.Stt.Model.Should().Be("whisper-1");
         options.Llm.BaseUrl.Should().Be("http://llm:8000/v1");
         options.Llm.Model.Should().Be("local");
+        options.Embedding.Provider.Should().Be("deterministic-test");
+        options.Embedding.Model.Should().Be("deterministic-test-v1");
+        options.Embedding.Dimension.Should().Be(1536);
     }
 
     [Fact]
@@ -41,13 +47,35 @@ public class OpenAiCompatibleOptionsTests
         {
             ["OpenAiCompatible:Stt:BaseUrl"] = "http://stt:8000/v1",
             ["OpenAiCompatible:Stt:Model"] = "whisper-1",
-            ["OpenAiCompatible:Llm:Model"] = "local"
+            ["OpenAiCompatible:Llm:Model"] = "local",
+            ["OpenAiCompatible:Embedding:Provider"] = "deterministic-test",
+            ["OpenAiCompatible:Embedding:Model"] = "deterministic-test-v1",
+            ["OpenAiCompatible:Embedding:Dimension"] = "1536"
         });
 
         var act = () => provider.GetRequiredService<IOptions<OpenAiCompatibleOptions>>().Value;
 
         act.Should().Throw<OptionsValidationException>()
             .WithMessage("*OpenAiCompatible:Stt and OpenAiCompatible:Llm*");
+    }
+
+    [Fact]
+    public void AddLiveSessionFeature_RejectsMissingEmbeddingProvider()
+    {
+        using var provider = BuildProvider(new Dictionary<string, string?>
+        {
+            ["OpenAiCompatible:Stt:BaseUrl"] = "http://stt:8000/v1",
+            ["OpenAiCompatible:Stt:Model"] = "whisper-1",
+            ["OpenAiCompatible:Llm:BaseUrl"] = "http://llm:8000/v1",
+            ["OpenAiCompatible:Llm:Model"] = "local",
+            ["OpenAiCompatible:Embedding:Model"] = "deterministic-test-v1",
+            ["OpenAiCompatible:Embedding:Dimension"] = "1536"
+        });
+
+        var act = () => provider.GetRequiredService<IOptions<OpenAiCompatibleOptions>>().Value;
+
+        act.Should().Throw<OptionsValidationException>()
+            .WithMessage("*OpenAiCompatible:Embedding must explicitly set Provider*");
     }
 
     [Fact]

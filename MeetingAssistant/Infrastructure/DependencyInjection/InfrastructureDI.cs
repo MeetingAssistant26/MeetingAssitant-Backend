@@ -58,20 +58,32 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
             .AddPolicyHandler(GetRetryPolicy())
             .AddPolicyHandler(GetCircuitBreakerPolicy());
 
-            services.AddHttpClient<IEmbeddingService, OpenAiEmbeddingService>(client =>
+            services.AddScoped<DeterministicEmbeddingService>();
+            services.AddHttpClient<OpenAiCompatibleEmbeddingService>((serviceProvider, client) =>
             {
-                var embeddingSettings = configuration.GetSection("OpenAiCompatible:Embedding")
-                    .Get<OpenAiCompatibleOptions.ProviderConfig>();
-                var aiSettings = configuration.GetSection("AI").Get<AiSettings>();
-                var apiKey = !string.IsNullOrWhiteSpace(embeddingSettings?.ApiKey)
-                    ? embeddingSettings.ApiKey
-                    : aiSettings?.ApiKey;
-                if (!string.IsNullOrEmpty(apiKey))
+                var embeddingSettings = serviceProvider.GetRequiredService<IOptions<OpenAiCompatibleOptions>>().Value.Embedding;
+                if (!string.IsNullOrWhiteSpace(embeddingSettings.ApiKey))
+                {
                     client.DefaultRequestHeaders.Authorization =
-                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", embeddingSettings.ApiKey);
+                }
             })
             .AddPolicyHandler(GetRetryPolicy())
             .AddPolicyHandler(GetCircuitBreakerPolicy());
+
+            services.AddScoped<IEmbeddingService>(serviceProvider =>
+            {
+                var embeddingOptions = serviceProvider.GetRequiredService<IOptions<OpenAiCompatibleOptions>>().Value.Embedding;
+                EmbeddingConfiguration.ThrowIfInvalid(embeddingOptions);
+
+                return EmbeddingConfiguration.NormalizeProvider(embeddingOptions.Provider) switch
+                {
+                    EmbeddingProviderNames.DeterministicTest => serviceProvider.GetRequiredService<DeterministicEmbeddingService>(),
+                    EmbeddingProviderNames.OpenAiCompatible => serviceProvider.GetRequiredService<OpenAiCompatibleEmbeddingService>(),
+                    _ => throw new InvalidOperationException(
+                        $"Unsupported {EmbeddingConfiguration.SectionName}:Provider '{embeddingOptions.Provider}'.")
+                };
+            });
 
             return services;
         }
