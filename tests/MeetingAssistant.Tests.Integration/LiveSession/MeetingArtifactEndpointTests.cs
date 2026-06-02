@@ -194,6 +194,46 @@ public class MeetingArtifactEndpointTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task GetPersonalizedSummary_WithSkippedArtifact_ShouldReturnNotRelevantState()
+    {
+        var meetingId = await SeedMeetingAsync(MeetingStatus.Completed);
+        await using (var scope = Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var participant = new MeetingParticipant
+            {
+                OrganizationId = TestOrganizationId,
+                MeetingId = meetingId,
+                UserId = TestUserId
+            };
+            db.MeetingParticipants.Add(participant);
+            await db.SaveChangesAsync();
+            db.PersonalizedMeetingSummaries.Add(new PersonalizedMeetingSummary
+            {
+                MeetingId = meetingId,
+                OrganizationId = TestOrganizationId,
+                MeetingParticipantId = participant.Id,
+                UserId = TestUserId,
+                Status = PersonalizedMeetingSummaryStatus.Skipped,
+                TargetDisplayName = "Test User",
+                EligibilityReason = "no_personalization_signal_or_transcript_relevance",
+                EligibilityContextJson = "{\"decision\":\"skip\"}"
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await Client.GetAsync($"/api/organizations/{TestOrganizationId}/meetings/{meetingId}/summary/personalized");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<PersonalizedMeetingSummaryResponse>();
+        body.Should().NotBeNull();
+        body!.Status.Should().Be("not_relevant");
+        body.SummaryText.Should().BeNull();
+        body.GeneratedAtUtc.Should().BeNull();
+        body.TargetDisplayName.Should().Be("Test User");
+    }
+
+    [Fact]
     public async Task GetPersonalizedSummary_WithoutArtifact_ForInProgressParticipantMeeting_ShouldReturnProcessingState()
     {
         var meetingId = await SeedMeetingAsync(MeetingStatus.InProgress);

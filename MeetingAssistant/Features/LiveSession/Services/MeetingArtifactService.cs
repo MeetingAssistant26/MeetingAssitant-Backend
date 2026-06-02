@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MeetingAssistant.Features.LiveSession.Contracts.Responses;
+using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Shared.Abstractions;
@@ -13,6 +14,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private const string Available = "available";
         private const string Processing = "processing";
         private const string NotAvailable = "not_available";
+        private const string NotRelevant = "not_relevant";
 
         private static readonly JsonSerializerOptions SegmentJsonOptions = new()
         {
@@ -145,7 +147,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 meetingId,
                 summary.UserId,
                 summary.MeetingParticipantId,
-                Available,
+                ResolvePersonalizedSummaryStatus(summary.Status),
                 summary.SummaryText,
                 string.IsNullOrWhiteSpace(summary.LlmModel) ? null : summary.LlmModel,
                 summary.PromptTokens,
@@ -176,6 +178,9 @@ namespace MeetingAssistant.Features.LiveSession.Services
             => meetingStatus is MeetingStatus.InProgress or MeetingStatus.Scheduled
                 ? Processing
                 : NotAvailable;
+
+        private static string ResolvePersonalizedSummaryStatus(PersonalizedMeetingSummaryStatus status)
+            => status == PersonalizedMeetingSummaryStatus.Skipped ? NotRelevant : Available;
 
         private static IReadOnlyList<MeetingTranscriptSegmentResponse> DeserializeSegments(string segmentsJson)
         {

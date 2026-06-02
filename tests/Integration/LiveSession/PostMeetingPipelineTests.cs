@@ -327,7 +327,7 @@ namespace tests.Integration.LiveSession
         }
 
         [Fact]
-        public async Task PersonalizedSummaryGeneration_ShouldGenerateForEveryMeetingParticipantWithConditionalContextAndUpsert()
+        public async Task PersonalizedSummaryGeneration_ShouldGenerateOnlyEligibleParticipantsAndPersistSkipAudit()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
@@ -336,9 +336,13 @@ namespace tests.Integration.LiveSession
             var aliceId = db.SeedUser("Alice");
             var bobId = db.SeedUser("Bob");
             var charlieId = db.SeedUser("Charlie");
+            var daveId = db.SeedUser("Dave");
+            var eveId = db.SeedUser("Eve");
             var aliceParticipantId = db.AddParticipant(meetingId, orgId, aliceId);
             db.AddParticipant(meetingId, orgId, bobId);
             var charlieParticipantId = db.AddParticipant(meetingId, orgId, charlieId);
+            db.AddParticipant(meetingId, orgId, daveId);
+            db.AddParticipant(meetingId, orgId, eveId);
 
             db.DbContext.UserOrgMemberships.AddRange(
                 new UserOrgMembership
@@ -361,6 +365,20 @@ namespace tests.Integration.LiveSession
                 {
                     OrganizationId = orgId,
                     UserId = charlieId,
+                    OrgRole = OrganizationRole.Member,
+                    IsEnabled = true
+                },
+                new UserOrgMembership
+                {
+                    OrganizationId = orgId,
+                    UserId = daveId,
+                    OrgRole = OrganizationRole.Member,
+                    IsEnabled = true
+                },
+                new UserOrgMembership
+                {
+                    OrganizationId = orgId,
+                    UserId = eveId,
                     OrgRole = OrganizationRole.Member,
                     IsEnabled = true
                 });
@@ -387,8 +405,10 @@ namespace tests.Integration.LiveSession
             {
                 OrganizationId = orgId,
                 MeetingId = meetingId,
-                FullText = "[00:00:01 Alice] Launch readiness is green.\n[00:00:05 Bob] Timeline remains unchanged.",
-                SegmentsJson = "[]",
+                FullText = "[00:00:01 Alice] Launch readiness is green. Dave should be kept in the release notes.\n[00:00:05 Bob] Timeline remains unchanged.",
+                SegmentsJson = SerializePersistedSegments(
+                    CreatePersistedSegment(aliceId, "Alice", "Launch readiness is green. Dave should be kept in the release notes."),
+                    CreatePersistedSegment(bobId, "Bob", "Timeline remains unchanged.")),
                 SttModel = "test-stt",
                 GeneratedAtUtc = DateTime.UtcNow
             });
@@ -422,6 +442,13 @@ namespace tests.Integration.LiveSession
                 7,
                 "PersonalizedMeetingSummarizer",
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Dave personalized summary v1",
+                "personalized-model",
+                14,
+                8,
+                "PersonalizedMeetingSummarizer",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
             var tracker = new PostMeetingProcessingTracker(db.DbContext);
             var job = new GeneratePersonalizedMeetingSummariesJob(
                 db.DbContext,
@@ -431,9 +458,12 @@ namespace tests.Integration.LiveSession
 
             await job.RunAsync(meetingId, orgId);
 
-            db.DbContext.PersonalizedMeetingSummaries.Should().HaveCount(3);
+            db.DbContext.PersonalizedMeetingSummaries.Should().HaveCount(5);
+            db.DbContext.PersonalizedMeetingSummaries.Count(x => x.Status == PersonalizedMeetingSummaryStatus.Generated).Should().Be(4);
+            db.DbContext.PersonalizedMeetingSummaries.Should().ContainSingle(x => x.Status == PersonalizedMeetingSummaryStatus.Skipped && x.UserId == eveId);
             var aliceSummary = db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == aliceId);
             aliceSummary.MeetingParticipantId.Should().Be(aliceParticipantId);
+            aliceSummary.Status.Should().Be(PersonalizedMeetingSummaryStatus.Generated);
             aliceSummary.SummaryText.Should().Be("Alice personalized summary v1");
             aliceSummary.TargetDisplayName.Should().Be("Alice");
             aliceSummary.PromptName.Should().Be("PersonalizedMeetingSummarizer");
@@ -441,6 +471,8 @@ namespace tests.Integration.LiveSession
             aliceSummary.PersonalizationContextJson.Should().Contain("Backend Lead");
             aliceSummary.PersonalizationContextJson.Should().Contain("Owns API launch readiness.");
             aliceSummary.PersonalizationContextJson.Should().Contain("Review API launch checklist");
+            aliceSummary.EligibilityReason.Should().Be("personalization_signal");
+            aliceSummary.EligibilityContextJson.Should().Contain("hasStrongPersonalizationSignal");
             summarizer.PersonalizedCalls.Should().ContainSingle(x =>
                 x.Participant == "Alice"
                 && x.PersonalizationContext != null
@@ -453,6 +485,28 @@ namespace tests.Integration.LiveSession
                 x.Participant == "Charlie"
                 && x.PersonalizationContext != null
                 && x.PersonalizationContext.Contains("Read the meeting recap"));
+            summarizer.PersonalizedCalls.Should().ContainSingle(x =>
+                x.Participant == "Dave" && x.PersonalizationContext == null);
+            summarizer.PersonalizedCalls.Should().NotContain(x => x.Participant == "Eve");
+
+            var bobSummary = db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == bobId);
+            bobSummary.Status.Should().Be(PersonalizedMeetingSummaryStatus.Generated);
+            bobSummary.EligibilityReason.Should().Be("participant_spoke");
+            bobSummary.PersonalizationContextJson.Should().BeNull();
+
+            var daveSummary = db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == daveId);
+            daveSummary.Status.Should().Be(PersonalizedMeetingSummaryStatus.Generated);
+            daveSummary.EligibilityReason.Should().Be("participant_mentioned");
+            daveSummary.EligibilityContextJson.Should().Contain("Dave");
+            daveSummary.PersonalizationContextJson.Should().BeNull();
+
+            var eveSummary = db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == eveId);
+            eveSummary.Status.Should().Be(PersonalizedMeetingSummaryStatus.Skipped);
+            eveSummary.SummaryText.Should().BeNull();
+            eveSummary.LlmModel.Should().BeNull();
+            eveSummary.GeneratedAtUtc.Should().BeNull();
+            eveSummary.EligibilityReason.Should().Be("no_personalization_signal_or_transcript_relevance");
+            eveSummary.EligibilityContextJson.Should().Contain("\"decision\":\"skip\"");
 
             summarizer.EnqueuePersonalizedResult(new SummaryResult(
                 "Alice personalized summary v2",
@@ -475,11 +529,20 @@ namespace tests.Integration.LiveSession
                 17,
                 "PersonalizedMeetingSummarizer",
                 "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Dave personalized summary v2",
+                "personalized-model",
+                24,
+                18,
+                "PersonalizedMeetingSummarizer",
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
 
             await job.RunAsync(meetingId, orgId);
 
-            db.DbContext.PersonalizedMeetingSummaries.Should().HaveCount(3);
+            db.DbContext.PersonalizedMeetingSummaries.Should().HaveCount(5);
             db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == aliceId).SummaryText.Should().Be("Alice personalized summary v2");
+            db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == eveId).Status.Should().Be(PersonalizedMeetingSummaryStatus.Skipped);
+            db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == eveId).SummaryText.Should().BeNull();
             var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
             snapshot.Steps.Should().Contain(x =>
                 x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration
@@ -826,6 +889,33 @@ namespace tests.Integration.LiveSession
             segments.Select(x => x.ParticipantAudioFragmentId).Should().Equal(fragments.Select(x => (Guid?)x.Id));
             segments.Select(x => x.TimestampOffsetSource).Should().AllBeEquivalentTo("fragment_track_published");
         }
+
+        private static string SerializePersistedSegments(params PersistedSegmentForTest[] segments)
+            => JsonSerializer.Serialize(segments);
+
+        private static PersistedSegmentForTest CreatePersistedSegment(Guid participantUserId, string speakerDisplayName, string text)
+            => new(
+                Version: 3,
+                SpeakerRole: "participant",
+                ParticipantUserId: participantUserId,
+                ParticipantAudioTrackId: null,
+                ParticipantAudioFragmentId: null,
+                TrackRelativeStartMs: 0,
+                TrackRelativeEndMs: 1_000,
+                RoomRelativeStartMs: 0,
+                RoomRelativeEndMs: 1_000,
+                AbsoluteStartUtc: null,
+                AbsoluteEndUtc: null,
+                StartMs: 0,
+                EndMs: 1_000,
+                Text: text,
+                AvgLogProb: null,
+                TimestampOffsetSource: "test",
+                SpeakerDisplayName: speakerDisplayName,
+                Source: "test",
+                TraceEventId: null,
+                SessionId: null,
+                TurnId: null);
 
         private static IReadOnlyList<PersistedSegmentForTest> DeserializePersistedSegments(string json)
             => JsonSerializer.Deserialize<List<PersistedSegmentForTest>>(

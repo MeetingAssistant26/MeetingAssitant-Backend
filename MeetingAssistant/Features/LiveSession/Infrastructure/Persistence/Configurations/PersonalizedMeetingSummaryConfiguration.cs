@@ -10,15 +10,16 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
         {
             builder.HasKey(x => x.Id);
 
-            builder.Property(x => x.SummaryText)
+            builder.Property(x => x.Status)
+                .HasConversion<int>()
                 .IsRequired();
 
-            builder.Property(x => x.LlmModel)
-                .IsRequired();
+            builder.Property(x => x.SummaryText);
+
+            builder.Property(x => x.LlmModel);
 
             builder.Property(x => x.GeneratedAtUtc)
-                .HasColumnType("timestamp with time zone")
-                .IsRequired();
+                .HasColumnType("timestamp with time zone");
 
             builder.Property(x => x.TargetDisplayName)
                 .HasMaxLength(256);
@@ -30,6 +31,12 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
                 .HasMaxLength(128);
 
             builder.Property(x => x.PersonalizationContextJson)
+                .HasColumnType("jsonb");
+
+            builder.Property(x => x.EligibilityReason)
+                .HasMaxLength(128);
+
+            builder.Property(x => x.EligibilityContextJson)
                 .HasColumnType("jsonb");
 
             builder.HasIndex(x => new { x.MeetingId, x.UserId })

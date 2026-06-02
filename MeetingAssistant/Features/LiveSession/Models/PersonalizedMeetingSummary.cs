@@ -18,15 +18,17 @@ namespace MeetingAssistant.Features.LiveSession.Models
         public Guid UserId { get; set; }
         public ApplicationUser User { get; set; } = default!;
 
-        public string SummaryText { get; set; } = string.Empty;
+        public PersonalizedMeetingSummaryStatus Status { get; set; } = PersonalizedMeetingSummaryStatus.Generated;
 
-        public string LlmModel { get; set; } = string.Empty;
+        public string? SummaryText { get; set; }
+
+        public string? LlmModel { get; set; }
 
         public int? PromptTokens { get; set; }
 
         public int? CompletionTokens { get; set; }
 
-        public DateTime GeneratedAtUtc { get; set; }
+        public DateTime? GeneratedAtUtc { get; set; }
 
         public string? TargetDisplayName { get; set; }
 
@@ -35,5 +37,9 @@ namespace MeetingAssistant.Features.LiveSession.Models
         public string? PromptVersion { get; set; }
 
         public string? PersonalizationContextJson { get; set; }
+
+        public string? EligibilityReason { get; set; }
+
+        public string? EligibilityContextJson { get; set; }
     }
 }
