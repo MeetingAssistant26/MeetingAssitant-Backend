@@ -1,4 +1,5 @@
 using Hangfire;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
@@ -6,6 +7,7 @@ using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 namespace MeetingAssistant.Features.LiveSession.Jobs
@@ -14,14 +16,19 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         ApplicationDbContext dbContext,
         IPublisher publisher,
         ILogger<IngestParticipantAudioJob> logger,
-        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
+        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
+        IOptions<LiveKitOptions>? liveKitOptions = null)
     {
         private const string UniqueViolationSqlState = "23505";
+        private const int DefaultParticipantAudioIngestCeilingMinutes = 360;
 
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly IPublisher _publisher = publisher;
         private readonly ILogger<IngestParticipantAudioJob> _logger = logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
+        private readonly TimeSpan _participantAudioIngestCeiling = TimeSpan.FromMinutes(
+            NormalizeParticipantAudioIngestCeilingMinutes(
+                liveKitOptions?.Value.ParticipantAudioIngestCeilingMinutes));
 
         [AutomaticRetry(Attempts = 3)]
         public async Task RunAsync(
@@ -78,7 +85,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
 
             var age = DateTime.UtcNow - track.CreatedAtUtc;
-            if (age > TimeSpan.FromMinutes(8))
+            if (age > _participantAudioIngestCeiling)
             {
                 track.Status = ParticipantAudioTrackStatus.Failed;
                 if (_postMeetingProcessingTracker is not null)
@@ -88,17 +95,18 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         track.MeetingId,
                         PostMeetingProcessingStepType.AudioIngest,
                         "ingest_timeout",
-                        "Participant audio ingest abandoned after 8-minute ceiling.",
+                        $"Participant audio ingest abandoned after {_participantAudioIngestCeiling.TotalMinutes:0}-minute ceiling.",
                         artifact: new PostMeetingArtifactLink("participant_audio_track", track.Id),
                         cancellationToken: cancellationToken);
                 }
                 var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
 
                 _logger.LogWarning(
-                    "Participant audio ingest abandoned after 8-minute ceiling. TrackId={TrackId} MeetingId={MeetingId} AgeMinutes={AgeMinutes} StatusTransition={StatusTransition}",
+                    "Participant audio ingest abandoned after configured ceiling. TrackId={TrackId} MeetingId={MeetingId} AgeMinutes={AgeMinutes} CeilingMinutes={CeilingMinutes} StatusTransition={StatusTransition}",
                     trackId,
                     track.MeetingId,
                     age.TotalMinutes,
+                    _participantAudioIngestCeiling.TotalMinutes,
                     $"{previousStatus}->{track.Status}");
 
                 if (readyEvent is not null)
@@ -249,12 +257,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
 
             var age = DateTime.UtcNow - fragment.CreatedAtUtc;
-            if (age > TimeSpan.FromMinutes(8))
+            if (age > _participantAudioIngestCeiling)
             {
                 fragment.Status = ParticipantAudioFragmentStatus.Failed;
                 fragment.FailedAtUtc = DateTime.UtcNow;
                 fragment.FailureCode = "ingest_timeout";
-                fragment.FailureMessage = "Participant audio fragment ingest abandoned after 8-minute ceiling.";
+                fragment.FailureMessage = $"Participant audio fragment ingest abandoned after {_participantAudioIngestCeiling.TotalMinutes:0}-minute ceiling.";
                 if (_postMeetingProcessingTracker is not null)
                 {
                     await _postMeetingProcessingTracker.FailStepAsync(
@@ -270,10 +278,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 var readyEvent = await PersistFragmentTerminalStatusAndTryCreateReadyEventAsync(fragment, cancellationToken);
 
                 _logger.LogWarning(
-                    "Participant audio fragment ingest abandoned after 8-minute ceiling. FragmentId={FragmentId} MeetingId={MeetingId} AgeMinutes={AgeMinutes} StatusTransition={StatusTransition}",
+                    "Participant audio fragment ingest abandoned after configured ceiling. FragmentId={FragmentId} MeetingId={MeetingId} AgeMinutes={AgeMinutes} CeilingMinutes={CeilingMinutes} StatusTransition={StatusTransition}",
                     fragmentId,
                     fragment.MeetingId,
                     age.TotalMinutes,
+                    _participantAudioIngestCeiling.TotalMinutes,
                     $"{previousStatus}->{fragment.Status}");
 
                 if (readyEvent is not null)
@@ -383,6 +392,13 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     await _publisher.Publish(readyEvent, cancellationToken);
                 }
             }
+        }
+
+        private static int NormalizeParticipantAudioIngestCeilingMinutes(int? configuredMinutes)
+        {
+            return configuredMinutes is > 0
+                ? configuredMinutes.Value
+                : DefaultParticipantAudioIngestCeilingMinutes;
         }
 
         private static string? ExtractObjectKeyFromS3Url(string? url)

@@ -9,5 +9,6 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure
         public string EgressHost { get; init; } = string.Empty;
         public string AgentName { get; init; } = "meeting-assistant";
         public bool AiAssistantDefaultEnabled { get; init; } = true;
+        public int ParticipantAudioIngestCeilingMinutes { get; init; } = 360;
     }
 }

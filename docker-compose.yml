@@ -105,6 +105,7 @@ services:
       LiveKit__EgressHost: ${LiveKit__EgressHost:-http://livekit:7880}
       LiveKit__AgentName: ${LiveKit__AgentName:-meeting-assistant}
       LiveKit__AiAssistantDefaultEnabled: ${LiveKit__AiAssistantDefaultEnabled:-true}
+      LiveKit__ParticipantAudioIngestCeilingMinutes: ${LiveKit__ParticipantAudioIngestCeilingMinutes:-360}
 
     ports:
       - "8080:8080"
