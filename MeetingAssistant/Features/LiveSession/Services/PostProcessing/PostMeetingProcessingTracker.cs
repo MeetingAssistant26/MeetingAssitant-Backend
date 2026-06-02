@@ -565,7 +565,8 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return stepType is PostMeetingProcessingStepType.ActionExtraction
                 or PostMeetingProcessingStepType.TagSuggestion
                 or PostMeetingProcessingStepType.KnowledgeIndexing
-                or PostMeetingProcessingStepType.ProviderSync;
+                or PostMeetingProcessingStepType.ProviderSync
+                or PostMeetingProcessingStepType.PersonalizedSummaryGeneration;
         }
 
         private static bool SameJob(string? currentJobId, string? requestedJobId)

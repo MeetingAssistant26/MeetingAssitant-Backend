@@ -143,7 +143,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .Where(x => x.StepType == PostMeetingProcessingStepType.ActionExtraction
                             || x.StepType == PostMeetingProcessingStepType.TagSuggestion
                             || x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing
-                            || x.StepType == PostMeetingProcessingStepType.ProviderSync)
+                            || x.StepType == PostMeetingProcessingStepType.ProviderSync
+                            || x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration)
                 .Where(x => x.Status == PostMeetingProcessingStatus.Pending
                             || x.Status == PostMeetingProcessingStatus.InProgress)
                 .ToListAsync(cancellationToken);
@@ -190,6 +191,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 PostMeetingProcessingStepType.TagSuggestion => await ResolveTagSuggestionsArtifactAsync(organizationId, meetingId, cancellationToken),
                 PostMeetingProcessingStepType.KnowledgeIndexing => await ResolveKnowledgeArtifactAsync(organizationId, meetingId, cancellationToken),
                 PostMeetingProcessingStepType.ProviderSync => await ResolveProviderSyncArtifactAsync(organizationId, meetingId, cancellationToken),
+                PostMeetingProcessingStepType.PersonalizedSummaryGeneration => await ResolvePersonalizedSummaryArtifactAsync(organizationId, meetingId, cancellationToken),
                 _ => null
             };
         }
@@ -222,6 +224,21 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .ToListAsync(cancellationToken);
 
             return ids.Count == 0 ? null : new PostMeetingArtifactLink("meeting_tag_suggestion", ArtifactIds: ids);
+        }
+
+        private async Task<PostMeetingArtifactLink?> ResolvePersonalizedSummaryArtifactAsync(
+            Guid organizationId,
+            Guid meetingId,
+            CancellationToken cancellationToken)
+        {
+            var ids = await _dbContext.PersonalizedMeetingSummaries
+                .IgnoreQueryFilters()
+                .Where(x => x.OrganizationId == organizationId && x.MeetingId == meetingId)
+                .OrderBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+
+            return ids.Count == 0 ? null : new PostMeetingArtifactLink("personalized_meeting_summary", ArtifactIds: ids);
         }
 
         private async Task<PostMeetingArtifactLink?> ResolveKnowledgeArtifactAsync(

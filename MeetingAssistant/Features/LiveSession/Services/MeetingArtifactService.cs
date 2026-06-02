@@ -95,6 +95,67 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 summary.GeneratedAtUtc));
         }
 
+        public async Task<Result<PersonalizedMeetingSummaryResponse>> GetPersonalizedSummaryAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid userId,
+            CancellationToken cancellationToken = default)
+        {
+            var meetingStatusResult = await GetMeetingStatusAsync(organizationId, meetingId, cancellationToken);
+            if (meetingStatusResult.IsFailure)
+            {
+                return Result.Failure<PersonalizedMeetingSummaryResponse>(meetingStatusResult.Error);
+            }
+
+            var participantId = await _dbContext.MeetingParticipants
+                .AsNoTracking()
+                .Where(x => x.OrganizationId == organizationId && x.MeetingId == meetingId && x.UserId == userId)
+                .Select(x => (Guid?)x.Id)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (!participantId.HasValue)
+            {
+                return Result.Failure<PersonalizedMeetingSummaryResponse>(LiveSessionErrors.NotAParticipant);
+            }
+
+            var summary = await _dbContext.PersonalizedMeetingSummaries
+                .AsNoTracking()
+                .FirstOrDefaultAsync(
+                    x => x.OrganizationId == organizationId && x.MeetingId == meetingId && x.UserId == userId,
+                    cancellationToken);
+
+            if (summary == null)
+            {
+                return Result.Success(new PersonalizedMeetingSummaryResponse(
+                    meetingId,
+                    userId,
+                    participantId,
+                    ResolveMissingArtifactStatus(meetingStatusResult.Value),
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null));
+            }
+
+            return Result.Success(new PersonalizedMeetingSummaryResponse(
+                meetingId,
+                summary.UserId,
+                summary.MeetingParticipantId,
+                Available,
+                summary.SummaryText,
+                string.IsNullOrWhiteSpace(summary.LlmModel) ? null : summary.LlmModel,
+                summary.PromptTokens,
+                summary.CompletionTokens,
+                summary.GeneratedAtUtc,
+                summary.TargetDisplayName,
+                summary.PromptName,
+                summary.PromptVersion));
+        }
+
         private async Task<Result<MeetingStatus>> GetMeetingStatusAsync(
             Guid organizationId,
             Guid meetingId,

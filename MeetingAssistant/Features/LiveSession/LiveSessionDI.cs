@@ -45,6 +45,7 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<ParticipantAudioEgressReconciliationJob>();
             services.AddScoped<GenerateMeetingTranscriptJob>();
             services.AddScoped<GenerateMeetingSummaryJob>();
+            services.AddScoped<GeneratePersonalizedMeetingSummariesJob>();
             services.AddScoped<PostMeetingProcessingReconciliationJob>();
             services.AddHttpClient("openai-stt");
             services.AddHttpClient("openai-llm");

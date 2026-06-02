@@ -14,5 +14,11 @@ namespace MeetingAssistant.Features.LiveSession.Services
             Guid organizationId,
             Guid meetingId,
             CancellationToken cancellationToken = default);
+
+        Task<Result<PersonalizedMeetingSummaryResponse>> GetPersonalizedSummaryAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid userId,
+            CancellationToken cancellationToken = default);
     }
 }

@@ -160,13 +160,30 @@ namespace tests.Integration.LiveSession
     internal sealed class StubSummarizerService(SummaryResult result) : ISummarizerService
     {
         private readonly SummaryResult _result = result;
+        private readonly Queue<SummaryResult> _personalizedResults = new();
 
         public string? LastTranscript { get; private set; }
+        public List<(string Transcript, string Participant, string? PersonalizationContext)> PersonalizedCalls { get; } = [];
+
+        public void EnqueuePersonalizedResult(SummaryResult result)
+        {
+            _personalizedResults.Enqueue(result);
+        }
 
         public Task<SummaryResult> SummarizeAsync(string fullTranscript, CancellationToken ct = default)
         {
             LastTranscript = fullTranscript;
             return Task.FromResult(_result);
+        }
+
+        public Task<SummaryResult> SummarizePersonalizedAsync(
+            string fullTranscript,
+            string participant,
+            string? personalizationContext = null,
+            CancellationToken ct = default)
+        {
+            PersonalizedCalls.Add((fullTranscript, participant, personalizationContext));
+            return Task.FromResult(_personalizedResults.Count > 0 ? _personalizedResults.Dequeue() : _result);
         }
     }
 
@@ -259,16 +276,18 @@ namespace tests.Integration.LiveSession
             return meeting.Id;
         }
 
-        public void AddParticipant(Guid meetingId, Guid organizationId, Guid userId, MeetingRole role = MeetingRole.Participant)
+        public Guid AddParticipant(Guid meetingId, Guid organizationId, Guid userId, MeetingRole role = MeetingRole.Participant)
         {
-            DbContext.MeetingParticipants.Add(new MeetingParticipant
+            var participant = new MeetingParticipant
             {
                 MeetingId = meetingId,
                 OrganizationId = organizationId,
                 UserId = userId,
                 MeetingRole = role
-            });
+            };
+            DbContext.MeetingParticipants.Add(participant);
             DbContext.SaveChanges();
+            return participant.Id;
         }
 
         public Guid AddAvailableAudioFragment(

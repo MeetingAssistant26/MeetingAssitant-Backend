@@ -3,8 +3,11 @@ using MeetingAssistant.Features.ActionItems.Jobs;
 using MeetingAssistant.Features.ActionItems.Models;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
+using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Infrastructure.AI;
 using MeetingAssistant.Infrastructure.AI.DTOs;
@@ -60,6 +63,82 @@ public sealed class ExtractActionItemsJobPromptTests
         item.DueDateUtc.Should().Be(new DateTime(2026, 6, 10, 13, 30, 0, DateTimeKind.Utc));
         item.Status.Should().Be(ActionItemStatus.PendingReview);
         item.SyncMissingAssigneeReason.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RunAsync_EnqueuesPersonalizedSummaryGenerationAfterActionExtractionCompletes()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] I will review the dataset.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+        var jobs = new FakeBackgroundJobClient();
+        var tracker = new PostMeetingProcessingTracker(db.DbContext);
+        var job = CreateJob(
+            db,
+            new FakeLlmService("""
+                {"tasks":[{"assignee":"Alice","task":"review the dataset","due_date":null,"status":"pending"}]}
+                """),
+            tracker,
+            jobs);
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        jobs.CreatedJobs.Should().ContainSingle(x => x.Type == typeof(GeneratePersonalizedMeetingSummariesJob));
+        var snapshot = await tracker.GetLatestByMeetingAsync(organizationId, meetingId);
+        snapshot.Steps.Should().Contain(x =>
+            x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration
+            && x.Status == PostMeetingProcessingStatus.Pending
+            && x.RelatedHangfireJobId != null);
+    }
+
+    [Fact]
+    public async Task RunAsync_EnqueuesPersonalizedSummaryGenerationWhenExtractedTasksAreUnusable()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] We did not identify a concrete task.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+        var jobs = new FakeBackgroundJobClient();
+        var tracker = new PostMeetingProcessingTracker(db.DbContext);
+        var job = CreateJob(
+            db,
+            new FakeLlmService("""
+                {"tasks":[{"assignee":"Alice","task":"   ","due_date":null,"status":"pending"}]}
+                """),
+            tracker,
+            jobs);
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        db.DbContext.ActionItems.Should().BeEmpty();
+        jobs.CreatedJobs.Should().ContainSingle(x => x.Type == typeof(GeneratePersonalizedMeetingSummariesJob));
+        var snapshot = await tracker.GetLatestByMeetingAsync(organizationId, meetingId);
+        snapshot.Steps.Should().Contain(x =>
+            x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration
+            && x.Status == PostMeetingProcessingStatus.Pending);
     }
 
     [Theory]
@@ -219,7 +298,11 @@ public sealed class ExtractActionItemsJobPromptTests
         item.Description.Should().Contain("AI due date: not-a-date (could not parse to UTC)");
     }
 
-    private static ExtractActionItemsJob CreateJob(LiveSessionTestDb db, ILLMService llmService)
+    private static ExtractActionItemsJob CreateJob(
+        LiveSessionTestDb db,
+        ILLMService llmService,
+        IPostMeetingProcessingTracker? tracker = null,
+        FakeBackgroundJobClient? backgroundJobClient = null)
     {
         return new ExtractActionItemsJob(
             db.DbContext,
@@ -234,7 +317,9 @@ public sealed class ExtractActionItemsJobPromptTests
                     Model = "openai-compatible-local"
                 }
             }),
-            NullLogger<ExtractActionItemsJob>.Instance);
+            NullLogger<ExtractActionItemsJob>.Instance,
+            tracker,
+            backgroundJobClient);
     }
 
     private sealed class FakeLlmService(string content) : ILLMService

@@ -1,5 +1,7 @@
 using FluentAssertions;
 using Livekit.Server.Sdk.Dotnet;
+using MeetingAssistant.Features.ActionItems.Models.Entities;
+using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Handlers;
 using MeetingAssistant.Features.LiveSession.Jobs;
@@ -9,6 +11,7 @@ using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Jobs;
+using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Rag.Jobs;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -145,6 +148,167 @@ namespace tests.Integration.LiveSession
             snapshot.Steps.Should().Contain(x =>
                 x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing
                 && x.Status == PostMeetingProcessingStatus.Pending);
+        }
+
+        [Fact]
+        public async Task PersonalizedSummaryGeneration_ShouldGenerateForEveryMeetingParticipantWithConditionalContextAndUpsert()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+
+            var aliceId = db.SeedUser("Alice");
+            var bobId = db.SeedUser("Bob");
+            var charlieId = db.SeedUser("Charlie");
+            var aliceParticipantId = db.AddParticipant(meetingId, orgId, aliceId);
+            db.AddParticipant(meetingId, orgId, bobId);
+            var charlieParticipantId = db.AddParticipant(meetingId, orgId, charlieId);
+
+            db.DbContext.UserOrgMemberships.AddRange(
+                new UserOrgMembership
+                {
+                    OrganizationId = orgId,
+                    UserId = aliceId,
+                    OrgRole = OrganizationRole.Member,
+                    JobRole = "Backend Lead",
+                    Context = "Owns API launch readiness.",
+                    IsEnabled = true
+                },
+                new UserOrgMembership
+                {
+                    OrganizationId = orgId,
+                    UserId = bobId,
+                    OrgRole = OrganizationRole.Member,
+                    IsEnabled = true
+                },
+                new UserOrgMembership
+                {
+                    OrganizationId = orgId,
+                    UserId = charlieId,
+                    OrgRole = OrganizationRole.Member,
+                    IsEnabled = true
+                });
+            db.DbContext.ActionItems.AddRange(
+                new ActionItem
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    Title = "Review API launch checklist",
+                    AssignedToUserId = aliceId,
+                    Status = ActionItemStatus.PendingReview,
+                    ExtractedAtUtc = DateTime.UtcNow
+                },
+                new ActionItem
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    Title = "Read the meeting recap",
+                    AssignedToParticipantId = charlieParticipantId,
+                    Status = ActionItemStatus.PendingReview,
+                    ExtractedAtUtc = DateTime.UtcNow
+                });
+            db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+            {
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                FullText = "[00:00:01 Alice] Launch readiness is green.\n[00:00:05 Bob] Timeline remains unchanged.",
+                SegmentsJson = "[]",
+                SttModel = "test-stt",
+                GeneratedAtUtc = DateTime.UtcNow
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            var summarizer = new StubSummarizerService(new SummaryResult(
+                "fallback personalized summary",
+                "personalized-model",
+                1,
+                1,
+                "PersonalizedMeetingSummarizer",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Alice personalized summary v1",
+                "personalized-model",
+                11,
+                5,
+                "PersonalizedMeetingSummarizer",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Bob personalized summary v1",
+                "personalized-model",
+                12,
+                6,
+                "PersonalizedMeetingSummarizer",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Charlie personalized summary v1",
+                "personalized-model",
+                13,
+                7,
+                "PersonalizedMeetingSummarizer",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var job = new GeneratePersonalizedMeetingSummariesJob(
+                db.DbContext,
+                summarizer,
+                NullLogger<GeneratePersonalizedMeetingSummariesJob>.Instance,
+                tracker);
+
+            await job.RunAsync(meetingId, orgId);
+
+            db.DbContext.PersonalizedMeetingSummaries.Should().HaveCount(3);
+            var aliceSummary = db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == aliceId);
+            aliceSummary.MeetingParticipantId.Should().Be(aliceParticipantId);
+            aliceSummary.SummaryText.Should().Be("Alice personalized summary v1");
+            aliceSummary.TargetDisplayName.Should().Be("Alice");
+            aliceSummary.PromptName.Should().Be("PersonalizedMeetingSummarizer");
+            aliceSummary.PromptVersion.Should().MatchRegex("^sha256:[0-9a-f]{64}$");
+            aliceSummary.PersonalizationContextJson.Should().Contain("Backend Lead");
+            aliceSummary.PersonalizationContextJson.Should().Contain("Owns API launch readiness.");
+            aliceSummary.PersonalizationContextJson.Should().Contain("Review API launch checklist");
+            summarizer.PersonalizedCalls.Should().ContainSingle(x =>
+                x.Participant == "Alice"
+                && x.PersonalizationContext != null
+                && x.PersonalizationContext.Contains("Job role: Backend Lead")
+                && x.PersonalizationContext.Contains("Context: Owns API launch readiness.")
+                && x.PersonalizationContext.Contains("Review API launch checklist"));
+            summarizer.PersonalizedCalls.Should().ContainSingle(x =>
+                x.Participant == "Bob" && x.PersonalizationContext == null);
+            summarizer.PersonalizedCalls.Should().ContainSingle(x =>
+                x.Participant == "Charlie"
+                && x.PersonalizationContext != null
+                && x.PersonalizationContext.Contains("Read the meeting recap"));
+
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Alice personalized summary v2",
+                "personalized-model",
+                21,
+                15,
+                "PersonalizedMeetingSummarizer",
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Bob personalized summary v2",
+                "personalized-model",
+                22,
+                16,
+                "PersonalizedMeetingSummarizer",
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Charlie personalized summary v2",
+                "personalized-model",
+                23,
+                17,
+                "PersonalizedMeetingSummarizer",
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+
+            await job.RunAsync(meetingId, orgId);
+
+            db.DbContext.PersonalizedMeetingSummaries.Should().HaveCount(3);
+            db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == aliceId).SummaryText.Should().Be("Alice personalized summary v2");
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration
+                && x.Status == PostMeetingProcessingStatus.Completed
+                && x.ArtifactType == "personalized_meeting_summary");
         }
 
         [Fact]

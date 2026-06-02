@@ -11,6 +11,7 @@ namespace MeetingAssistant.Features.LiveSession.Models.PostProcessing
         ActionExtraction = 6,
         TagSuggestion = 7,
         KnowledgeIndexing = 8,
-        ProviderSync = 9
+        ProviderSync = 9,
+        PersonalizedSummaryGeneration = 10
     }
 }

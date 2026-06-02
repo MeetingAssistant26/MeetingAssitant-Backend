@@ -115,6 +115,147 @@ public class MeetingArtifactEndpointTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task GetPersonalizedSummary_WithPersistedArtifacts_ShouldReturnOnlyCurrentUsersSummary()
+    {
+        var meetingId = await SeedMeetingAsync();
+        var otherUserId = Guid.NewGuid();
+        await using (var scope = Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var currentParticipant = new MeetingParticipant
+            {
+                OrganizationId = TestOrganizationId,
+                MeetingId = meetingId,
+                UserId = TestUserId
+            };
+            var otherUser = new ApplicationUser
+            {
+                Id = otherUserId,
+                Email = $"other-{otherUserId:N}@test.com",
+                UserName = $"other-{otherUserId:N}@test.com",
+                DisplayName = "Other User",
+                EmailConfirmed = true,
+                SecurityStamp = Guid.NewGuid().ToString()
+            };
+            var otherParticipant = new MeetingParticipant
+            {
+                OrganizationId = TestOrganizationId,
+                MeetingId = meetingId,
+                UserId = otherUserId
+            };
+            db.Users.Add(otherUser);
+            db.MeetingParticipants.AddRange(currentParticipant, otherParticipant);
+            await db.SaveChangesAsync();
+            db.PersonalizedMeetingSummaries.AddRange(
+                new PersonalizedMeetingSummary
+                {
+                    MeetingId = meetingId,
+                    OrganizationId = TestOrganizationId,
+                    MeetingParticipantId = currentParticipant.Id,
+                    UserId = TestUserId,
+                    SummaryText = "Current user's personalized summary.",
+                    LlmModel = "gpt-personalized",
+                    PromptTokens = 31,
+                    CompletionTokens = 9,
+                    GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-2),
+                    TargetDisplayName = "Test User",
+                    PromptName = "PersonalizedMeetingSummarizer",
+                    PromptVersion = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    PersonalizationContextJson = "{\"jobRole\":\"Backend Lead\"}"
+                },
+                new PersonalizedMeetingSummary
+                {
+                    MeetingId = meetingId,
+                    OrganizationId = TestOrganizationId,
+                    MeetingParticipantId = otherParticipant.Id,
+                    UserId = otherUserId,
+                    SummaryText = "Other user's personalized summary.",
+                    LlmModel = "gpt-personalized",
+                    GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-2)
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await Client.GetAsync($"/api/organizations/{TestOrganizationId}/meetings/{meetingId}/summary/personalized");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<PersonalizedMeetingSummaryResponse>();
+        body.Should().NotBeNull();
+        body!.Status.Should().Be("available");
+        body.UserId.Should().Be(TestUserId);
+        body.SummaryText.Should().Be("Current user's personalized summary.");
+        body.SummaryText.Should().NotContain("Other user");
+        body.LlmModel.Should().Be("gpt-personalized");
+        body.PromptTokens.Should().Be(31);
+        body.CompletionTokens.Should().Be(9);
+        body.TargetDisplayName.Should().Be("Test User");
+        body.PromptName.Should().Be("PersonalizedMeetingSummarizer");
+        body.PromptVersion.Should().MatchRegex("^sha256:[0-9a-f]{64}$");
+    }
+
+    [Fact]
+    public async Task GetPersonalizedSummary_WithoutArtifact_ForInProgressParticipantMeeting_ShouldReturnProcessingState()
+    {
+        var meetingId = await SeedMeetingAsync(MeetingStatus.InProgress);
+        await using (var scope = Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.MeetingParticipants.Add(new MeetingParticipant
+            {
+                OrganizationId = TestOrganizationId,
+                MeetingId = meetingId,
+                UserId = TestUserId
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await Client.GetAsync($"/api/organizations/{TestOrganizationId}/meetings/{meetingId}/summary/personalized");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<PersonalizedMeetingSummaryResponse>();
+        body.Should().NotBeNull();
+        body!.Status.Should().Be("processing");
+        body.SummaryText.Should().BeNull();
+        body.UserId.Should().Be(TestUserId);
+    }
+
+    [Fact]
+    public async Task GetPersonalizedSummary_WithoutArtifact_ForCompletedParticipantMeeting_ShouldReturnNotAvailableState()
+    {
+        var meetingId = await SeedMeetingAsync(MeetingStatus.Completed);
+        await using (var scope = Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.MeetingParticipants.Add(new MeetingParticipant
+            {
+                OrganizationId = TestOrganizationId,
+                MeetingId = meetingId,
+                UserId = TestUserId
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var response = await Client.GetAsync($"/api/organizations/{TestOrganizationId}/meetings/{meetingId}/summary/personalized");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<PersonalizedMeetingSummaryResponse>();
+        body.Should().NotBeNull();
+        body!.Status.Should().Be("not_available");
+        body.SummaryText.Should().BeNull();
+        body.GeneratedAtUtc.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetPersonalizedSummary_ForNonParticipant_ShouldReturnForbidden()
+    {
+        var meetingId = await SeedMeetingAsync(MeetingStatus.Completed);
+
+        var response = await Client.GetAsync($"/api/organizations/{TestOrganizationId}/meetings/{meetingId}/summary/personalized");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
     public async Task GetTranscript_WithoutArtifact_ForInProgressMeeting_ShouldReturnProcessingState()
     {
         var meetingId = await SeedMeetingAsync(MeetingStatus.InProgress);

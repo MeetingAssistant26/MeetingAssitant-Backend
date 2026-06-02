@@ -62,6 +62,7 @@ public abstract class IntegrationTestBase : IClassFixture<MeetingAssistantWebFac
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"SessionEvents\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"ParticipantAudioFragments\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"ParticipantAudioTracks\"");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM \"PersonalizedMeetingSummaries\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingSummaries\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingTranscripts\"");
         await db.Database.ExecuteSqlRawAsync("DELETE FROM \"MeetingTagSuggestions\"");

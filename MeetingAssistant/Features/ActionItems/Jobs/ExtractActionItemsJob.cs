@@ -6,6 +6,7 @@ using MeetingAssistant.Features.ActionItems.Models;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
+using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
@@ -71,7 +72,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             }
 
             var existingCount = await _dbContext.ActionItems
-                .CountAsync(x => x.MeetingId == meetingId, cancellationToken);
+                .CountAsync(x => x.OrganizationId == organizationId && x.MeetingId == meetingId, cancellationToken);
 
             if (existingCount > 0)
             {
@@ -91,6 +92,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         cancellationToken: cancellationToken);
                 }
 
+                await EnqueuePersonalizedSummariesAsync(
+                    organizationId,
+                    meetingId,
+                    "Personalized summary generation job enqueued after action extraction found existing items.",
+                    cancellationToken);
+
                 await EnqueueKnowledgeReindexAsync(
                     organizationId,
                     meetingId,
@@ -103,7 +110,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
             var transcript = await _dbContext.MeetingTranscripts
                 .AsNoTracking()
-                .FirstOrDefaultAsync(t => t.MeetingId == meetingId, cancellationToken);
+                .FirstOrDefaultAsync(t => t.OrganizationId == organizationId && t.MeetingId == meetingId, cancellationToken);
 
             if (transcript == null || string.IsNullOrWhiteSpace(transcript.FullText))
             {
@@ -124,7 +131,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
             var participants = await _dbContext.MeetingParticipants
                 .AsNoTracking()
-                .Where(p => p.MeetingId == meetingId)
+                .Where(p => p.OrganizationId == organizationId && p.MeetingId == meetingId)
                 .Select(p => new { p.Id, p.UserId, p.User.UserName, p.User.DisplayName })
                 .ToListAsync(cancellationToken);
             var participantCandidates = participants
@@ -160,6 +167,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                             artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: Array.Empty<Guid>()),
                             cancellationToken: cancellationToken);
                     }
+
+                    await EnqueuePersonalizedSummariesAsync(
+                        organizationId,
+                        meetingId,
+                        "Personalized summary generation job enqueued after action extraction completed with no items.",
+                        cancellationToken);
 
                     await EnqueueKnowledgeReindexAsync(
                         organizationId,
@@ -217,6 +230,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                             cancellationToken: cancellationToken);
                     }
 
+                    await EnqueuePersonalizedSummariesAsync(
+                        organizationId,
+                        meetingId,
+                        "Personalized summary generation job enqueued after action extraction completed with no usable items.",
+                        cancellationToken);
+
                     await EnqueueKnowledgeReindexAsync(
                         organizationId,
                         meetingId,
@@ -244,6 +263,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         cancellationToken: cancellationToken);
                 }
 
+                await EnqueuePersonalizedSummariesAsync(
+                    organizationId,
+                    meetingId,
+                    "Personalized summary generation job enqueued after action extraction.",
+                    cancellationToken);
+
                 await EnqueueKnowledgeReindexAsync(
                     organizationId,
                     meetingId,
@@ -265,9 +290,38 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         cancellationToken: cancellationToken);
                 }
 
+                await EnqueuePersonalizedSummariesAsync(
+                    organizationId,
+                    meetingId,
+                    "Personalized summary generation job enqueued after action extraction failed; summaries will omit unavailable action item context.",
+                    cancellationToken);
+
                 _logger.LogError(ex, "Failed to extract action items for meeting {MeetingId}", meetingId);
                 throw;
             }
+        }
+
+        private async Task EnqueuePersonalizedSummariesAsync(
+            Guid organizationId,
+            Guid meetingId,
+            string message,
+            CancellationToken cancellationToken)
+        {
+            var personalizedSummaryJobId = _backgroundJobClient?.Enqueue<GeneratePersonalizedMeetingSummariesJob>(
+                job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
+
+            if (personalizedSummaryJobId is null || _postMeetingProcessingTracker is null)
+            {
+                return;
+            }
+
+            await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                organizationId,
+                meetingId,
+                PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                message: message,
+                relatedHangfireJobId: personalizedSummaryJobId,
+                cancellationToken: cancellationToken);
         }
 
         private async Task EnqueueKnowledgeReindexAsync(

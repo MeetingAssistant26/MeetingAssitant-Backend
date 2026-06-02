@@ -343,6 +343,42 @@ namespace tests.Integration.LiveSession
         }
 
         [Fact]
+        public async Task Reconciliation_ShouldCompleteStalePersonalizedSummaryStepFromDurableArtifacts()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser("Alice");
+            var participantId = db.AddParticipant(meetingId, orgId, userId);
+            var staleAtUtc = DateTime.UtcNow.AddHours(-2);
+            var run = SeedStaleRun(db, orgId, meetingId, staleAtUtc);
+            db.DbContext.PostMeetingProcessingSteps.Add(
+                CreateStep(run, PostMeetingProcessingStepType.PersonalizedSummaryGeneration, PostMeetingProcessingStatus.InProgress, staleAtUtc));
+            var summaryId = Guid.NewGuid();
+            db.DbContext.PersonalizedMeetingSummaries.Add(new PersonalizedMeetingSummary
+            {
+                Id = summaryId,
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                MeetingParticipantId = participantId,
+                UserId = userId,
+                SummaryText = "Personalized summary exists.",
+                LlmModel = "test",
+                GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-25)
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            await CreateReconciliationJob(db).RunAsync(CancellationToken.None);
+
+            var snapshot = await new PostMeetingProcessingTracker(db.DbContext).GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Steps.Should().ContainSingle(x =>
+                x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration
+                && x.Status == PostMeetingProcessingStatus.Completed
+                && x.ArtifactType == "personalized_meeting_summary"
+                && JsonSerializer.Deserialize<Guid[]>(x.ArtifactIdsJson!)!.Single() == summaryId);
+        }
+
+        [Fact]
         public async Task Reconciliation_ShouldLeaveFreshInProgressStepsUntouched()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();

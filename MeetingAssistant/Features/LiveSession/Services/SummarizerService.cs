@@ -17,22 +17,47 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
         private readonly IPromptProvider _promptProvider = promptProvider;
 
-        public async Task<SummaryResult> SummarizeAsync(string fullTranscript, CancellationToken ct = default)
+        public Task<SummaryResult> SummarizeAsync(string fullTranscript, CancellationToken ct = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(fullTranscript);
 
+            return CompleteSummaryAsync(
+                _promptProvider.GetSummarizerPrompt(fullTranscript),
+                promptName: _promptProvider.SummarizerPromptName,
+                promptVersion: _promptProvider.SummarizerPromptVersion,
+                temperature: null,
+                ct);
+        }
+
+        public Task<SummaryResult> SummarizePersonalizedAsync(
+            string fullTranscript,
+            string participant,
+            string? personalizationContext = null,
+            CancellationToken ct = default)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(fullTranscript);
+            ArgumentException.ThrowIfNullOrWhiteSpace(participant);
+
+            return CompleteSummaryAsync(
+                _promptProvider.GetPersonalizedSummarizerPrompt(participant, fullTranscript, personalizationContext),
+                promptName: _promptProvider.PersonalizedSummarizerPromptName,
+                promptVersion: _promptProvider.PersonalizedSummarizerPromptVersion,
+                temperature: 0.2,
+                ct);
+        }
+
+        private async Task<SummaryResult> CompleteSummaryAsync(
+            string prompt,
+            string? promptName,
+            string? promptVersion,
+            double? temperature,
+            CancellationToken ct)
+        {
             var baseUrl = NormalizeBaseUrl(_llm.BaseUrl);
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/chat/completions")
             {
                 Content = new StringContent(
-                    JsonSerializer.Serialize(new
-                    {
-                        model = _llm.Model,
-                        messages = new object[]
-                        {
-                            new { role = "user", content = _promptProvider.GetSummarizerPrompt(fullTranscript) }
-                        }
-                    }, JsonOptions),
+                    JsonSerializer.Serialize(BuildRequestBody(prompt, temperature), JsonOptions),
                     Encoding.UTF8,
                     "application/json")
             };
@@ -63,7 +88,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             int? completionTokens = null;
             if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
             {
-                if (usage.TryGetProperty("prompt_tokens", out var prompt) && prompt.TryGetInt32(out var promptValue))
+                if (usage.TryGetProperty("prompt_tokens", out var promptUsage) && promptUsage.TryGetInt32(out var promptValue))
                 {
                     promptTokens = promptValue;
                 }
@@ -75,7 +100,26 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 }
             }
 
-            return new SummaryResult(summaryText, _llm.Model, promptTokens, completionTokens);
+            return new SummaryResult(summaryText, _llm.Model, promptTokens, completionTokens, promptName, promptVersion);
+        }
+
+        private object BuildRequestBody(string prompt, double? temperature)
+        {
+            var body = new Dictionary<string, object?>
+            {
+                ["model"] = _llm.Model,
+                ["messages"] = new object[]
+                {
+                    new { role = "user", content = prompt }
+                }
+            };
+
+            if (temperature.HasValue)
+            {
+                body["temperature"] = temperature.Value;
+            }
+
+            return body;
         }
 
         private static string NormalizeBaseUrl(string baseUrl)
