@@ -59,7 +59,7 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
         public DbSet<OrganizationIntegrationConfig> OrganizationIntegrationConfigs => Set<OrganizationIntegrationConfig>();
         public DbSet<ExternalAccountLink> ExternalAccountLinks => Set<ExternalAccountLink>();
         public DbSet<ExternalMemberMapping> ExternalMemberMappings => Set<ExternalMemberMapping>();
-        protected  override void OnModelCreating(ModelBuilder modelBuilder)
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
@@ -81,14 +81,14 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
                            .SelectMany(t => t.GetForeignKeys())
                            .Where(fk => fk.DeleteBehavior == DeleteBehavior.Cascade && !fk.IsOwnership);
 
-            foreach ( var fk in cascadeFks)
-                    fk.DeleteBehavior = DeleteBehavior.Restrict;
+            foreach (var fk in cascadeFks)
+                fk.DeleteBehavior = DeleteBehavior.Restrict;
         }
 
         private void ApplyTenantFilter<T>(ModelBuilder builder) where T : class, IHasOrganizationId
         {
             // EF Core translates field accesses on "this" context correctly into parameters
-            builder.Entity<T>().HasQueryFilter(e => !_currentTenantId.HasValue || e.OrganizationId == _currentTenantId.Value);
+            builder.Entity<T>().HasQueryFilter(e => _currentTenantId == null || e.OrganizationId == _currentTenantId);
         }
         public override async Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
         {
@@ -117,7 +117,7 @@ namespace MeetingAssistant.Infrastructure.Persistence.DbContext
             var entries = ChangeTracker.Entries<AuditableEntity>();
             var currentUserId = _httpContextAccessor.HttpContext?.User?.FindFirstValue(ClaimTypes.NameIdentifier) ?? "System";
 
-            foreach (var entityEntry in entries) 
+            foreach (var entityEntry in entries)
             {
                 if (entityEntry.State == EntityState.Added)
                 {

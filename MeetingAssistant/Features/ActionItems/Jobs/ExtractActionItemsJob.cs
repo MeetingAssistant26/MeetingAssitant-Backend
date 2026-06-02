@@ -71,77 +71,81 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     cancellationToken: cancellationToken);
             }
 
-            var existingCount = await _dbContext.ActionItems
-                .CountAsync(x => x.OrganizationId == organizationId && x.MeetingId == meetingId, cancellationToken);
-
-            if (existingCount > 0)
-            {
-                if (_postMeetingProcessingTracker is not null)
-                {
-                    var existingIds = await _dbContext.ActionItems
-                        .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
-                        .Select(x => x.Id)
-                        .ToListAsync(cancellationToken);
-
-                    await _postMeetingProcessingTracker.CompleteStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.ActionExtraction,
-                        message: "Action items already exist for meeting. Skipping extraction.",
-                        artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: existingIds),
-                        cancellationToken: cancellationToken);
-                }
-
-                await EnqueuePersonalizedSummariesAsync(
-                    organizationId,
-                    meetingId,
-                    "Personalized summary generation job enqueued after action extraction found existing items.",
-                    cancellationToken);
-
-                await EnqueueKnowledgeReindexAsync(
-                    organizationId,
-                    meetingId,
-                    "Knowledge indexing job enqueued after action extraction found existing items.",
-                    cancellationToken);
-
-                _logger.LogInformation("Action items already exist for meeting {MeetingId}. Skipping.", meetingId);
-                return;
-            }
-
-            var transcript = await _dbContext.MeetingTranscripts
-                .AsNoTracking()
-                .FirstOrDefaultAsync(t => t.OrganizationId == organizationId && t.MeetingId == meetingId, cancellationToken);
-
-            if (transcript == null || string.IsNullOrWhiteSpace(transcript.FullText))
-            {
-                if (_postMeetingProcessingTracker is not null)
-                {
-                    await _postMeetingProcessingTracker.FailStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.ActionExtraction,
-                        "transcript_unavailable",
-                        "No transcript found for action item extraction.",
-                        cancellationToken: cancellationToken);
-                }
-
-                _logger.LogWarning("No transcript found for meeting {MeetingId}", meetingId);
-                return;
-            }
-
-            var participants = await _dbContext.MeetingParticipants
-                .AsNoTracking()
-                .Where(p => p.OrganizationId == organizationId && p.MeetingId == meetingId)
-                .Select(p => new { p.Id, p.UserId, p.User.UserName, p.User.DisplayName })
-                .ToListAsync(cancellationToken);
-            var participantCandidates = participants
-                .Select(p => new ParticipantCandidate(p.Id, p.UserId, p.DisplayName, p.UserName))
-                .ToList();
-
-            var prompt = _promptProvider.GetTaskExtractionPrompt(transcript.FullText);
-
             try
             {
+                var existingCount = await _dbContext.ActionItems
+                    .IgnoreQueryFilters()
+                    .CountAsync(x => x.OrganizationId == organizationId && x.MeetingId == meetingId, cancellationToken);
+
+                if (existingCount > 0)
+                {
+                    if (_postMeetingProcessingTracker is not null)
+                    {
+                        var existingIds = await _dbContext.ActionItems
+                            .IgnoreQueryFilters()
+                            .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
+                            .Select(x => x.Id)
+                            .ToListAsync(cancellationToken);
+
+                        await _postMeetingProcessingTracker.CompleteStepAsync(
+                            organizationId,
+                            meetingId,
+                            PostMeetingProcessingStepType.ActionExtraction,
+                            message: "Action items already exist for meeting. Skipping extraction.",
+                            artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: existingIds),
+                            cancellationToken: cancellationToken);
+                    }
+
+                    await EnqueuePersonalizedSummariesAsync(
+                        organizationId,
+                        meetingId,
+                        "Personalized summary generation job enqueued after action extraction found existing items.",
+                        cancellationToken);
+
+                    await EnqueueKnowledgeReindexAsync(
+                        organizationId,
+                        meetingId,
+                        "Knowledge indexing job enqueued after action extraction found existing items.",
+                        cancellationToken);
+
+                    _logger.LogInformation("Action items already exist for meeting {MeetingId}. Skipping.", meetingId);
+                    return;
+                }
+
+                var transcript = await _dbContext.MeetingTranscripts
+                    .AsNoTracking()
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(t => t.OrganizationId == organizationId && t.MeetingId == meetingId, cancellationToken);
+
+                if (transcript == null || string.IsNullOrWhiteSpace(transcript.FullText))
+                {
+                    if (_postMeetingProcessingTracker is not null)
+                    {
+                        await _postMeetingProcessingTracker.FailStepAsync(
+                            organizationId,
+                            meetingId,
+                            PostMeetingProcessingStepType.ActionExtraction,
+                            "transcript_unavailable",
+                            "No transcript found for action item extraction.",
+                            cancellationToken: cancellationToken);
+                    }
+
+                    _logger.LogWarning("No transcript found for meeting {MeetingId}", meetingId);
+                    return;
+                }
+
+                var participants = await _dbContext.MeetingParticipants
+                    .AsNoTracking()
+                    .IgnoreQueryFilters()
+                    .Where(p => p.OrganizationId == organizationId && p.MeetingId == meetingId)
+                    .Select(p => new { p.Id, p.UserId, p.User.UserName, p.User.DisplayName })
+                    .ToListAsync(cancellationToken);
+                var participantCandidates = participants
+                    .Select(p => new ParticipantCandidate(p.Id, p.UserId, p.DisplayName, p.UserName))
+                    .ToList();
+
+                var prompt = _promptProvider.GetTaskExtractionPrompt(transcript.FullText);
+
                 var llmRequest = new LLMRequest
                 {
                     Model = _model,
@@ -250,6 +254,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                 if (_postMeetingProcessingTracker is not null)
                 {
                     var createdIds = await _dbContext.ActionItems
+                        .IgnoreQueryFilters()
                         .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
                         .Select(x => x.Id)
                         .ToListAsync(cancellationToken);
@@ -276,6 +281,10 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     cancellationToken);
 
                 _logger.LogInformation("Extracted {Count} action items for meeting {MeetingId}", createdCount, meetingId);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -307,6 +316,25 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             string message,
             CancellationToken cancellationToken)
         {
+            var hasActivePersonalizedSummaryStep = await _dbContext.PostMeetingProcessingSteps
+                .IgnoreQueryFilters()
+                .AnyAsync(
+                    x => x.OrganizationId == organizationId
+                         && x.MeetingId == meetingId
+                         && x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration
+                         && (x.Status == PostMeetingProcessingStatus.Pending
+                             || x.Status == PostMeetingProcessingStatus.InProgress
+                             || x.Status == PostMeetingProcessingStatus.Completed),
+                    cancellationToken);
+
+            if (hasActivePersonalizedSummaryStep)
+            {
+                _logger.LogInformation(
+                    "Personalized summary generation already pending, in progress, or completed for meeting {MeetingId}. Skipping duplicate enqueue.",
+                    meetingId);
+                return;
+            }
+
             var personalizedSummaryJobId = _backgroundJobClient?.Enqueue<GeneratePersonalizedMeetingSummariesJob>(
                 job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
 

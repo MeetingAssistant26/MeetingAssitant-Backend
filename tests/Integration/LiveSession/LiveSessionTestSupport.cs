@@ -205,6 +205,14 @@ namespace tests.Integration.LiveSession
         public static async Task<LiveSessionTestDb> CreateAsync(Guid? tenantOrganizationId = null)
         {
             var effectiveTenantId = tenantOrganizationId ?? Guid.NewGuid();
+            return await CreateWithAmbientTenantAsync(effectiveTenantId, effectiveTenantId);
+        }
+
+        public static async Task<LiveSessionTestDb> CreateWithAmbientTenantAsync(
+            Guid? ambientTenantOrganizationId,
+            Guid? defaultOrganizationId = null)
+        {
+            var effectiveTenantId = defaultOrganizationId ?? ambientTenantOrganizationId ?? Guid.NewGuid();
             var connection = new SqliteConnection("DataSource=:memory:");
             await connection.OpenAsync();
 
@@ -215,7 +223,7 @@ namespace tests.Integration.LiveSession
             var dbContext = new ApplicationDbContext(
                 options,
                 new HttpContextAccessor(),
-                new StaticTenantProvider(effectiveTenantId),
+                new StaticTenantProvider(ambientTenantOrganizationId),
                 new NoopPublisher());
 
             await dbContext.Database.EnsureCreatedAsync();
