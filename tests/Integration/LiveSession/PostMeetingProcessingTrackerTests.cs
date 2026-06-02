@@ -121,6 +121,76 @@ namespace tests.Integration.LiveSession
         }
 
         [Fact]
+        public async Task OptionalStepFailure_ShouldNotFailOrReopenCompletedRun()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+
+            await tracker.CompleteStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.TranscriptPersistence,
+                artifact: new PostMeetingArtifactLink("meeting_transcript", Guid.NewGuid()));
+            await tracker.CompleteStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.SummaryGeneration,
+                artifact: new PostMeetingArtifactLink("meeting_summary", Guid.NewGuid()));
+            await tracker.CompleteRunAsync(orgId, meetingId, message: "Core artifacts complete.");
+
+            await tracker.StartStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.TagSuggestion,
+                relatedHangfireJobId: "hf-tags-1");
+            await tracker.FailStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.TagSuggestion,
+                "tag_suggestion_failed",
+                "LLM returned malformed JSON.",
+                relatedHangfireJobId: "hf-tags-1");
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Run!.Status.Should().Be(PostMeetingProcessingStatus.Completed);
+            snapshot.Run.CompletedAtUtc.Should().NotBeNull();
+            snapshot.Run.ErrorCode.Should().BeNull();
+            snapshot.Steps.Should().ContainSingle(x =>
+                x.StepType == PostMeetingProcessingStepType.TagSuggestion
+                && x.Status == PostMeetingProcessingStatus.Failed
+                && x.ErrorCode == "tag_suggestion_failed");
+            snapshot.Events.Should().NotContain(x =>
+                x.EventType == PostMeetingProcessingEventType.RunStatusChanged
+                && x.Status == PostMeetingProcessingStatus.Failed);
+        }
+
+        [Fact]
+        public async Task OptionalStepFailure_BeforeCoreCompletion_ShouldKeepRunInProgress()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+
+            await tracker.StartStepAsync(orgId, meetingId, PostMeetingProcessingStepType.ActionExtraction);
+            await tracker.FailStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.ActionExtraction,
+                "action_extraction_failed",
+                "Provider timed out.");
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Run!.Status.Should().Be(PostMeetingProcessingStatus.InProgress);
+            snapshot.Run.ErrorCode.Should().BeNull();
+            snapshot.Steps.Should().ContainSingle(x =>
+                x.StepType == PostMeetingProcessingStepType.ActionExtraction
+                && x.Status == PostMeetingProcessingStatus.Failed);
+        }
+
+        [Fact]
         public async Task Tracker_ShouldSupportTagKnowledgeAndProviderStepsWithMultipleArtifactIdsAndCompletedRun()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();

@@ -144,23 +144,28 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             step.ErrorMessage = null;
             ApplyArtifact(step, artifact);
 
-            run.Status = PostMeetingProcessingStatus.InProgress;
-            run.StartedAtUtc ??= now;
-            if (run.AttemptCount == 0)
+            var keepCompletedRunClosed = run.Status == PostMeetingProcessingStatus.Completed && IsOptionalStep(stepType);
+            if (!keepCompletedRunClosed)
             {
-                run.AttemptCount = 1;
-            }
-            else if (run.FailedAtUtc.HasValue)
-            {
-                run.AttemptCount += 1;
+                run.Status = PostMeetingProcessingStatus.InProgress;
+                run.StartedAtUtc ??= now;
+                if (run.AttemptCount == 0)
+                {
+                    run.AttemptCount = 1;
+                }
+                else if (run.FailedAtUtc.HasValue)
+                {
+                    run.AttemptCount += 1;
+                }
+
+                run.FailedAtUtc = null;
+                run.ErrorCode = null;
+                run.ErrorMessage = null;
+                AddRunStatusEvent(run, PostMeetingProcessingEventType.RunStatusChanged, "Post-meeting processing is in progress.", relatedHangfireJobId);
             }
 
-            run.FailedAtUtc = null;
-            run.ErrorCode = null;
-            run.ErrorMessage = null;
             run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
 
-            AddRunStatusEvent(run, PostMeetingProcessingEventType.RunStatusChanged, "Post-meeting processing is in progress.", relatedHangfireJobId);
             AddStepEvent(
                 run,
                 step,
@@ -258,14 +263,23 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             step.ErrorMessage = truncatedError;
             ApplyArtifact(step, artifact);
 
-            run.Status = PostMeetingProcessingStatus.Failed;
-            run.StartedAtUtc ??= now;
-            run.FailedAtUtc = now;
-            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
-            run.ErrorCode = errorCode;
-            run.ErrorMessage = truncatedError;
+            if (!IsOptionalStep(stepType))
+            {
+                run.Status = PostMeetingProcessingStatus.Failed;
+                run.StartedAtUtc ??= now;
+                run.FailedAtUtc = now;
+                run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+                run.ErrorCode = errorCode;
+                run.ErrorMessage = truncatedError;
 
-            AddRunStatusEvent(run, PostMeetingProcessingEventType.RunStatusChanged, "Post-meeting processing failed.", relatedHangfireJobId, errorCode, truncatedError);
+                AddRunStatusEvent(run, PostMeetingProcessingEventType.RunStatusChanged, "Post-meeting processing failed.", relatedHangfireJobId, errorCode, truncatedError);
+            }
+            else
+            {
+                run.StartedAtUtc ??= now;
+                run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+            }
+
             AddStepEvent(run, step, PostMeetingProcessingEventType.StepFailed, message, relatedHangfireJobId, artifact, errorCode, truncatedError);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -504,6 +518,14 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return (artifact.ArtifactType is null || step.ArtifactType == artifact.ArtifactType)
                    && (!artifact.ArtifactId.HasValue || step.ArtifactId == artifact.ArtifactId)
                    && (artifact.ArtifactIds is null || step.ArtifactIdsJson == SerializeArtifactIds(artifact.ArtifactIds));
+        }
+
+        private static bool IsOptionalStep(PostMeetingProcessingStepType stepType)
+        {
+            return stepType is PostMeetingProcessingStepType.ActionExtraction
+                or PostMeetingProcessingStepType.TagSuggestion
+                or PostMeetingProcessingStepType.KnowledgeIndexing
+                or PostMeetingProcessingStepType.ProviderSync;
         }
 
         private static bool SameJob(string? currentJobId, string? requestedJobId)

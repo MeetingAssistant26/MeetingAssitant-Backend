@@ -143,6 +143,15 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     relatedHangfireJobId: knowledgeJobId,
                     cancellationToken: cancellationToken);
             }
+
+            if (_postMeetingProcessingTracker is not null)
+            {
+                await _postMeetingProcessingTracker.CompleteRunAsync(
+                    organizationId,
+                    meetingId,
+                    message: "Core transcript and summary artifacts completed; optional post-processing continues independently.",
+                    cancellationToken: cancellationToken);
+            }
         }
     }
 }

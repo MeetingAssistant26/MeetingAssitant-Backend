@@ -5,7 +5,9 @@ using MeetingAssistant.Features.LiveSession.Handlers;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Jobs;
 using MeetingAssistant.Features.Rag.Jobs;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -60,7 +62,8 @@ namespace tests.Integration.LiveSession
                 45));
 
             var jobs = new FakeBackgroundJobClient();
-            var summaryHandler = new GenerateMeetingSummaryHandler(jobs);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var summaryHandler = new GenerateMeetingSummaryHandler(jobs, tracker);
             var publisher = new CollectingPublisher(async (notification, ct) =>
             {
                 if (notification is MeetingTranscriptReadyEvent transcriptReadyEvent)
@@ -69,7 +72,7 @@ namespace tests.Integration.LiveSession
                 }
             });
 
-            var transcriptHandler = new GenerateMeetingTranscriptHandler(jobs);
+            var transcriptHandler = new GenerateMeetingTranscriptHandler(jobs, tracker);
             await transcriptHandler.Handle(
                 new ParticipantAudioReadyEvent(meetingId, orgId, DateTime.UtcNow),
                 CancellationToken.None);
@@ -81,7 +84,8 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 stt,
                 publisher,
-                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+                NullLogger<GenerateMeetingTranscriptJob>.Instance,
+                tracker);
 
             await transcriptJob.RunAsync(meetingId, orgId);
 
@@ -92,7 +96,8 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 summarizer,
                 NullLogger<GenerateMeetingSummaryJob>.Instance,
-                backgroundJobClient: jobs);
+                tracker,
+                jobs);
 
             await summaryJob.RunAsync(meetingId, orgId);
 
@@ -124,6 +129,22 @@ namespace tests.Integration.LiveSession
                 .OfType<MeetingTranscriptReadyEvent>()
                 .Should()
                 .ContainSingle(x => x.MeetingId == meetingId);
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Run!.Status.Should().Be(PostMeetingProcessingStatus.Completed);
+            snapshot.Run.CompletedAtUtc.Should().NotBeNull();
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.TranscriptPersistence
+                && x.Status == PostMeetingProcessingStatus.Completed);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.SummaryGeneration
+                && x.Status == PostMeetingProcessingStatus.Completed);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.TagSuggestion
+                && x.Status == PostMeetingProcessingStatus.Pending);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing
+                && x.Status == PostMeetingProcessingStatus.Pending);
         }
 
         [Fact]
