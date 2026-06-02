@@ -14,7 +14,7 @@ Add `AgentJwt` settings in `appsettings.Development.json` (or user-secrets):
     "SigningKey": "your-agent-jwt-signing-key-min-32-chars",
     "Issuer": "MeetingAssistant",
     "Audience": "MeetingAssistantAgent",
-    "TokenExpiryMinutes": 60
+    "TokenExpiryMinutes": 360
   }
 }
 ```

@@ -50,7 +50,7 @@ public class MeetingAssistantWebFactory : WebApplicationFactory<MeetingAssistant
                 ["AgentJwt:SigningKey"] = TestJwtTokenHelper.TestAgentSigningKey,
                 ["AgentJwt:Issuer"] = TestJwtTokenHelper.TestAgentIssuer,
                 ["AgentJwt:Audience"] = TestJwtTokenHelper.TestAgentAudience,
-                ["AgentJwt:TokenExpiryMinutes"] = "60",
+                ["AgentJwt:TokenExpiryMinutes"] = "360",
                 ["ConnectionStrings:DefaultConnection"] = "not-used",
                 ["Redis:ConnectionString"] = "not-used",
                 ["HangfireSettings:DashboardUsername"] = "test",

@@ -216,7 +216,7 @@ namespace tests.Integration.LiveSession
                     Issuer = "MeetingAssistant",
                     Audience = "MeetingAssistantAgent",
                     SigningKey = "AgentSigningKeyForIntegrationTests_MustBeAtLeast32Chars!!",
-                    TokenExpiryMinutes = 60
+                    TokenExpiryMinutes = 360
                 }),
                 new FakeAgentAuthService(),
                 NullLogger<AiAssistantDispatchService>.Instance);
