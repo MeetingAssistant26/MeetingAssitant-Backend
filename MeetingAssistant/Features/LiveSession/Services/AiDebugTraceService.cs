@@ -55,6 +55,18 @@ namespace MeetingAssistant.Features.LiveSession.Services
                               || string.Equals(
                                   request.EventType,
                                   AiAssistantTraceEventTypes.AssistantSpeechCompleted,
+                                  StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(
+                                  request.EventType,
+                                  AiAssistantTraceEventTypes.SttCompleted,
+                                  StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(
+                                  request.EventType,
+                                  AiAssistantTraceEventTypes.LlmCompleted,
+                                  StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(
+                                  request.EventType,
+                                  AiAssistantTraceEventTypes.TtsCompleted,
                                   StringComparison.OrdinalIgnoreCase);
             var step = request.Step;
             var entity = new AiAssistantTraceEvent

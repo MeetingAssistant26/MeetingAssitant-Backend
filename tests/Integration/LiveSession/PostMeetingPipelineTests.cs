@@ -327,6 +327,123 @@ namespace tests.Integration.LiveSession
         }
 
         [Fact]
+        public async Task TranscriptGeneration_ShouldRecoverParticipantAndAssistantTranscriptFromRuntimeAiTraceEvents_WhenAudioFragmentsAreMissing()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 02, 13, 00, 00, DateTimeKind.Utc);
+
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            var aliceId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, aliceId);
+
+            db.DbContext.AiAssistantTraceEvents.AddRange(
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-1",
+                    TurnId = "trace-turn-1",
+                    Sequence = 1,
+                    EventType = AiAssistantTraceEventTypes.TurnStarted,
+                    ParticipantIdentity = $"user:{aliceId}",
+                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(4),
+                    State = "listening",
+                    StepType = "turn"
+                },
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-1",
+                    TurnId = "trace-turn-1",
+                    Sequence = 20,
+                    EventType = AiAssistantTraceEventTypes.SttCompleted,
+                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(9),
+                    StepType = "stt",
+                    StepProvider = "OpenAICompatible",
+                    Text = "Please recover this transcript from traces."
+                },
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-1",
+                    TurnId = "trace-turn-1",
+                    Sequence = 30,
+                    EventType = AiAssistantTraceEventTypes.LlmCompleted,
+                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(12),
+                    StepType = "llm",
+                    StepProvider = "OpenAI-compatible",
+                    Text = "Recovered from the LLM trace."
+                },
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-1",
+                    TurnId = "trace-turn-1",
+                    Sequence = 40,
+                    EventType = AiAssistantTraceEventTypes.TtsCompleted,
+                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(13),
+                    StepType = "tts",
+                    StepProvider = "ElevenLabs",
+                    Text = "Recovered"
+                },
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-1",
+                    TurnId = "trace-turn-1",
+                    Sequence = 40,
+                    EventType = AiAssistantTraceEventTypes.TtsCompleted,
+                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(14),
+                    StepType = "tts",
+                    StepProvider = "ElevenLabs",
+                    Text = "from the TTS trace."
+                });
+            await db.DbContext.SaveChangesAsync();
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>());
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            stt.Calls.Should().BeEmpty();
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.FullText.Split(Environment.NewLine, StringSplitOptions.None).Should().Equal(
+                "[00:00:09 Alice] Please recover this transcript from traces.",
+                "[00:00:12 AI Assistant] Recovered from the LLM trace.");
+            transcript.SttModel.Should().Be("ai-debug-trace");
+
+            var segments = DeserializePersistedSegments(transcript.SegmentsJson);
+            segments.Should().HaveCount(2);
+            var participantSegment = segments.Single(x => x.SpeakerRole == "participant");
+            participantSegment.ParticipantUserId.Should().Be(aliceId);
+            participantSegment.Source.Should().Be("ai_assistant_trace");
+            participantSegment.TimestampOffsetSource.Should().Be(AiAssistantTraceEventTypes.SttCompleted);
+
+            var assistantSegment = segments.Single(x => x.SpeakerRole == "assistant");
+            assistantSegment.Source.Should().Be("ai_assistant_trace");
+            assistantSegment.TimestampOffsetSource.Should().Be(AiAssistantTraceEventTypes.LlmCompleted);
+
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
+                .Should()
+                .ContainSingle("the second retry-safe transcript generation should not duplicate or republish unchanged trace recovery output");
+        }
+
+        [Fact]
         public async Task PersonalizedSummaryGeneration_ShouldGenerateOnlyEligibleParticipantsAndPersistSkipAudit()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();

@@ -59,7 +59,7 @@ public class AiDebugTraceEndpointTests : IntegrationTestBase
     }
 
     [Fact]
-    public async Task AgentIngest_WhenPayloadPersistenceDisabled_ShouldSuppressPayloadsAndText()
+    public async Task AgentIngest_WhenPayloadPersistenceDisabled_ShouldSuppressPayloadsButKeepTranscriptRecoveryText()
     {
         using var factory = Factory.WithConfiguration(EnabledDebugConfig(persistPayloads: false));
         var ids = await SeedBaseAndMeetingAsync(factory, OrganizationRole.Admin);
@@ -102,7 +102,7 @@ public class AiDebugTraceEndpointTests : IntegrationTestBase
         var persisted = await db.AiAssistantTraceEvents.IgnoreQueryFilters().SingleAsync();
         persisted.RequestPayloadJson.Should().BeNull();
         persisted.ResponsePayloadJson.Should().BeNull();
-        persisted.Text.Should().BeNull();
+        persisted.Text.Should().Be("full answer content");
         persisted.CharactersCount.Should().Be("full answer content".Length);
         persisted.PromptTokens.Should().Be(1);
         persisted.TotalTokens.Should().Be(3);

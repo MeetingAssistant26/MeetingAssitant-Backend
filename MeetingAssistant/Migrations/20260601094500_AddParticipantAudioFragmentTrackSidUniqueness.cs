@@ -1,3 +1,5 @@
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -5,6 +7,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace MeetingAssistant.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(ApplicationDbContext))]
+    [Migration("20260601094500_AddParticipantAudioFragmentTrackSidUniqueness")]
     public partial class AddParticipantAudioFragmentTrackSidUniqueness : Migration
     {
         /// <inheritdoc />
