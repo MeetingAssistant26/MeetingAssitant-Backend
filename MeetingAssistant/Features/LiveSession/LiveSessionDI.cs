@@ -40,6 +40,9 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<ISttService, SttService>();
             services.AddScoped<ISummarizerService, SummarizerService>();
             services.AddScoped<IngestParticipantAudioJob>();
+            services.AddScoped<StartParticipantAudioEgressJob>();
+            services.AddScoped<PersistParticipantAudioFragmentJob>();
+            services.AddScoped<ParticipantAudioEgressReconciliationJob>();
             services.AddScoped<GenerateMeetingTranscriptJob>();
             services.AddScoped<GenerateMeetingSummaryJob>();
             services.AddScoped<PostMeetingProcessingReconciliationJob>();

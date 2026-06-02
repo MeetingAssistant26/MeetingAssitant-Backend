@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Livekit.Server.Sdk.Dotnet;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
+using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -25,7 +26,6 @@ namespace tests.Unit.LiveSession
                 db.DbContext,
                 jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             var evt = WebhookEventFactory.EgressEnded(
@@ -74,7 +74,6 @@ namespace tests.Unit.LiveSession
                 db.DbContext,
                 jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             const string sourceUrl = "https://example.com/bucket/tracks/mtg-room/user-speaker/track.ogg";
@@ -115,12 +114,11 @@ namespace tests.Unit.LiveSession
             var userId = db.SeedUser();
             db.AddParticipant(meetingId, orgId, userId);
 
-            var egress = new FakeEgressService();
+            var jobs = new FakeBackgroundJobClient();
             var sut = new WebhookService(
                 db.DbContext,
-                new FakeBackgroundJobClient(),
+                jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
-                egress,
                 NullLogger<WebhookService>.Instance);
 
             await sut.ProcessAsync(WebhookEventFactory.TrackPublished(meetingId, "evt-track-a", userId, "TR_DUPLICATE"), "{}");
@@ -132,7 +130,7 @@ namespace tests.Unit.LiveSession
                 .Be(1);
             db.DbContext.ParticipantAudioTracks.Count().Should().Be(1);
             db.DbContext.ParticipantAudioFragments.Count().Should().Be(1);
-            egress.Starts.Should().ContainSingle(x => x.TrackId == "TR_DUPLICATE");
+            jobs.CreatedJobs.Should().ContainSingle(x => x.Type == typeof(StartParticipantAudioEgressJob));
         }
     }
 }

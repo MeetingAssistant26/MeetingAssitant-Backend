@@ -24,6 +24,8 @@ namespace MeetingAssistant.Features.LiveSession.Models
 
         public string? StorageLocation { get; set; }
 
+        public string? BackupStoragePath { get; set; }
+
         public ParticipantAudioFragmentStatus Status { get; set; } = ParticipantAudioFragmentStatus.Pending;
 
         public long? SizeBytes { get; set; }
@@ -36,7 +38,21 @@ namespace MeetingAssistant.Features.LiveSession.Models
 
         public DateTime? EgressEndedAtUtc { get; set; }
 
+        public DateTime? BackupStorageAvailableAtUtc { get; set; }
+
         public DateTime? StorageAvailableAtUtc { get; set; }
+
+        public int EgressStartAttemptCount { get; set; }
+
+        public DateTime? LastEgressStartAttemptAtUtc { get; set; }
+
+        public DateTime? EgressStartLeaseExpiresAtUtc { get; set; }
+
+        public int StorageUploadAttemptCount { get; set; }
+
+        public DateTime? LastStorageUploadAttemptAtUtc { get; set; }
+
+        public DateTime? StorageUploadLeaseExpiresAtUtc { get; set; }
 
         public DateTime? FailedAtUtc { get; set; }
 

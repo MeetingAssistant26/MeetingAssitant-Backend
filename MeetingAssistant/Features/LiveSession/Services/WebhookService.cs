@@ -23,7 +23,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
         ApplicationDbContext dbContext,
         IBackgroundJobClient backgroundJobClient,
         IOptions<LiveKitOptions> options,
-        IEgressService egressService,
         ILogger<WebhookService> logger,
         IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
         IParticipantAudioReadinessService? participantAudioReadinessService = null,
@@ -34,7 +33,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly IBackgroundJobClient _backgroundJobClient = backgroundJobClient;
         private readonly LiveKitOptions _options = options.Value;
-        private readonly IEgressService _egressService = egressService;
         private readonly ILogger<WebhookService> _logger = logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
         private readonly IParticipantAudioReadinessService _participantAudioReadinessService = participantAudioReadinessService
@@ -101,7 +99,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
             _dbContext.SessionEvents.Add(sessionEvent);
 
             var ingestEnqueues = new List<(Guid FragmentId, string S3LocationUrl, long? SizeBytes)>();
-            var egressStarts = new List<(Guid MeetingId, Guid FragmentId, string RoomName, string TrackSid, string ParticipantIdentity)>();
+            var backupPersistEnqueues = new List<Guid>();
+            var egressStartEnqueues = new List<Guid>();
             var discoveredFragmentIds = new List<Guid>();
 
             switch (eventType)
@@ -125,121 +124,141 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     break;
 
                 case SessionEventType.EgressEnded:
-                {
-                    // For per-participant audio capture, each egress (Participant or Track mode)
-                    // targets exactly one participant. The identity is on the egress request, not
-                    // on FileResult — fileResults[].participantIdentity is not part of LiveKit's
-                    // schema. See livekit-sandbox-runbook.md for the required egress configuration.
-                    var fileResults = webhookEvent.EgressInfo?.FileResults;
-                    var egressIdentity = ExtractEgressParticipantIdentity(rawPayload);
-                    var egressOk = webhookEvent.EgressInfo?.Status == EgressStatus.EgressComplete;
-                    var egressDetails = ExtractEgressDetails(rawPayload);
-
-                    if (fileResults is { Count: > 0 })
                     {
-                        foreach (var file in fileResults)
+                        // For per-participant audio capture, each egress (Participant or Track mode)
+                        // targets exactly one participant. The identity is on the egress request, not
+                        // on FileResult — fileResults[].participantIdentity is not part of LiveKit's
+                        // schema. See livekit-sandbox-runbook.md for the required egress configuration.
+                        var fileResults = webhookEvent.EgressInfo?.FileResults;
+                        var egressIdentity = ExtractEgressParticipantIdentity(rawPayload);
+                        var egressOk = webhookEvent.EgressInfo?.Status == EgressStatus.EgressComplete;
+                        var egressDetails = ExtractEgressDetails(
+                            rawPayload,
+                            webhookEvent.EgressInfo?.BackupStorageUsed == true);
+
+                        if (fileResults is { Count: > 0 })
                         {
-                            await ProcessEgressFileResultAsync(file);
+                            foreach (var file in fileResults)
+                            {
+                                await ProcessEgressFileResultAsync(file);
+                            }
                         }
-                    }
-                    else if (!egressOk)
-                    {
-                        await ProcessEgressFileResultAsync(null);
-                    }
-
-                    async Task ProcessEgressFileResultAsync(Livekit.Server.Sdk.Dotnet.FileInfo? file)
-                    {
-                        var fileLocation = file?.Location;
-                        var fileName = file?.Filename;
-
-                        if (!IsAudioEgressFile(fileName, fileLocation))
+                        else if (!egressOk)
                         {
-                            _logger.LogWarning(
-                                "Skipping non-audio file in egress payload. MeetingId={MeetingId} ParticipantUserId={ParticipantUserId} FileLocation={FileLocation}",
-                                meeting.Id,
-                                null,
-                                fileLocation);
-                            return;
+                            await ProcessEgressFileResultAsync(null);
                         }
 
-                        var trackSid = ResolveEgressTrackSid(egressDetails.TrackSid, fileName, fileLocation, egressDetails.EgressId);
-                        var existingFragment = await FindParticipantAudioFragmentAsync(
-                            meeting.Id,
-                            trackSid,
-                            egressDetails.EgressId,
-                            fileLocation,
-                            cancellationToken);
+                        async Task ProcessEgressFileResultAsync(Livekit.Server.Sdk.Dotnet.FileInfo? file)
+                        {
+                            var fileLocation = file?.Location;
+                            var fileName = file?.Filename;
 
-                        var fileIdentity = ExtractParticipantIdentityFromEgressPath(fileName)
-                            ?? ExtractParticipantIdentityFromEgressPath(fileLocation)
-                            ?? egressIdentity;
+                            if (!IsAudioEgressFile(fileName, fileLocation))
+                            {
+                                _logger.LogWarning(
+                                    "Skipping non-audio file in egress payload. MeetingId={MeetingId} ParticipantUserId={ParticipantUserId} FileLocation={FileLocation}",
+                                    meeting.Id,
+                                    null,
+                                    fileLocation);
+                                return;
+                            }
 
-                        var resolvedParticipantUserId = existingFragment?.ParticipantUserId
-                            ?? await ResolveParticipantUserIdAsync(
+                            var trackSid = ResolveEgressTrackSid(egressDetails.TrackSid, fileName, fileLocation, egressDetails.EgressId);
+                            var existingFragment = await FindParticipantAudioFragmentAsync(
                                 meeting.Id,
-                                fileIdentity,
+                                trackSid,
+                                egressDetails.EgressId,
+                                fileLocation,
                                 cancellationToken);
 
-                        if (resolvedParticipantUserId is null)
-                        {
-                            _logger.LogWarning(
-                                "Skipping egress file because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity} FileLocation={FileLocation} TrackSid={TrackSid} EgressId={EgressId}",
-                                meeting.Id,
-                                fileIdentity,
+                            var fileIdentity = ExtractParticipantIdentityFromEgressPath(fileName)
+                                ?? ExtractParticipantIdentityFromEgressPath(fileLocation)
+                                ?? egressIdentity;
+
+                            var resolvedParticipantUserId = existingFragment?.ParticipantUserId
+                                ?? await ResolveParticipantUserIdAsync(
+                                    meeting.Id,
+                                    fileIdentity,
+                                    cancellationToken);
+
+                            if (resolvedParticipantUserId is null)
+                            {
+                                _logger.LogWarning(
+                                    "Skipping egress file because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity} FileLocation={FileLocation} TrackSid={TrackSid} EgressId={EgressId}",
+                                    meeting.Id,
+                                    fileIdentity,
+                                    fileLocation,
+                                    trackSid,
+                                    egressDetails.EgressId);
+                                return;
+                            }
+
+                            var backupStoragePath = ResolveBackupStoragePath(
+                                egressDetails.BackupStorageUsed,
+                                fileName,
                                 fileLocation,
+                                _options.EgressBackupStoragePath);
+                            var hasRecoverableBackup = !string.IsNullOrWhiteSpace(backupStoragePath);
+
+                            var status = (egressOk && !string.IsNullOrWhiteSpace(fileLocation)) || hasRecoverableBackup
+                                ? ParticipantAudioFragmentStatus.Pending
+                                : ParticipantAudioFragmentStatus.Failed;
+
+                            var aggregateStatus = status == ParticipantAudioFragmentStatus.Failed
+                                ? ParticipantAudioTrackStatus.Failed
+                                : ParticipantAudioTrackStatus.Pending;
+
+                            var trackId = await UpsertParticipantAudioTrackAsync(
+                                meeting.Id,
+                                meeting.OrganizationId,
+                                resolvedParticipantUserId.Value,
+                                aggregateStatus,
+                                cancellationToken);
+
+                            var fragment = await UpsertParticipantAudioFragmentAsync(
+                                meeting.Id,
+                                meeting.OrganizationId,
+                                resolvedParticipantUserId.Value,
+                                trackId,
                                 trackSid,
-                                egressDetails.EgressId);
-                            return;
+                                egressDetails.EgressId,
+                                fileName,
+                                hasRecoverableBackup ? null : fileLocation,
+                                FirstNonEmpty(
+                                    ExtractObjectKeyFromEgressPath(fileLocation),
+                                    ExtractObjectKeyFromEgressPath(fileName)),
+                                backupStoragePath,
+                                hasRecoverableBackup ? occurredAtUtc : null,
+                                status,
+                                file?.Size,
+                                existingFragment,
+                                trackPublishedAtUtc: null,
+                                egressStartedAtUtc: egressDetails.StartedAtUtc,
+                                egressEndedAtUtc: egressDetails.EndedAtUtc ?? occurredAtUtc,
+                                failureCode: status == ParticipantAudioFragmentStatus.Failed ? egressDetails.FailureCode ?? "egress_failed" : null,
+                                failureMessage: status == ParticipantAudioFragmentStatus.Failed ? egressDetails.FailureMessage ?? $"LiveKit egress ended with status {webhookEvent.EgressInfo?.Status}" : null,
+                                cancellationToken);
+                            discoveredFragmentIds.Add(fragment.Id);
+
+                            if (status == ParticipantAudioFragmentStatus.Failed)
+                            {
+                                await RefreshParticipantAudioTrackAggregateAsync(trackId, cancellationToken);
+                            }
+
+                            if (status == ParticipantAudioFragmentStatus.Pending)
+                            {
+                                if (hasRecoverableBackup)
+                                {
+                                    backupPersistEnqueues.Add(fragment.Id);
+                                }
+                                else
+                                {
+                                    ingestEnqueues.Add((fragment.Id, fileLocation!, file?.Size));
+                                }
+                            }
                         }
-
-                        var status = egressOk && !string.IsNullOrWhiteSpace(fileLocation)
-                            ? ParticipantAudioFragmentStatus.Pending
-                            : ParticipantAudioFragmentStatus.Failed;
-
-                        var aggregateStatus = status == ParticipantAudioFragmentStatus.Failed
-                            ? ParticipantAudioTrackStatus.Failed
-                            : ParticipantAudioTrackStatus.Pending;
-
-                        var trackId = await UpsertParticipantAudioTrackAsync(
-                            meeting.Id,
-                            meeting.OrganizationId,
-                            resolvedParticipantUserId.Value,
-                            aggregateStatus,
-                            cancellationToken);
-
-                        var fragment = await UpsertParticipantAudioFragmentAsync(
-                            meeting.Id,
-                            meeting.OrganizationId,
-                            resolvedParticipantUserId.Value,
-                            trackId,
-                            trackSid,
-                            egressDetails.EgressId,
-                            fileName,
-                            fileLocation,
-                            ExtractObjectKeyFromS3Url(fileLocation),
-                            status,
-                            file?.Size,
-                            existingFragment,
-                            trackPublishedAtUtc: null,
-                            egressStartedAtUtc: egressDetails.StartedAtUtc,
-                            egressEndedAtUtc: egressDetails.EndedAtUtc ?? occurredAtUtc,
-                            failureCode: status == ParticipantAudioFragmentStatus.Failed ? egressDetails.FailureCode ?? "egress_failed" : null,
-                            failureMessage: status == ParticipantAudioFragmentStatus.Failed ? egressDetails.FailureMessage ?? $"LiveKit egress ended with status {webhookEvent.EgressInfo?.Status}" : null,
-                            cancellationToken);
-                        discoveredFragmentIds.Add(fragment.Id);
-
-                        if (status == ParticipantAudioFragmentStatus.Failed)
-                        {
-                            await RefreshParticipantAudioTrackAggregateAsync(trackId, cancellationToken);
-                        }
-
-                        if (status == ParticipantAudioFragmentStatus.Pending)
-                        {
-                            ingestEnqueues.Add((fragment.Id, fileLocation!, file?.Size));
-                        }
+                        break;
                     }
-                    break;
-                }
 
                 case SessionEventType.ParticipantJoined:
                 case SessionEventType.ParticipantLeft:
@@ -283,6 +302,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                 fileName: null,
                                 storageLocation: null,
                                 storageObjectKey: null,
+                                backupStoragePath: null,
+                                backupStorageAvailableAtUtc: null,
                                 status: ParticipantAudioFragmentStatus.Pending,
                                 sizeBytes: null,
                                 existingFragment: null,
@@ -294,12 +315,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                 cancellationToken);
                             discoveredFragmentIds.Add(fragment.Id);
 
-                            egressStarts.Add((
-                                meeting.Id,
-                                fragment.Id,
-                                webhookEvent.Room?.Name ?? $"mtg:{meeting.Id}",
-                                trackSid,
-                                identity));
+                            egressStartEnqueues.Add(fragment.Id);
                         }
                     }
                     break;
@@ -318,6 +334,24 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 return Result.Success();
             }
 
+            foreach (var fragmentId in egressStartEnqueues)
+            {
+                var jobId = _backgroundJobClient.Enqueue<StartParticipantAudioEgressJob>(
+                    job => job.RunAsync(fragmentId, CancellationToken.None));
+
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                        meeting.OrganizationId,
+                        meeting.Id,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        message: "Participant audio egress start job enqueued.",
+                        relatedHangfireJobId: jobId,
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragmentId),
+                        cancellationToken: cancellationToken);
+                }
+            }
+
             foreach (var (fragmentId, s3LocationUrl, sizeBytes) in ingestEnqueues)
             {
                 var jobId = _backgroundJobClient.Enqueue<IngestParticipantAudioJob>(
@@ -330,6 +364,24 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         meeting.Id,
                         PostMeetingProcessingStepType.AudioIngest,
                         message: "Participant audio fragment ingest job enqueued.",
+                        relatedHangfireJobId: jobId,
+                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragmentId),
+                        cancellationToken: cancellationToken);
+                }
+            }
+
+            foreach (var fragmentId in backupPersistEnqueues)
+            {
+                var jobId = _backgroundJobClient.Enqueue<PersistParticipantAudioFragmentJob>(
+                    job => job.RunAsync(fragmentId, CancellationToken.None));
+
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                        meeting.OrganizationId,
+                        meeting.Id,
+                        PostMeetingProcessingStepType.AudioIngest,
+                        message: "Participant audio backup persist job enqueued.",
                         relatedHangfireJobId: jobId,
                         artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragmentId),
                         cancellationToken: cancellationToken);
@@ -357,39 +409,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         message: $"Discovered {discoveredFragmentIds.Count} participant audio fragment(s).",
                         artifact: new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: discoveredFragmentIds),
                         cancellationToken: cancellationToken);
-                }
-            }
-
-            await PublishParticipantAudioReadyIfReadyAsync(
-                meeting.Id,
-                meeting.OrganizationId,
-                cancellationToken);
-
-            foreach (var egressStart in egressStarts)
-            {
-                try
-                {
-                    await _egressService.StartTrackEgressAsync(
-                        egressStart.MeetingId,
-                        egressStart.RoomName,
-                        egressStart.TrackSid,
-                        egressStart.ParticipantIdentity,
-                        cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    await MarkFragmentFailedAsync(
-                        egressStart.FragmentId,
-                        "egress_start_failed",
-                        ex.Message,
-                        cancellationToken);
-
-                    _logger.LogError(
-                        ex,
-                        "Failed to start track egress. MeetingId={MeetingId} TrackSid={TrackSid} ParticipantIdentity={ParticipantIdentity}",
-                        egressStart.MeetingId,
-                        egressStart.TrackSid,
-                        egressStart.ParticipantIdentity);
                 }
             }
 
@@ -474,6 +493,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
             string? fileName,
             string? storageLocation,
             string? storageObjectKey,
+            string? backupStoragePath,
+            DateTime? backupStorageAvailableAtUtc,
             ParticipantAudioFragmentStatus status,
             long? sizeBytes,
             ParticipantAudioFragment? existingFragment,
@@ -514,6 +535,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
             fragment.EgressId = string.IsNullOrWhiteSpace(egressId) ? fragment.EgressId : egressId;
             fragment.StorageLocation = string.IsNullOrWhiteSpace(storageLocation) ? fragment.StorageLocation : storageLocation;
             fragment.StorageObjectKey = string.IsNullOrWhiteSpace(storageObjectKey) ? fragment.StorageObjectKey : storageObjectKey;
+            fragment.BackupStoragePath = string.IsNullOrWhiteSpace(backupStoragePath) ? fragment.BackupStoragePath : backupStoragePath;
+            fragment.BackupStorageAvailableAtUtc = backupStorageAvailableAtUtc ?? fragment.BackupStorageAvailableAtUtc;
             fragment.SizeBytes = sizeBytes ?? fragment.SizeBytes;
             fragment.TrackPublishedAtUtc ??= trackPublishedAtUtc;
             fragment.EgressStartedAtUtc = egressStartedAtUtc ?? fragment.EgressStartedAtUtc;
@@ -535,34 +558,6 @@ namespace MeetingAssistant.Features.LiveSession.Services
             }
 
             return fragment;
-        }
-
-        private async Task MarkFragmentFailedAsync(
-            Guid fragmentId,
-            string failureCode,
-            string failureMessage,
-            CancellationToken cancellationToken)
-        {
-            var fragment = await _dbContext.ParticipantAudioFragments
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(x => x.Id == fragmentId, cancellationToken);
-
-            if (fragment is null)
-            {
-                return;
-            }
-
-            fragment.Status = ParticipantAudioFragmentStatus.Failed;
-            fragment.FailedAtUtc = DateTime.UtcNow;
-            fragment.FailureCode = failureCode;
-            fragment.FailureMessage = failureMessage;
-
-            if (fragment.ParticipantAudioTrackId is { } trackId)
-            {
-                await RefreshParticipantAudioTrackAggregateAsync(trackId, cancellationToken);
-            }
-
-            await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
         private async Task<Guid> UpsertParticipantAudioTrackAsync(
@@ -707,11 +702,13 @@ namespace MeetingAssistant.Features.LiveSession.Services
             return extensionIndex > 0 ? withoutPrefix[..extensionIndex] : withoutPrefix;
         }
 
-        private static EgressWebhookDetails ExtractEgressDetails(string rawPayload)
+        private static EgressWebhookDetails ExtractEgressDetails(
+            string rawPayload,
+            bool backupStorageUsedFromSdk = false)
         {
             if (string.IsNullOrWhiteSpace(rawPayload))
             {
-                return new EgressWebhookDetails(null, null, null, null, null, null);
+                return new EgressWebhookDetails(null, null, null, null, null, null, backupStorageUsedFromSdk);
             }
 
             try
@@ -720,7 +717,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 if (!document.RootElement.TryGetProperty("egressInfo", out var egressInfo)
                     || egressInfo.ValueKind != JsonValueKind.Object)
                 {
-                    return new EgressWebhookDetails(null, null, null, null, null, null);
+                    return new EgressWebhookDetails(null, null, null, null, null, null, backupStorageUsedFromSdk);
                 }
 
                 var egressId = GetString(egressInfo, "egressId") ?? GetString(egressInfo, "id");
@@ -734,6 +731,9 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     GetString(egressInfo, "twirpErrorCode"),
                     GetString(egressInfo, "serviceErrorCode"));
                 var failureMessage = GetString(egressInfo, "error");
+                var backupStorageUsed = backupStorageUsedFromSdk
+                    || GetBool(egressInfo, "backupStorageUsed")
+                    || GetBool(egressInfo, "backup_storage_used");
 
                 return new EgressWebhookDetails(
                     egressId,
@@ -741,11 +741,12 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     startedAtUtc,
                     endedAtUtc,
                     failureCode,
-                    failureMessage);
+                    failureMessage,
+                    backupStorageUsed);
             }
             catch (JsonException)
             {
-                return new EgressWebhookDetails(null, null, null, null, null, null);
+                return new EgressWebhookDetails(null, null, null, null, null, null, backupStorageUsedFromSdk);
             }
         }
 
@@ -754,6 +755,12 @@ namespace MeetingAssistant.Features.LiveSession.Services
             return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
                 ? property.GetString()
                 : null;
+        }
+
+        private static bool GetBool(JsonElement element, string propertyName)
+        {
+            return element.TryGetProperty(propertyName, out var property)
+                && property.ValueKind == JsonValueKind.True;
         }
 
         private static DateTime? GetUnixTime(JsonElement element, string propertyName)
@@ -795,38 +802,90 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private static string? FirstNonEmpty(params string?[] values)
             => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
-        private static string? ExtractObjectKeyFromS3Url(string? url)
+        private static string? ResolveBackupStoragePath(
+            bool backupStorageUsed,
+            string? fileName,
+            string? fileLocation,
+            string? backupStorageRoot)
         {
-            if (string.IsNullOrWhiteSpace(url))
+            if (backupStorageUsed)
+            {
+                var explicitLocalPath = FirstNonEmpty(
+                    IsLocalFilePath(fileLocation) ? fileLocation : null,
+                    IsLocalFilePath(fileName) ? fileName : null);
+
+                if (!string.IsNullOrWhiteSpace(explicitLocalPath))
+                {
+                    return explicitLocalPath;
+                }
+
+                var objectKey = FirstNonEmpty(
+                    ExtractObjectKeyFromEgressPath(fileLocation),
+                    ExtractObjectKeyFromEgressPath(fileName));
+
+                if (!string.IsNullOrWhiteSpace(backupStorageRoot)
+                    && !string.IsNullOrWhiteSpace(objectKey))
+                {
+                    return Path.Combine(
+                        backupStorageRoot,
+                        objectKey.Replace('/', Path.DirectorySeparatorChar));
+                }
+
+                return FirstNonEmpty(fileLocation, fileName);
+            }
+
+            return IsLocalFilePath(fileLocation) ? fileLocation : null;
+        }
+
+        private static bool IsLocalFilePath(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            if (Uri.TryCreate(value, UriKind.Absolute, out var uri))
+            {
+                return uri.IsFile;
+            }
+
+            return Path.IsPathRooted(value);
+        }
+
+        private static string? ExtractObjectKeyFromEgressPath(string? pathOrUrl)
+        {
+            if (string.IsNullOrWhiteSpace(pathOrUrl))
             {
                 return null;
             }
 
-            try
+            string path;
+            if (Uri.TryCreate(pathOrUrl, UriKind.Absolute, out var uri))
             {
-                var uri = new Uri(url);
-                var path = uri.AbsolutePath.TrimStart('/');
-                var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-
-                if (segments.Length < 2)
-                {
-                    return null;
-                }
-
-                var tracksSegmentIndex = Array.FindIndex(
-                    segments,
-                    segment => segment.Equals("tracks", StringComparison.OrdinalIgnoreCase));
-                if (tracksSegmentIndex >= 0)
-                {
-                    return string.Join('/', segments.Skip(tracksSegmentIndex));
-                }
-
-                return string.Join('/', segments.Skip(1));
+                path = uri.AbsolutePath.TrimStart('/');
             }
-            catch (UriFormatException)
+            else
+            {
+                path = pathOrUrl.TrimStart('/');
+            }
+
+            var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 0)
             {
                 return null;
             }
+
+            var tracksSegmentIndex = Array.FindIndex(
+                segments,
+                segment => segment.Equals("tracks", StringComparison.OrdinalIgnoreCase));
+            if (tracksSegmentIndex >= 0)
+            {
+                return string.Join('/', segments.Skip(tracksSegmentIndex));
+            }
+
+            return Uri.TryCreate(pathOrUrl, UriKind.Absolute, out _) && segments.Length >= 2
+                ? string.Join('/', segments.Skip(1))
+                : null;
         }
 
         private sealed record EgressWebhookDetails(
@@ -835,7 +894,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
             DateTime? StartedAtUtc,
             DateTime? EndedAtUtc,
             string? FailureCode,
-            string? FailureMessage);
+            string? FailureMessage,
+            bool BackupStorageUsed);
 
         private static SessionEventType MapEventType(string? eventName)
         {

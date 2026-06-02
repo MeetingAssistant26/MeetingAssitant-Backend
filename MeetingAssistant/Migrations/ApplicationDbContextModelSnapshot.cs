@@ -154,6 +154,13 @@ namespace MeetingAssistant.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("BackupStorageAvailableAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("BackupStoragePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -606,6 +613,14 @@ namespace MeetingAssistant.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
+                    b.Property<int>("EgressStartAttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<DateTime?>("EgressStartLeaseExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("EgressStartedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -619,6 +634,12 @@ namespace MeetingAssistant.Migrations
                     b.Property<string>("FailureMessage")
                         .HasMaxLength(2000)
                         .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTime?>("LastEgressStartAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastStorageUploadAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("MeetingId")
                         .HasColumnType("uuid");
@@ -649,6 +670,14 @@ namespace MeetingAssistant.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
 
+                    b.Property<int>("StorageUploadAttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<DateTime?>("StorageUploadLeaseExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime?>("TrackPublishedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -664,6 +693,12 @@ namespace MeetingAssistant.Migrations
 
                     b.HasIndex("EgressId")
                         .HasDatabaseName("IX_ParticipantAudioFragments_EgressId");
+
+                    b.HasIndex("Status", "EgressId", "EgressStartLeaseExpiresAtUtc")
+                        .HasDatabaseName("IX_ParticipantAudioFragments_EgressStartLease");
+
+                    b.HasIndex("Status", "BackupStoragePath", "StorageUploadLeaseExpiresAtUtc")
+                        .HasDatabaseName("IX_ParticipantAudioFragments_StorageUploadLease");
 
                     b.HasIndex("ParticipantAudioTrackId")
                         .HasDatabaseName("IX_ParticipantAudioFragments_ParticipantAudioTrackId");

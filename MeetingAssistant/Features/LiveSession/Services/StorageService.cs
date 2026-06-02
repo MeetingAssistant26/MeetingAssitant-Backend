@@ -48,6 +48,48 @@ namespace MeetingAssistant.Features.LiveSession.Services
             return objectSize >= 0 ? objectSize : null;
         }
 
+        public async Task<StorageUploadResult> UploadFileAsync(
+            string sourceFilePath,
+            string objectKey,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(sourceFilePath))
+            {
+                throw new ArgumentException("sourceFilePath must be provided for upload.", nameof(sourceFilePath));
+            }
+
+            if (string.IsNullOrWhiteSpace(objectKey))
+            {
+                throw new ArgumentException("objectKey must be provided for upload.", nameof(objectKey));
+            }
+
+            var fileInfo = new System.IO.FileInfo(sourceFilePath);
+            if (!fileInfo.Exists)
+            {
+                throw new FileNotFoundException("Backup recording file was not found.", sourceFilePath);
+            }
+
+            var minioClient = CreateClient();
+            await EnsureBucketExistsAsync(cancellationToken);
+
+            await using var stream = File.OpenRead(sourceFilePath);
+            var putObjectArgs = new PutObjectArgs()
+                .WithBucket(_options.Bucket)
+                .WithObject(objectKey)
+                .WithStreamData(stream)
+                .WithObjectSize(fileInfo.Length)
+                .WithContentType(GetContentType(sourceFilePath));
+
+            await minioClient.PutObjectAsync(putObjectArgs, cancellationToken);
+
+            _logger.LogInformation(
+                "Uploaded backup recording file to storage bucket {Bucket} key {ObjectKey}",
+                _options.Bucket,
+                objectKey);
+
+            return new StorageUploadResult(fileInfo.Length, BuildStorageLocation(objectKey));
+        }
+
         public async Task EnsureBucketExistsAsync(CancellationToken cancellationToken = default)
         {
             var minioClient = CreateClient();
@@ -73,6 +115,25 @@ namespace MeetingAssistant.Features.LiveSession.Services
             _logger.LogInformation(
                 "Storage bucket {Bucket} created successfully",
                 _options.Bucket);
+        }
+
+        private string BuildStorageLocation(string objectKey)
+        {
+            var endpoint = (_options.Endpoint ?? string.Empty).TrimEnd('/');
+            return $"{endpoint}/{_options.Bucket}/{objectKey}";
+        }
+
+        private static string GetContentType(string filePath)
+        {
+            return Path.GetExtension(filePath).ToLowerInvariant() switch
+            {
+                ".ogg" => "audio/ogg",
+                ".opus" => "audio/ogg",
+                ".wav" => "audio/wav",
+                ".mp3" => "audio/mpeg",
+                ".m4a" => "audio/mp4",
+                _ => "application/octet-stream"
+            };
         }
 
         private IMinioClient CreateClient()

@@ -77,17 +77,26 @@ namespace tests.Integration.LiveSession
     internal sealed class FakeEgressService : IEgressService
     {
         public List<(Guid MeetingId, string RoomName, string TrackId, string ParticipantIdentity)> Starts { get; } = new();
+        public Queue<Exception> Failures { get; } = new();
 
-        public Task StartTrackEgressAsync(Guid meetingId, string roomName, string trackId, string participantIdentity, CancellationToken ct = default)
+        public Task<EgressStartResult> StartTrackEgressAsync(Guid meetingId, string roomName, string trackId, string participantIdentity, CancellationToken ct = default)
         {
             Starts.Add((meetingId, roomName, trackId, participantIdentity));
-            return Task.CompletedTask;
+            if (Failures.TryDequeue(out var failure))
+            {
+                throw failure;
+            }
+
+            return Task.FromResult(new EgressStartResult(
+                $"EG_{trackId}",
+                $"tracks/{roomName}/{participantIdentity}/track-{trackId}.ogg"));
         }
     }
 
     internal sealed class FakeStorageService : MeetingAssistant.Features.LiveSession.Services.IStorageService
     {
         public List<(string SourceUrl, string ObjectKey)> Uploads { get; } = new();
+        public List<(string SourceFilePath, string ObjectKey)> FileUploads { get; } = new();
         public bool ThrowOnUpload { get; set; }
         public long? NextSizeBytes { get; set; } = 1024;
 
@@ -100,6 +109,17 @@ namespace tests.Integration.LiveSession
 
             Uploads.Add((sourceUrl, objectKey));
             return Task.FromResult(NextSizeBytes);
+        }
+
+        public Task<StorageUploadResult> UploadFileAsync(string sourceFilePath, string objectKey, CancellationToken cancellationToken = default)
+        {
+            if (ThrowOnUpload)
+            {
+                throw new InvalidOperationException("simulated upload failure");
+            }
+
+            FileUploads.Add((sourceFilePath, objectKey));
+            return Task.FromResult(new StorageUploadResult(NextSizeBytes, $"http://minio:9000/recordings/{objectKey}"));
         }
 
         public Task EnsureBucketExistsAsync(CancellationToken cancellationToken = default)

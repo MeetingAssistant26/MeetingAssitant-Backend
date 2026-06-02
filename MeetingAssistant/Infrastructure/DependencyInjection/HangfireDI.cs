@@ -31,7 +31,7 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                 // Disable built-in AutomaticRetryAttribute (Attempts = 0)
                 // We'll replace this with a custom retry filter in later states.
                 GlobalJobFilters.Filters.Add(new AutomaticRetryAttribute { Attempts = 0 });
-                
+
                 GlobalJobFilters.Filters.Add(new Api.Infrastructure.Hangfire.HangfireCorrelationFilter());
                 GlobalJobFilters.Filters.Add(new Api.Infrastructure.Hangfire.HangfireRetryFilter());
             });
@@ -54,6 +54,11 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                 "reconcile-stale-post-meeting-processing",
                 job => job.RunAsync(default),
                 Cron.Hourly);
+
+            RecurringJob.AddOrUpdate<ParticipantAudioEgressReconciliationJob>(
+                "reconcile-participant-audio-egress",
+                job => job.RunAsync(default),
+                Cron.Minutely);
         }
 
         public static void UseSecureHangfireDashboard(this Microsoft.AspNetCore.Builder.WebApplication app)

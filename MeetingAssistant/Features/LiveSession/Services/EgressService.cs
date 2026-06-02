@@ -10,34 +10,30 @@ namespace MeetingAssistant.Features.LiveSession.Services
     public class EgressService : IEgressService
     {
         private readonly LiveKitOptions _options;
-        private readonly IStorageService _storage;
         private readonly ILogger<EgressService> _logger;
         private readonly EgressServiceClient _client;
 
         public EgressService(
             IOptions<LiveKitOptions> options,
-            IStorageService storage,
             IHttpClientFactory httpClientFactory,
             ILogger<EgressService> logger)
         {
             _options = options.Value;
-            _storage = storage;
             _logger = logger;
             var httpClient = httpClientFactory.CreateClient();
             _client = new EgressServiceClient(_options.EgressHost, _options.ApiKey, _options.ApiSecret, httpClient);
         }
 
-        public async Task StartTrackEgressAsync(
+        public async Task<EgressStartResult> StartTrackEgressAsync(
             Guid meetingId,
             string roomName,
             string trackId,
             string participantIdentity,
             CancellationToken ct = default)
         {
-            await _storage.EnsureBucketExistsAsync(ct);
-
             var safeRoomName = SanitizePathSegment(roomName);
             var safeIdentity = SanitizePathSegment(participantIdentity);
+            var storageObjectKey = $"tracks/{safeRoomName}/{safeIdentity}/track-{trackId}.ogg";
 
             var request = new TrackEgressRequest
             {
@@ -45,18 +41,21 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 TrackId = trackId,
                 File = new DirectFileOutput
                 {
-                    Filepath = $"tracks/{safeRoomName}/{safeIdentity}/track-{trackId}.ogg",
+                    Filepath = storageObjectKey,
                     DisableManifest = true
                 }
             };
 
             var result = await _client.StartTrackEgress(request);
             _logger.LogInformation(
-                "Started track egress. MeetingId={MeetingId} RoomName={RoomName} TrackId={TrackId} EgressId={EgressId}",
+                "Started track egress. MeetingId={MeetingId} RoomName={RoomName} TrackId={TrackId} EgressId={EgressId} StorageObjectKey={StorageObjectKey}",
                 meetingId,
                 roomName,
                 trackId,
-                result.EgressId);
+                result.EgressId,
+                storageObjectKey);
+
+            return new EgressStartResult(result.EgressId, storageObjectKey);
         }
 
         private static string SanitizePathSegment(string segment)

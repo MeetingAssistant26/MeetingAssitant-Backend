@@ -25,7 +25,6 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             await sut.ProcessAsync(WebhookEventFactory.RoomStarted(meetingId, "evt-room-start"), "{}");
@@ -61,7 +60,6 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 new FakeBackgroundJobClient(),
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             var webhookEvent = WebhookEventFactory.RoomStarted(meetingId, "evt-room-start-after-rest");
@@ -86,7 +84,6 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 new FakeBackgroundJobClient(),
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             await sut.ProcessAsync(WebhookEventFactory.RoomFinished(meetingId, "evt-room-finish-after-rest"), "{}");

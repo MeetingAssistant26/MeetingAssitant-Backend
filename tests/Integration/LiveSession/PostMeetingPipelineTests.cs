@@ -385,7 +385,6 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 jobs,
                 Options.Create(new LiveKitOptions { EgressHost = "http://egress" }),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             var roomStarted = WithCreatedAt(

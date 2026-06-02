@@ -106,9 +106,13 @@ services:
       LiveKit__AgentName: ${LiveKit__AgentName:-meeting-assistant}
       LiveKit__AiAssistantDefaultEnabled: ${LiveKit__AiAssistantDefaultEnabled:-true}
       LiveKit__ParticipantAudioIngestCeilingMinutes: ${LiveKit__ParticipantAudioIngestCeilingMinutes:-360}
+      LiveKit__EgressBackupStoragePath: ${LiveKit__EgressBackupStoragePath:-/egress-backup}
 
     ports:
       - "8080:8080"
+
+    volumes:
+      - egress_backup:${LiveKit__EgressBackupStoragePath:-/egress-backup}
 
     networks:
       - default
@@ -170,6 +174,7 @@ services:
         insecure: true
         redis:
           address: redis:6379
+        backup_storage: ${LiveKit__EgressBackupStoragePath:-/egress-backup}
         storage:
           s3:
             access_key: ${Storage__AccessKey:-minioadmin}
@@ -179,6 +184,8 @@ services:
             force_path_style: true
     cap_add:
       - SYS_ADMIN
+    volumes:
+      - egress_backup:${LiveKit__EgressBackupStoragePath:-/egress-backup}
 
   # LiveKit Agent (Node.js) — joins rooms as an AI participant.
   # Start ../ai_work first so the external ai_work_ai-network exists and
@@ -245,6 +252,7 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  egress_backup:
 
 networks:
   ai-network:

@@ -1218,6 +1218,13 @@ Features/
 Deliverable:
 - Per-participant audio stored in MinIO via LiveKit Cloud Egress track-based pipeline
 - `ParticipantAudioReadyEvent` drives the downstream STT pipeline (Phase 5.5)
+
+#### Current resilience hardening
+
+- Track-published webhooks persist a `ParticipantAudioFragment` first, then enqueue a retryable Hangfire egress-start job instead of starting Egress inline.
+- LiveKit Egress should be configured with shared `backup_storage` so a primary S3/MinIO upload failure still leaves a recoverable local audio file.
+- Backup audio files are copied into durable object storage by `PersistParticipantAudioFragmentJob`, with retry state and failure details stored on the fragment.
+- The participant-audio readiness barrier only releases transcript generation after every fragment is terminal (`Available` or explicit `Failed`).
 - 0 controllers, 0 endpoint files (internal only)
 
 ---

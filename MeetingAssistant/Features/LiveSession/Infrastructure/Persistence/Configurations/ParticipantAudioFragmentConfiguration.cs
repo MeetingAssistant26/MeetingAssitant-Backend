@@ -26,8 +26,20 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
                 .HasMaxLength(1000)
                 .IsRequired(false);
 
+            builder.Property(x => x.BackupStoragePath)
+                .HasMaxLength(1000)
+                .IsRequired(false);
+
             builder.Property(x => x.Status)
                 .HasConversion<int>()
+                .IsRequired();
+
+            builder.Property(x => x.EgressStartAttemptCount)
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            builder.Property(x => x.StorageUploadAttemptCount)
+                .HasDefaultValue(0)
                 .IsRequired();
 
             builder.Property(x => x.FailureCode)
@@ -56,6 +68,12 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
 
             builder.HasIndex(x => x.EgressId)
                 .HasDatabaseName("IX_ParticipantAudioFragments_EgressId");
+
+            builder.HasIndex(x => new { x.Status, x.EgressId, x.EgressStartLeaseExpiresAtUtc })
+                .HasDatabaseName("IX_ParticipantAudioFragments_EgressStartLease");
+
+            builder.HasIndex(x => new { x.Status, x.BackupStoragePath, x.StorageUploadLeaseExpiresAtUtc })
+                .HasDatabaseName("IX_ParticipantAudioFragments_StorageUploadLease");
 
             builder.HasIndex(x => x.ParticipantAudioTrackId)
                 .HasDatabaseName("IX_ParticipantAudioFragments_ParticipantAudioTrackId");

@@ -218,7 +218,6 @@ namespace tests.Unit.LiveSession
                 db.DbContext,
                 new FakeBackgroundJobClient(),
                 Options.Create(new LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance,
                 publisher: publisher);
 
@@ -272,7 +271,6 @@ namespace tests.Unit.LiveSession
                 db.DbContext,
                 new FakeBackgroundJobClient(),
                 Options.Create(new LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance,
                 publisher: publisher);
 

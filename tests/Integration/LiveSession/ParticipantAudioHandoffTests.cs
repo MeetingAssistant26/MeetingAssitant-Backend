@@ -35,7 +35,6 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 webhookJobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance,
                 publisher: webhookPublisher);
 
@@ -152,12 +151,11 @@ namespace tests.Integration.LiveSession
             var participantId = db.SeedUser("participant");
             db.AddParticipant(meetingId, orgId, participantId);
 
-            var egress = new FakeEgressService();
+            var jobs = new FakeBackgroundJobClient();
             var webhookService = new WebhookService(
                 db.DbContext,
-                new FakeBackgroundJobClient(),
+                jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
-                egress,
                 NullLogger<WebhookService>.Instance);
 
             await webhookService.ProcessAsync(
@@ -185,8 +183,12 @@ namespace tests.Integration.LiveSession
                 .Should()
                 .Be(2);
 
-            egress.Starts.Should().HaveCount(2);
-            egress.Starts.Select(x => x.TrackId).Should().BeEquivalentTo("TR_AUDIO_1", "TR_AUDIO_2");
+            jobs.CreatedJobs.Where(x => x.Type == typeof(StartParticipantAudioEgressJob)).Should().HaveCount(2);
+            jobs.CreatedJobs
+                .Where(x => x.Type == typeof(StartParticipantAudioEgressJob))
+                .Select(x => db.DbContext.ParticipantAudioFragments.Find((Guid)x.Args[0])?.TrackSid)
+                .Should()
+                .BeEquivalentTo("TR_AUDIO_1", "TR_AUDIO_2");
         }
 
         [Fact]
@@ -198,12 +200,11 @@ namespace tests.Integration.LiveSession
             var participantId = db.SeedUser("participant");
             db.AddParticipant(meetingId, orgId, participantId);
 
-            var egress = new FakeEgressService();
+            var jobs = new FakeBackgroundJobClient();
             var webhookService = new WebhookService(
                 db.DbContext,
-                new FakeBackgroundJobClient(),
+                jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
-                egress,
                 NullLogger<WebhookService>.Instance);
 
             await webhookService.ProcessAsync(WebhookEventFactory.ParticipantJoined(meetingId, "evt-join-1", participantId), "{}");
@@ -224,7 +225,9 @@ namespace tests.Integration.LiveSession
                 .Should()
                 .Equal("TR_BEFORE_MUTE", "TR_AFTER_REJOIN");
 
-            egress.Starts.Select(x => x.TrackId)
+            jobs.CreatedJobs
+                .Where(x => x.Type == typeof(StartParticipantAudioEgressJob))
+                .Select(x => db.DbContext.ParticipantAudioFragments.Find((Guid)x.Args[0])?.TrackSid)
                 .Should()
                 .BeEquivalentTo("TR_BEFORE_MUTE", "TR_AFTER_REJOIN");
 
@@ -242,12 +245,11 @@ namespace tests.Integration.LiveSession
             var meetingId = db.SeedMeeting(orgId);
             var unknownParticipantId = Guid.NewGuid();
 
-            var egress = new FakeEgressService();
+            var jobs = new FakeBackgroundJobClient();
             var webhookService = new WebhookService(
                 db.DbContext,
-                new FakeBackgroundJobClient(),
+                jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
-                egress,
                 NullLogger<WebhookService>.Instance);
 
             await webhookService.ProcessAsync(
@@ -264,7 +266,7 @@ namespace tests.Integration.LiveSession
                 .Should()
                 .BeEmpty();
 
-            egress.Starts.Should().BeEmpty();
+            jobs.CreatedJobs.Should().BeEmpty();
         }
 
         [Fact]
@@ -280,7 +282,6 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 webhookJobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             var sourceUrl = $"https://egress.example/bucket/tracks/mtg:{meetingId}/user:{unknownParticipantId}/track-unknown.ogg";
@@ -335,13 +336,13 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             const string trackSid = "TR_SUCCESS_FRAGMENT";
             await webhookService.ProcessAsync(
                 WebhookEventFactory.TrackPublished(meetingId, "evt-track-success", participantId, trackSid),
                 "{}");
+            jobs.CreatedJobs.Clear();
 
             var sourceUrl = $"https://egress.example/bucket/tracks/mtg:{meetingId}/user:{participantId}/track-{trackSid}.ogg";
             var evt = WebhookEventFactory.EgressEnded(
@@ -399,13 +400,13 @@ namespace tests.Integration.LiveSession
                 db.DbContext,
                 jobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions { EgressHost = "http://egress" }),
-                new FakeEgressService(),
                 NullLogger<WebhookService>.Instance);
 
             const string trackSid = "TR_FAILED_FRAGMENT";
             await webhookService.ProcessAsync(
                 WebhookEventFactory.TrackPublished(meetingId, "evt-track-failed", participantId, trackSid),
                 "{}");
+            jobs.CreatedJobs.Clear();
 
             var evt = new WebhookEvent
             {
