@@ -9,7 +9,7 @@ namespace MeetingAssistant.Features.LiveSession.Contracts.Responses
         DateTime? GeneratedAtUtc);
 
     public sealed record MeetingTranscriptSegmentResponse(
-        Guid ParticipantUserId,
+        Guid? ParticipantUserId,
         long StartMs,
         long EndMs,
         string Text,
@@ -22,5 +22,11 @@ namespace MeetingAssistant.Features.LiveSession.Contracts.Responses
         long? RoomRelativeEndMs = null,
         DateTime? AbsoluteStartUtc = null,
         DateTime? AbsoluteEndUtc = null,
-        string? TimestampOffsetSource = null);
+        string? TimestampOffsetSource = null,
+        string? SpeakerRole = null,
+        string? SpeakerDisplayName = null,
+        string? Source = null,
+        string? TraceEventId = null,
+        string? SessionId = null,
+        string? TurnId = null);
 }

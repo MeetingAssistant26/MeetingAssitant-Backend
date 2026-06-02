@@ -51,6 +51,11 @@ namespace MeetingAssistant.Features.LiveSession.Services
             }
 
             var persistPayloads = _options.PersistPayloads;
+            var persistText = persistPayloads
+                              || string.Equals(
+                                  request.EventType,
+                                  AiAssistantTraceEventTypes.AssistantSpeechCompleted,
+                                  StringComparison.OrdinalIgnoreCase);
             var step = request.Step;
             var entity = new AiAssistantTraceEvent
             {
@@ -76,7 +81,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 AudioDurationMs = NonNegativeOrNull(step?.AudioDurationMs),
                 RequestPayloadJson = persistPayloads ? ToJson(step?.RequestPayload) : null,
                 ResponsePayloadJson = persistPayloads ? ToJson(step?.ResponsePayload) : null,
-                Text = persistPayloads ? step?.Text : null,
+                Text = persistText ? step?.Text : null,
                 ErrorMessage = request.Error?.Message,
                 ErrorType = TrimOptional(request.Error?.Type, 128)
             };

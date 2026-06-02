@@ -109,6 +109,50 @@ public class AiDebugTraceEndpointTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task AgentIngest_AssistantSpeechCompleted_WhenPayloadPersistenceDisabled_ShouldPersistTranscriptText()
+    {
+        using var factory = Factory.WithConfiguration(EnabledDebugConfig(persistPayloads: false));
+        var ids = await SeedBaseAndMeetingAsync(factory, OrganizationRole.Admin);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            TestJwtTokenHelper.GenerateAgentToken(ids.OrganizationId, ids.MeetingId));
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/agent/meetings/{ids.MeetingId}/ai-debug/traces",
+            new
+            {
+                sessionId = "session-1",
+                turnId = "turn-1",
+                sequence = 50,
+                eventType = AiAssistantTraceEventTypes.AssistantSpeechCompleted,
+                occurredAtUtc = DateTime.UtcNow,
+                state = "speaking",
+                step = new
+                {
+                    type = "tts",
+                    provider = "livekit-agent",
+                    voice = "alloy",
+                    durationMs = 1500,
+                    text = "I can help summarize that."
+                }
+            });
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var persisted = await db.AiAssistantTraceEvents.IgnoreQueryFilters().SingleAsync();
+        persisted.EventType.Should().Be(AiAssistantTraceEventTypes.AssistantSpeechCompleted);
+        persisted.RequestPayloadJson.Should().BeNull();
+        persisted.ResponsePayloadJson.Should().BeNull();
+        persisted.Text.Should().Be("I can help summarize that.");
+        persisted.CharactersCount.Should().Be("I can help summarize that.".Length);
+        persisted.StepType.Should().Be("tts");
+        persisted.StepVoice.Should().Be("alloy");
+    }
+
+    [Fact]
     public async Task WebRead_WhenEnabled_ShouldGroupTurnsAndRequireOrganizationAdmin()
     {
         using var factory = Factory.WithConfiguration(EnabledDebugConfig());
