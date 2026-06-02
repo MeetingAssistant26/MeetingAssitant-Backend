@@ -2,7 +2,9 @@ using FluentAssertions;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using Microsoft.Extensions.Logging.Abstractions;
 using tests.Integration.LiveSession;
 using Xunit;
@@ -96,6 +98,111 @@ namespace tests.Unit.LiveSession
             var summary = db.DbContext.MeetingSummaries.Single(x => x.MeetingId == meetingId);
             summary.SummaryText.Should().Be("Partial summary generated.");
             summarizer.LastTranscript.Should().Be(transcript.FullText);
+        }
+
+        [Fact]
+        public async Task TranscriptGeneration_ShouldWaitForPendingFragmentsBeforeSttAndRetrySuccessfully()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, userId);
+
+            var pendingFragment = new ParticipantAudioFragment
+            {
+                MeetingId = meetingId,
+                OrganizationId = orgId,
+                ParticipantUserId = userId,
+                TrackSid = "TR_PENDING_STT_WAIT",
+                Status = ParticipantAudioFragmentStatus.Pending
+            };
+            db.DbContext.ParticipantAudioFragments.Add(pendingFragment);
+            await db.DbContext.SaveChangesAsync();
+
+            var objectKey = $"tracks/{meetingId}/{userId}.ogg";
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [objectKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(userId, 0, 1_000, "late fragment is ready", 0.94)])
+            });
+            var publisher = new CollectingPublisher();
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance,
+                tracker);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            stt.Calls.Should().BeEmpty();
+            db.DbContext.MeetingTranscripts.Should().BeEmpty();
+            publisher.Notifications.OfType<MeetingTranscriptReadyEvent>().Should().BeEmpty();
+            var waitingSnapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            waitingSnapshot.Steps.Should().ContainSingle(x =>
+                x.StepType == PostMeetingProcessingStepType.Stt
+                && x.Status == PostMeetingProcessingStatus.InProgress);
+            waitingSnapshot.Events.Should().Contain(x =>
+                x.EventType == PostMeetingProcessingEventType.Info
+                && x.StepType == PostMeetingProcessingStepType.Stt
+                && x.Message!.Contains("waiting for 1 participant audio fragment"));
+
+            pendingFragment.Status = ParticipantAudioFragmentStatus.Available;
+            pendingFragment.StorageObjectKey = objectKey;
+            pendingFragment.StorageLocation = $"s3://recordings/{objectKey}";
+            pendingFragment.StorageAvailableAtUtc = DateTime.UtcNow;
+            await db.DbContext.SaveChangesAsync();
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.FullText.Should().Contain("late fragment is ready");
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
+                .Should()
+                .ContainSingle(x => x.MeetingId == meetingId);
+            var completedSnapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            completedSnapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.Stt
+                && x.Status == PostMeetingProcessingStatus.Completed);
+        }
+
+        [Fact]
+        public async Task TranscriptGeneration_ShouldNotRepublishTranscriptReady_WhenTranscriptContentIsUnchanged()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, userId);
+
+            var objectKey = $"tracks/{meetingId}/{userId}.ogg";
+            db.AddAvailableAudioFragment(meetingId, orgId, userId, objectKey, "TR_IDEMPOTENT_STT");
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [objectKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(userId, 0, 1_000, "same transcript content", 0.94)])
+            });
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            db.DbContext.MeetingTranscripts.Where(x => x.MeetingId == meetingId).Should().ContainSingle();
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
+                .Should()
+                .ContainSingle(x => x.MeetingId == meetingId);
         }
     }
 }

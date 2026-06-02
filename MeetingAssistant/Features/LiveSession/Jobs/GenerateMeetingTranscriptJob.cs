@@ -46,6 +46,36 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     cancellationToken: cancellationToken);
             }
 
+            var pendingFragmentCount = await _dbContext.ParticipantAudioFragments
+                .IgnoreQueryFilters()
+                .CountAsync(
+                    x => x.MeetingId == meetingId
+                         && x.OrganizationId == organizationId
+                         && x.Status != ParticipantAudioFragmentStatus.Available
+                         && x.Status != ParticipantAudioFragmentStatus.Failed,
+                    cancellationToken);
+
+            if (pendingFragmentCount > 0)
+            {
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.RecordEventAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingEventType.Info,
+                        PostMeetingProcessingStepType.Stt,
+                        PostMeetingProcessingStatus.InProgress,
+                        message: $"STT transcription is waiting for {pendingFragmentCount} participant audio fragment(s) to finish ingest.",
+                        cancellationToken: cancellationToken);
+                }
+
+                _logger.LogInformation(
+                    "Transcript generation deferred because participant audio fragments are still pending. MeetingId={MeetingId} PendingFragmentCount={PendingFragmentCount}",
+                    meetingId,
+                    pendingFragmentCount);
+                return;
+            }
+
             var fragments = await _dbContext.ParticipantAudioFragments
                 .IgnoreQueryFilters()
                 .Where(x => x.MeetingId == meetingId
@@ -316,6 +346,10 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.MeetingId == meetingId && x.OrganizationId == organizationId, cancellationToken);
 
+            var transcriptChanged = transcript is null
+                                    || !string.Equals(transcript.FullText, fullText, StringComparison.Ordinal)
+                                    || !string.Equals(transcript.SegmentsJson, segmentsJson, StringComparison.Ordinal);
+
             if (transcript == null)
             {
                 transcript = new MeetingTranscript
@@ -327,10 +361,13 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 _dbContext.MeetingTranscripts.Add(transcript);
             }
 
-            transcript.FullText = fullText;
-            transcript.SegmentsJson = segmentsJson;
-            transcript.SttModel = sttModels.FirstOrDefault() ?? string.Empty;
-            transcript.GeneratedAtUtc = DateTime.UtcNow;
+            if (transcriptChanged)
+            {
+                transcript.FullText = fullText;
+                transcript.SegmentsJson = segmentsJson;
+                transcript.SttModel = sttModels.FirstOrDefault() ?? string.Empty;
+                transcript.GeneratedAtUtc = DateTime.UtcNow;
+            }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -345,9 +382,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     cancellationToken: cancellationToken);
             }
 
-            await _publisher.Publish(
-                new MeetingTranscriptReadyEvent(meetingId, organizationId, DateTime.UtcNow),
-                cancellationToken);
+            if (transcriptChanged)
+            {
+                await _publisher.Publish(
+                    new MeetingTranscriptReadyEvent(meetingId, organizationId, DateTime.UtcNow),
+                    cancellationToken);
+            }
         }
 
         private static string FormatTimestamp(long milliseconds)
