@@ -115,7 +115,7 @@ namespace tests.Unit.LiveSession
                 Title = "Join Barrier Test",
                 ScheduledStartUtc = DateTime.UtcNow,
                 ScheduledEndUtc = DateTime.UtcNow.AddHours(1),
-                Status = MeetingStatus.InProgress
+                Status = MeetingStatus.Completed
             });
 
             dbContext.ParticipantAudioTracks.AddRange(

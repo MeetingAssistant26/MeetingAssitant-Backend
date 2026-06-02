@@ -31,6 +31,7 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<IAiDebugTraceService, AiDebugTraceService>();
             services.AddScoped<IPostMeetingProcessingTracker, PostMeetingProcessingTracker>();
             services.AddScoped<IPostMeetingProcessingTraceService, PostMeetingProcessingTraceService>();
+            services.AddScoped<IParticipantAudioReadinessService, ParticipantAudioReadinessService>();
             services.AddScoped<ILiveKitWebhookValidator, LiveKitWebhookValidator>();
             services.AddScoped<IWebhookService, WebhookService>();
             services.AddScoped<IStorageService, StorageService>();

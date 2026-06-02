@@ -3,12 +3,12 @@ using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
+using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using Npgsql;
 
 namespace MeetingAssistant.Features.LiveSession.Jobs
 {
@@ -17,15 +17,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         IPublisher publisher,
         ILogger<IngestParticipantAudioJob> logger,
         IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
-        IOptions<LiveKitOptions>? liveKitOptions = null)
+        IOptions<LiveKitOptions>? liveKitOptions = null,
+        IParticipantAudioReadinessService? participantAudioReadinessService = null)
     {
-        private const string UniqueViolationSqlState = "23505";
         private const int DefaultParticipantAudioIngestCeilingMinutes = 360;
 
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly IPublisher _publisher = publisher;
         private readonly ILogger<IngestParticipantAudioJob> _logger = logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
+        private readonly IParticipantAudioReadinessService _participantAudioReadinessService = participantAudioReadinessService
+            ?? new ParticipantAudioReadinessService(dbContext);
         private readonly TimeSpan _participantAudioIngestCeiling = TimeSpan.FromMinutes(
             NormalizeParticipantAudioIngestCeilingMinutes(
                 liveKitOptions?.Value.ParticipantAudioIngestCeilingMinutes));
@@ -136,7 +138,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         artifact: new PostMeetingArtifactLink("participant_audio_track", track.Id),
                         cancellationToken: cancellationToken);
                 }
-                await PersistTerminalStatusAsync(track, cancellationToken);
+                var readyEvent = await PersistTerminalStatusAndTryCreateReadyEventAsync(track, cancellationToken);
+                if (readyEvent is not null)
+                {
+                    await _publisher.Publish(readyEvent, cancellationToken);
+                }
+
                 return;
             }
 
@@ -317,7 +324,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
                         cancellationToken: cancellationToken);
                 }
-                await PersistFragmentTerminalStatusAndTryCreateReadyEventAsync(fragment, cancellationToken);
+                var readyEvent = await PersistFragmentTerminalStatusAndTryCreateReadyEventAsync(fragment, cancellationToken);
+                if (readyEvent is not null)
+                {
+                    await _publisher.Publish(readyEvent, cancellationToken);
+                }
+
                 return;
             }
 
@@ -433,20 +445,13 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
         }
 
-        private async Task PersistTerminalStatusAsync(
-            ParticipantAudioTrack track,
-            CancellationToken cancellationToken)
-        {
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        }
-
         private async Task<ParticipantAudioReadyEvent?> PersistTerminalStatusAndTryCreateReadyEventAsync(
             ParticipantAudioTrack track,
             CancellationToken cancellationToken)
         {
             await _dbContext.SaveChangesAsync(cancellationToken);
 
-            return await TryCreateParticipantAudioReadyEventAsync(
+            return await _participantAudioReadinessService.TryCreateReadyEventAsync(
                 track.MeetingId,
                 track.OrganizationId,
                 cancellationToken);
@@ -463,7 +468,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
             await _dbContext.SaveChangesAsync(cancellationToken);
 
-            return await TryCreateParticipantAudioReadyEventAsync(
+            return await _participantAudioReadinessService.TryCreateReadyEventAsync(
                 fragment.MeetingId,
                 fragment.OrganizationId,
                 cancellationToken);
@@ -518,53 +523,5 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
         }
 
-        private async Task<ParticipantAudioReadyEvent?> TryCreateParticipantAudioReadyEventAsync(
-            Guid meetingId,
-            Guid organizationId,
-            CancellationToken cancellationToken)
-        {
-            var remainingTracks = await _dbContext.ParticipantAudioTracks
-                .IgnoreQueryFilters()
-                .CountAsync(
-                    x => x.MeetingId == meetingId
-                         && x.Status != ParticipantAudioTrackStatus.Available
-                         && x.Status != ParticipantAudioTrackStatus.Failed,
-                    cancellationToken);
-
-            if (remainingTracks > 0)
-            {
-                return null;
-            }
-
-            var occurredAtUtc = DateTime.UtcNow;
-            _dbContext.SessionEvents.Add(new SessionEvent
-            {
-                MeetingId = meetingId,
-                OrganizationId = organizationId,
-                EventType = SessionEventType.ParticipantAudioReady,
-                ExternalEventId = $"participant-audio-ready:{meetingId}",
-                PayloadJson = "{}",
-                OccurredAtUtc = occurredAtUtc,
-                ProcessedAtUtc = occurredAtUtc
-            });
-
-            try
-            {
-                await _dbContext.SaveChangesAsync(cancellationToken);
-            }
-            catch (DbUpdateException ex) when (IsUniqueViolation(ex))
-            {
-                _dbContext.ChangeTracker.Clear();
-                return null;
-            }
-
-            return new ParticipantAudioReadyEvent(meetingId, organizationId, occurredAtUtc);
-        }
-
-        private static bool IsUniqueViolation(DbUpdateException exception)
-        {
-            return exception.InnerException is PostgresException postgresException
-                && postgresException.SqlState == UniqueViolationSqlState;
-        }
     }
 }

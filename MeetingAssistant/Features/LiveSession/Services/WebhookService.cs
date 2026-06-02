@@ -1,5 +1,6 @@
 using Hangfire;
 using Livekit.Server.Sdk.Dotnet;
+using MediatR;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
@@ -24,7 +25,9 @@ namespace MeetingAssistant.Features.LiveSession.Services
         IOptions<LiveKitOptions> options,
         IEgressService egressService,
         ILogger<WebhookService> logger,
-        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null) : IWebhookService
+        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
+        IParticipantAudioReadinessService? participantAudioReadinessService = null,
+        IPublisher? publisher = null) : IWebhookService
     {
         private const string UniqueViolationSqlState = "23505";
 
@@ -34,6 +37,9 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private readonly IEgressService _egressService = egressService;
         private readonly ILogger<WebhookService> _logger = logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
+        private readonly IParticipantAudioReadinessService _participantAudioReadinessService = participantAudioReadinessService
+            ?? new ParticipantAudioReadinessService(dbContext);
+        private readonly IPublisher? _publisher = publisher;
 
         public async Task<Result> ProcessAsync(
             WebhookEvent webhookEvent,
@@ -354,6 +360,11 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 }
             }
 
+            await PublishParticipantAudioReadyIfReadyAsync(
+                meeting.Id,
+                meeting.OrganizationId,
+                cancellationToken);
+
             foreach (var egressStart in egressStarts)
             {
                 try
@@ -382,7 +393,28 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 }
             }
 
+            await PublishParticipantAudioReadyIfReadyAsync(
+                meeting.Id,
+                meeting.OrganizationId,
+                cancellationToken);
+
             return Result.Success();
+        }
+
+        private async Task PublishParticipantAudioReadyIfReadyAsync(
+            Guid meetingId,
+            Guid organizationId,
+            CancellationToken cancellationToken)
+        {
+            var readyEvent = await _participantAudioReadinessService.TryCreateReadyEventAsync(
+                meetingId,
+                organizationId,
+                cancellationToken);
+
+            if (readyEvent is not null && _publisher is not null)
+            {
+                await _publisher.Publish(readyEvent, cancellationToken);
+            }
         }
 
         private async Task<ParticipantAudioFragment?> FindParticipantAudioFragmentAsync(

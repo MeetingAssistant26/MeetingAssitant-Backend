@@ -15,7 +15,7 @@ namespace tests.Integration.LiveSession
     public class ParticipantAudioHandoffTests
     {
         [Fact]
-        public async Task EgressEndedWithMultipleFileResults_ShouldCreateTracksEnqueueTransfers_AndDispatchReadyOnce()
+        public async Task EgressEndedWithMultipleFileResults_ShouldCreateTracksEnqueueTransfers_AndDispatchReadyOnceAfterRoomFinished()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
@@ -30,12 +30,14 @@ namespace tests.Integration.LiveSession
             }
 
             var webhookJobs = new FakeBackgroundJobClient();
+            var webhookPublisher = new CollectingPublisher();
             var webhookService = new WebhookService(
                 db.DbContext,
                 webhookJobs,
                 Options.Create(new MeetingAssistant.Features.LiveSession.Infrastructure.LiveKitOptions()),
                 new FakeEgressService(),
-                NullLogger<WebhookService>.Instance);
+                NullLogger<WebhookService>.Instance,
+                publisher: webhookPublisher);
 
             foreach (var participantId in participantIds)
             {
@@ -118,9 +120,24 @@ namespace tests.Integration.LiveSession
             db.DbContext.SessionEvents
                 .Count(x => x.MeetingId == meetingId && x.EventType == SessionEventType.ParticipantAudioReady)
                 .Should()
-                .Be(1);
+                .Be(0, "audio readiness waits until the room is completed so late fragments are not missed");
 
             ingestPublisher.Notifications
+                .OfType<ParticipantAudioReadyEvent>()
+                .Should()
+                .BeEmpty();
+
+            (await webhookService.ProcessAsync(
+                WebhookEventFactory.RoomFinished(meetingId, "evt-room-finished-after-egress"),
+                "{}"))
+                .IsSuccess.Should().BeTrue();
+
+            db.DbContext.SessionEvents
+                .Count(x => x.MeetingId == meetingId && x.EventType == SessionEventType.ParticipantAudioReady)
+                .Should()
+                .Be(1);
+
+            webhookPublisher.Notifications
                 .OfType<ParticipantAudioReadyEvent>()
                 .Should()
                 .ContainSingle(x => x.MeetingId == meetingId);
