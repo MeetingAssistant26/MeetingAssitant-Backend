@@ -42,6 +42,7 @@ namespace MeetingAssistant.Features.LiveSession
             services.AddScoped<IngestParticipantAudioJob>();
             services.AddScoped<GenerateMeetingTranscriptJob>();
             services.AddScoped<GenerateMeetingSummaryJob>();
+            services.AddScoped<PostMeetingProcessingReconciliationJob>();
             services.AddHttpClient("openai-stt");
             services.AddHttpClient("openai-llm");
             services.AddHttpClient("livekit-agent-dispatch");

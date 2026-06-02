@@ -2,6 +2,7 @@ using System;
 using Hangfire;
 using Hangfire.PostgreSql;
 using MeetingAssistant.Features.Identity.Services;
+using MeetingAssistant.Features.LiveSession.Jobs;
 
 namespace MeetingAssistant.Infrastructure.DependencyInjection
 {
@@ -48,6 +49,11 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                 "cleanup-expired-refresh-tokens",
                 service => service.CleanupExpiredTokensAsync(default),
                 Cron.Daily);
+
+            RecurringJob.AddOrUpdate<PostMeetingProcessingReconciliationJob>(
+                "reconcile-stale-post-meeting-processing",
+                job => job.RunAsync(default),
+                Cron.Hourly);
         }
 
         public static void UseSecureHangfireDashboard(this Microsoft.AspNetCore.Builder.WebApplication app)

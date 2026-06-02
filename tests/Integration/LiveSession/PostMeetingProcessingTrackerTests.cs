@@ -1,7 +1,10 @@
 using System.Text.Json;
 using FluentAssertions;
+using MeetingAssistant.Features.LiveSession.Jobs;
+using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace tests.Integration.LiveSession
@@ -238,6 +241,180 @@ namespace tests.Integration.LiveSession
             snapshot.Events.Should().Contain(x =>
                 x.EventType == PostMeetingProcessingEventType.RunStatusChanged
                 && x.Status == PostMeetingProcessingStatus.Completed);
+        }
+
+        [Fact]
+        public async Task Reconciliation_ShouldFinalizeStaleCoreStepsFromDurableTranscriptAndSummaryArtifacts()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var staleAtUtc = DateTime.UtcNow.AddHours(-2);
+            var transcriptId = Guid.NewGuid();
+            var summaryId = Guid.NewGuid();
+            var run = SeedStaleRun(db, orgId, meetingId, staleAtUtc);
+            db.DbContext.PostMeetingProcessingSteps.AddRange(
+                CreateStep(run, PostMeetingProcessingStepType.TranscriptPersistence, PostMeetingProcessingStatus.InProgress, staleAtUtc),
+                CreateStep(run, PostMeetingProcessingStepType.SummaryGeneration, PostMeetingProcessingStatus.InProgress, staleAtUtc));
+            db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+            {
+                Id = transcriptId,
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                FullText = "[00:00:01 Alice] stale transcript exists.",
+                SegmentsJson = "[]",
+                SttModel = "test",
+                GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-30)
+            });
+            db.DbContext.MeetingSummaries.Add(new MeetingSummary
+            {
+                Id = summaryId,
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                SummaryText = "Stale summary exists.",
+                LlmModel = "test",
+                GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-25)
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            var job = CreateReconciliationJob(db);
+            await job.RunAsync(CancellationToken.None);
+
+            var snapshot = await new PostMeetingProcessingTracker(db.DbContext).GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Run!.Status.Should().Be(PostMeetingProcessingStatus.Completed);
+            snapshot.Run.CompletedAtUtc.Should().NotBeNull();
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.TranscriptPersistence
+                && x.Status == PostMeetingProcessingStatus.Completed
+                && x.ArtifactId == transcriptId);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.SummaryGeneration
+                && x.Status == PostMeetingProcessingStatus.Completed
+                && x.ArtifactId == summaryId);
+            var eventCountAfterFirstRun = snapshot.Events.Count;
+
+            await job.RunAsync(CancellationToken.None);
+
+            var secondSnapshot = await new PostMeetingProcessingTracker(db.DbContext).GetLatestByMeetingAsync(orgId, meetingId);
+            secondSnapshot.Events.Should().HaveCount(eventCountAfterFirstRun);
+        }
+
+        [Fact]
+        public async Task Reconciliation_ShouldSkipStaleOptionalStepWithoutReopeningCompletedCoreRun()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var staleAtUtc = DateTime.UtcNow.AddHours(-2);
+            var run = SeedStaleRun(db, orgId, meetingId, staleAtUtc);
+            db.DbContext.PostMeetingProcessingSteps.Add(
+                CreateStep(run, PostMeetingProcessingStepType.KnowledgeIndexing, PostMeetingProcessingStatus.InProgress, staleAtUtc));
+            db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                FullText = "[00:00:01 Alice] transcript exists.",
+                SegmentsJson = "[]",
+                SttModel = "test",
+                GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-30)
+            });
+            db.DbContext.MeetingSummaries.Add(new MeetingSummary
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                SummaryText = "Summary exists.",
+                LlmModel = "test",
+                GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-25)
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            await CreateReconciliationJob(db).RunAsync(CancellationToken.None);
+
+            var snapshot = await new PostMeetingProcessingTracker(db.DbContext).GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Run!.Status.Should().Be(PostMeetingProcessingStatus.Completed);
+            snapshot.Steps.Should().ContainSingle(x =>
+                x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing
+                && x.Status == PostMeetingProcessingStatus.Skipped);
+            snapshot.Events.Should().Contain(x =>
+                x.EventType == PostMeetingProcessingEventType.StepSkipped
+                && x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing);
+        }
+
+        [Fact]
+        public async Task Reconciliation_ShouldLeaveFreshInProgressStepsUntouched()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var freshAtUtc = DateTime.UtcNow;
+            var run = SeedStaleRun(db, orgId, meetingId, freshAtUtc);
+            db.DbContext.PostMeetingProcessingSteps.Add(
+                CreateStep(run, PostMeetingProcessingStepType.SummaryGeneration, PostMeetingProcessingStatus.InProgress, freshAtUtc));
+            db.DbContext.MeetingSummaries.Add(new MeetingSummary
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                SummaryText = "Fresh summary exists.",
+                LlmModel = "test",
+                GeneratedAtUtc = DateTime.UtcNow
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            await CreateReconciliationJob(db).RunAsync(CancellationToken.None);
+
+            var snapshot = await new PostMeetingProcessingTracker(db.DbContext).GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Run!.Status.Should().Be(PostMeetingProcessingStatus.InProgress);
+            snapshot.Steps.Should().ContainSingle(x =>
+                x.StepType == PostMeetingProcessingStepType.SummaryGeneration
+                && x.Status == PostMeetingProcessingStatus.InProgress);
+        }
+
+        private static PostMeetingProcessingReconciliationJob CreateReconciliationJob(LiveSessionTestDb db)
+        {
+            return new PostMeetingProcessingReconciliationJob(
+                db.DbContext,
+                new PostMeetingProcessingTracker(db.DbContext),
+                NullLogger<PostMeetingProcessingReconciliationJob>.Instance);
+        }
+
+        private static PostMeetingProcessingRun SeedStaleRun(
+            LiveSessionTestDb db,
+            Guid orgId,
+            Guid meetingId,
+            DateTime startedAtUtc)
+        {
+            var run = new PostMeetingProcessingRun
+            {
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                Status = PostMeetingProcessingStatus.InProgress,
+                StartedAtUtc = startedAtUtc,
+                AttemptCount = 1
+            };
+            db.DbContext.PostMeetingProcessingRuns.Add(run);
+            return run;
+        }
+
+        private static PostMeetingProcessingStep CreateStep(
+            PostMeetingProcessingRun run,
+            PostMeetingProcessingStepType stepType,
+            PostMeetingProcessingStatus status,
+            DateTime lastAttemptAtUtc)
+        {
+            return new PostMeetingProcessingStep
+            {
+                OrganizationId = run.OrganizationId,
+                MeetingId = run.MeetingId,
+                Run = run,
+                StepType = stepType,
+                Status = status,
+                StartedAtUtc = lastAttemptAtUtc,
+                LastAttemptAtUtc = lastAttemptAtUtc,
+                AttemptCount = 1
+            };
         }
     }
 }

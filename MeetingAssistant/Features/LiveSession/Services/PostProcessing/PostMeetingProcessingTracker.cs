@@ -286,6 +286,46 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return step;
         }
 
+        public async Task<PostMeetingProcessingStep> SkipStepAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default)
+        {
+            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var step = await GetOrCreateStepAsync(run, stepType, cancellationToken);
+
+            if (step.Status == PostMeetingProcessingStatus.Skipped
+                && SameJob(step.RelatedHangfireJobId, relatedHangfireJobId)
+                && ArtifactMatches(step, artifact))
+            {
+                return step;
+            }
+
+            var now = DateTime.UtcNow;
+            step.Status = PostMeetingProcessingStatus.Skipped;
+            step.StartedAtUtc ??= now;
+            step.CompletedAtUtc = now;
+            step.FailedAtUtc = null;
+            step.RelatedHangfireJobId = relatedHangfireJobId ?? step.RelatedHangfireJobId;
+            step.ErrorCode = null;
+            step.ErrorMessage = null;
+            ApplyArtifact(step, artifact);
+
+            run.Status = run.Status == PostMeetingProcessingStatus.Pending
+                ? PostMeetingProcessingStatus.InProgress
+                : run.Status;
+            run.StartedAtUtc ??= now;
+            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+
+            AddStepEvent(run, step, PostMeetingProcessingEventType.StepSkipped, message, relatedHangfireJobId, artifact);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return step;
+        }
+
         public async Task<PostMeetingProcessingEvent> RecordEventAsync(
             Guid organizationId,
             Guid meetingId,

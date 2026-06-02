@@ -11,6 +11,7 @@ namespace MeetingAssistant.Features.LiveSession.Models.PostProcessing
         StepRetried = 6,
         ArtifactLinked = 7,
         Info = 8,
-        Error = 9
+        Error = 9,
+        StepSkipped = 10
     }
 }

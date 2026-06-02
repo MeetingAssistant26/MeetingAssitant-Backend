@@ -59,6 +59,15 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default);
 
+        Task<PostMeetingProcessingStep> SkipStepAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default);
+
         Task<PostMeetingProcessingEvent> RecordEventAsync(
             Guid organizationId,
             Guid meetingId,
