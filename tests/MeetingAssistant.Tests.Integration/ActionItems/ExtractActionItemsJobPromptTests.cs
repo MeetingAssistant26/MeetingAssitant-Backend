@@ -43,7 +43,7 @@ public sealed class ExtractActionItemsJobPromptTests
         await db.DbContext.SaveChangesAsync();
 
         var llm = new FakeLlmService("""
-            {"tasks":[{"assignee":"Alice","task":"review the dataset","due_date":"2026-06-10T15:30:00+02:00","status":"pending"}]}
+            [{"task":"review the dataset","responsible_person":"Alice","deadline":"2026-06-10T15:30:00+02:00"}]
             """);
         var job = CreateJob(db, llm);
 
@@ -52,10 +52,10 @@ public sealed class ExtractActionItemsJobPromptTests
         llm.LastRequest.Should().NotBeNull();
         llm.LastRequest!.Model.Should().Be("openai-compatible-local");
         var message = llm.LastRequest!.Messages.Should().ContainSingle().Subject;
-        message.Content.Should().Contain("You are an AI meeting assistant specialized in extracting action items.");
+        message.Content.Should().Contain("You are an AI meeting assistant specialized in extracting action items from meeting transcripts.");
         message.Content.Should().Contain($"Transcript:{Environment.NewLine}[00:00:01 Alice] I will review the dataset by 2026-06-10T15:30:00+02:00.");
         message.Content.Should().NotContain("{transcript}");
-        llm.LastRequest.ResponseFormat?.Type.Should().Be("json_object");
+        llm.LastRequest.ResponseFormat.Should().BeNull();
 
         var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
         item.Title.Should().Be("review the dataset");
@@ -89,7 +89,7 @@ public sealed class ExtractActionItemsJobPromptTests
         var job = CreateJob(
             db,
             new FakeLlmService("""
-                {"tasks":[{"assignee":"Alice","task":"review the dataset","due_date":null,"status":"pending"}]}
+                [{"task":"review the dataset","responsible_person":"Alice","deadline":null}]
                 """),
             tracker,
             jobs);
@@ -127,7 +127,7 @@ public sealed class ExtractActionItemsJobPromptTests
         var job = CreateJob(
             db,
             new FakeLlmService("""
-                {"tasks":[{"assignee":"Alice","task":"review the dataset","due_date":null,"status":"pending"}]}
+                [{"task":"review the dataset","responsible_person":"Alice","deadline":null}]
                 """),
             tracker,
             jobs);
@@ -173,7 +173,7 @@ public sealed class ExtractActionItemsJobPromptTests
             SttModel = "test"
         });
         await db.DbContext.SaveChangesAsync();
-        var llm = new FakeLlmService("{\"tasks\":[]}");
+        var llm = new FakeLlmService("[]");
         var jobs = new FakeBackgroundJobClient();
         var tracker = new PostMeetingProcessingTracker(db.DbContext);
         var job = CreateJob(db, llm, tracker, jobs);
@@ -255,7 +255,7 @@ public sealed class ExtractActionItemsJobPromptTests
         var job = CreateJob(
             db,
             new FakeLlmService("""
-                {"tasks":[{"assignee":"Alice","task":"   ","due_date":null,"status":"pending"}]}
+                [{"task":"   ","responsible_person":"Alice","deadline":null}]
                 """),
             tracker,
             jobs);
@@ -320,7 +320,7 @@ public sealed class ExtractActionItemsJobPromptTests
         });
         await db.DbContext.SaveChangesAsync();
 
-        var job = CreateJob(db, new FakeLlmService("{\"tasks\":[]}"));
+        var job = CreateJob(db, new FakeLlmService("[]"));
 
         await job.Invoking(x => x.RunAsync(meetingId, organizationId, CancellationToken.None))
             .Should()
@@ -349,7 +349,7 @@ public sealed class ExtractActionItemsJobPromptTests
         await db.DbContext.SaveChangesAsync();
 
         var job = CreateJob(db, new FakeLlmService("""
-            {"tasks":[{"assignee":null,"task":"prepare the release notes","due_date":null,"status":"pending"}]}
+            [{"task":"prepare the release notes","responsible_person":null,"deadline":null}]
             """));
 
         await job.RunAsync(meetingId, organizationId, CancellationToken.None);
@@ -381,7 +381,7 @@ public sealed class ExtractActionItemsJobPromptTests
         await db.DbContext.SaveChangesAsync();
 
         var job = CreateJob(db, new FakeLlmService("""
-            {"tasks":[{"assignee":"Alice","task":"prepare the deployment plan","due_date":"not-a-date","status":"pending"}]}
+            [{"task":"prepare the deployment plan","responsible_person":"Alice","deadline":"not-a-date"}]
             """));
 
         await job.RunAsync(meetingId, organizationId, CancellationToken.None);
@@ -413,7 +413,7 @@ public sealed class ExtractActionItemsJobPromptTests
         await db.DbContext.SaveChangesAsync();
 
         var job = CreateJob(db, new FakeLlmService("""
-            {"tasks":[{"assignee":"Layla","task":"prepare the deployment plan","due_date":"not-a-date","status":"pending"}]}
+            [{"task":"prepare the deployment plan","responsible_person":"Layla","deadline":"not-a-date"}]
             """));
 
         await job.RunAsync(meetingId, organizationId, CancellationToken.None);

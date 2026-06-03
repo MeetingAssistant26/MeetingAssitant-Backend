@@ -11,12 +11,15 @@ namespace MeetingAssistant.Infrastructure.AI.DTOs
         public required List<ChatMessage> Messages { get; init; }
 
         [JsonPropertyName("temperature")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public double? Temperature { get; init; }
 
         [JsonPropertyName("max_tokens")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public int? MaxTokens { get; init; }
 
         [JsonPropertyName("response_format")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public ResponseFormat? ResponseFormat { get; init; }
     }
 

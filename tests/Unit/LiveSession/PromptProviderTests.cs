@@ -34,8 +34,9 @@ public sealed class PromptProviderTests
 
         var prompt = provider.GetTaskExtractionPrompt(transcript);
 
-        prompt.Should().Contain("\"tasks\": [");
-        prompt.Should().Contain("\"due_date\": \"exact deadline as mentioned in text, or null\"");
+        prompt.Should().Contain("Your ONLY job is to return a valid JSON array of tasks.");
+        prompt.Should().Contain("\"responsible_person\": \"Full Name or null\"");
+        prompt.Should().Contain("\"deadline\": \"explicit time mentioned or null\"");
         prompt.Should().Contain($"Transcript:{Environment.NewLine}{transcript}");
         prompt.Should().NotContain("{transcript}");
     }

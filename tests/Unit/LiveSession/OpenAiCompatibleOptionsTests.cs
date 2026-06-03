@@ -102,6 +102,7 @@ public class OpenAiCompatibleOptionsTests
 
         handler.RequestUri.Should().Be("http://llm.test/v1/chat/completions");
         handler.Authorization.Should().Be("Bearer test-key");
+        handler.RequestBody.Should().NotContain("response_format");
     }
 
     private static ServiceProvider BuildProvider(IReadOnlyDictionary<string, string?> settings)
@@ -120,19 +121,24 @@ public class OpenAiCompatibleOptionsTests
     {
         public string? RequestUri { get; private set; }
         public string? Authorization { get; private set; }
+        public string RequestBody { get; private set; } = string.Empty;
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             RequestUri = request.RequestUri?.ToString();
             Authorization = request.Headers.Authorization?.ToString();
+            RequestBody = request.Content is null
+                ? string.Empty
+                : await request.Content.ReadAsStringAsync(cancellationToken)
+                ?? string.Empty;
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(
                     "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"{}\"}}]}")
-            });
+            };
         }
     }
 }

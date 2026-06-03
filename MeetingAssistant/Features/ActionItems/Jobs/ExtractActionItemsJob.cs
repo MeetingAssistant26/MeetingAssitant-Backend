@@ -152,8 +152,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     Messages = new List<ChatMessage>
                     {
                         new() { Role = "user", Content = prompt }
-                    },
-                    ResponseFormat = new ResponseFormat { Type = "json_object" }
+                    }
                 };
 
                 var response = await _llmService.CompleteAsync(llmRequest, cancellationToken);
@@ -386,15 +385,26 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
             try
             {
-                var result = JsonSerializer.Deserialize<ExtractedTasksDto>(content, JsonOptions)
-                    ?? throw new InvalidOperationException("LLM action item JSON deserialized to null.");
-
-                if (result.Tasks == null)
+                using var document = JsonDocument.Parse(content);
+                var root = document.RootElement;
+                var tasksElement = root;
+                if (root.ValueKind == JsonValueKind.Object)
                 {
-                    throw new InvalidOperationException("LLM action item JSON must contain a tasks array.");
+                    if (!root.TryGetProperty("tasks", out tasksElement))
+                    {
+                        throw new InvalidOperationException("LLM action item JSON must be an array or contain a tasks array.");
+                    }
                 }
 
-                return result;
+                if (tasksElement.ValueKind != JsonValueKind.Array)
+                {
+                    throw new InvalidOperationException("LLM action item JSON must be an array or contain a tasks array.");
+                }
+
+                var tasks = tasksElement.Deserialize<List<ExtractedTaskDto>>(JsonOptions)
+                    ?? throw new InvalidOperationException("LLM action item JSON deserialized to null.");
+
+                return new ExtractedTasksDto { Tasks = tasks };
             }
             catch (JsonException ex)
             {
@@ -490,14 +500,26 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
         private sealed class ExtractedTaskDto
         {
-            [JsonPropertyName("assignee")]
-            public string? Assignee { get; set; }
+            [JsonIgnore]
+            public string? Assignee => ResponsiblePerson ?? LegacyAssignee;
 
             [JsonPropertyName("task")]
             public string Task { get; set; } = string.Empty;
 
+            [JsonIgnore]
+            public string? DueDate => Deadline ?? LegacyDueDate;
+
+            [JsonPropertyName("responsible_person")]
+            public string? ResponsiblePerson { get; set; }
+
+            [JsonPropertyName("deadline")]
+            public string? Deadline { get; set; }
+
+            [JsonPropertyName("assignee")]
+            public string? LegacyAssignee { get; set; }
+
             [JsonPropertyName("due_date")]
-            public string? DueDate { get; set; }
+            public string? LegacyDueDate { get; set; }
 
             [JsonPropertyName("status")]
             public string? Status { get; set; }
