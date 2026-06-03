@@ -203,6 +203,22 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                             track.StorageObjectKey!,
                             ct);
 
+                        if (result.Segments.Count == 0)
+                        {
+                            failedFragments.Add(new FailedFragmentTranscription(
+                                track.FragmentId,
+                                "STT returned no transcript segments."));
+
+                            _logger.LogWarning(
+                                "STT transcription returned no transcript segments for participant audio fragment. MeetingId={MeetingId} FragmentId={FragmentId} ParticipantUserId={ParticipantUserId} TrackSid={TrackSid}",
+                                meetingId,
+                                track.FragmentId,
+                                track.ParticipantUserId,
+                                track.TrackSid);
+
+                            return;
+                        }
+
                         sttModels.Add(result.Model);
                         foreach (var segment in result.Segments)
                         {

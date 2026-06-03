@@ -43,11 +43,57 @@ namespace tests.Unit.LiveSession
         }
 
         [Fact]
-        public void ParseSegments_ShouldReturnEmpty_WhenVerboseJsonContainsNoSegments()
+        public void ParseSegments_ShouldCreateSyntheticSegment_WhenJsonContainsTextButNoSegments()
         {
-            var segments = ParseSegments(Guid.NewGuid(), """{"text":"no segments"}""", 120_000);
+            var participantId = Guid.NewGuid();
+            var segments = ParseSegments(participantId, """{"text":"  no segments  "}""", 120_000);
+
+            segments.Should().ContainSingle();
+            segments[0].ParticipantUserId.Should().Be(participantId);
+            segments[0].StartMs.Should().Be(120_000);
+            segments[0].EndMs.Should().Be(120_000);
+            segments[0].Text.Should().Be("no segments");
+            segments[0].AvgLogProb.Should().BeNull();
+        }
+
+        [Fact]
+        public void ParseSegments_ShouldCreateSyntheticSegment_WhenJsonContainsTextAndEmptySegmentsArray()
+        {
+            var participantId = Guid.NewGuid();
+            var segments = ParseSegments(participantId, """{"text":"chunk fallback","segments":[]}""", 600_000);
+
+            segments.Should().ContainSingle();
+            segments[0].ParticipantUserId.Should().Be(participantId);
+            segments[0].StartMs.Should().Be(600_000);
+            segments[0].EndMs.Should().Be(600_000);
+            segments[0].Text.Should().Be("chunk fallback");
+            segments[0].AvgLogProb.Should().BeNull();
+        }
+
+        [Theory]
+        [InlineData("{}")]
+        [InlineData("{\"text\":\"\"}")]
+        [InlineData("{\"text\":\"   \"}")]
+        [InlineData("{\"text\":\"   \",\"segments\":[]}")]
+        public void ParseSegments_ShouldReturnEmpty_WhenNoSegmentsAndTextIsEmpty(string json)
+        {
+            var segments = ParseSegments(Guid.NewGuid(), json, 120_000);
 
             segments.Should().BeEmpty();
+        }
+
+        [Theory]
+        [InlineData("tracks/meeting/alice.wav", "audio/wav")]
+        [InlineData("tracks/meeting/alice.mp3", "audio/mpeg")]
+        [InlineData("tracks/meeting/alice.ogg", "audio/ogg")]
+        [InlineData("tracks/meeting/alice.flac", "audio/flac")]
+        [InlineData("tracks/meeting/alice.m4a", "audio/mp4")]
+        [InlineData("tracks/meeting/alice", "application/octet-stream")]
+        public void ResolveAudioContentType_ShouldMatchStorageObjectExtension(
+            string objectKeyOrFileName,
+            string expectedContentType)
+        {
+            ResolveAudioContentType(objectKeyOrFileName).Should().Be(expectedContentType);
         }
 
         private static IReadOnlyList<TranscriptSegment> ParseSegments(
@@ -66,6 +112,20 @@ namespace tests.Unit.LiveSession
 
             result.Should().BeAssignableTo<IReadOnlyList<TranscriptSegment>>();
             return (IReadOnlyList<TranscriptSegment>)result!;
+        }
+
+        private static string ResolveAudioContentType(string objectKeyOrFileName)
+        {
+            var method = typeof(SttService).GetMethod(
+                "ResolveAudioContentType",
+                BindingFlags.NonPublic | BindingFlags.Static);
+
+            method.Should().NotBeNull();
+
+            var result = method!.Invoke(null, [objectKeyOrFileName]);
+
+            result.Should().BeOfType<string>();
+            return (string)result!;
         }
     }
 }

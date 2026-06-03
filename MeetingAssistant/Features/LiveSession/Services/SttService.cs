@@ -67,7 +67,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         {
             using var multipart = new MultipartFormDataContent();
             using var fileContent = new MinioObjectContent(minioClient, _storage.Bucket, storageObjectKey, ct);
-            fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/ogg");
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue(ResolveAudioContentType(storageObjectKey));
 
             multipart.Add(fileContent, "file", Path.GetFileName(storageObjectKey));
             multipart.Add(new StringContent(_stt.Model), "model");
@@ -109,7 +109,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     using var multipart = new MultipartFormDataContent();
                     await using var chunkStream = File.OpenRead(chunkFile);
                     using var fileContent = new StreamContent(chunkStream, CopyBufferSize);
-                    fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/ogg");
+                    fileContent.Headers.ContentType = new MediaTypeHeaderValue(ResolveAudioContentType(chunkFile));
 
                     multipart.Add(fileContent, "file", Path.GetFileName(chunkFile));
                     multipart.Add(new StringContent(_stt.Model), "model");
@@ -273,41 +273,74 @@ namespace MeetingAssistant.Features.LiveSession.Services
         {
             var segments = new List<TranscriptSegment>();
 
-            if (!responseRoot.TryGetProperty("segments", out var segmentsElement)
-                || segmentsElement.ValueKind != JsonValueKind.Array)
+            if (responseRoot.TryGetProperty("segments", out var segmentsElement)
+                && segmentsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var segmentElement in segmentsElement.EnumerateArray())
+                {
+                    if (!TryReadDouble(segmentElement, "start", out var startSeconds)
+                        || !TryReadDouble(segmentElement, "end", out var endSeconds))
+                    {
+                        continue;
+                    }
+
+                    var text = segmentElement.TryGetProperty("text", out var textElement)
+                        && textElement.ValueKind == JsonValueKind.String
+                            ? textElement.GetString() ?? string.Empty
+                            : string.Empty;
+
+                    double? avgLogProb = TryReadDouble(segmentElement, "avg_logprob", out var parsedAvgLogProb)
+                        ? parsedAvgLogProb
+                        : null;
+
+                    var startMs = offsetMs + (long)Math.Round(startSeconds * 1000);
+                    var endMs = offsetMs + (long)Math.Round(endSeconds * 1000);
+
+                    segments.Add(new TranscriptSegment(
+                        participantUserId,
+                        startMs,
+                        endMs,
+                        text,
+                        avgLogProb));
+                }
+            }
+
+            if (segments.Count > 0)
             {
                 return segments;
             }
 
-            foreach (var segmentElement in segmentsElement.EnumerateArray())
-            {
-                if (!TryReadDouble(segmentElement, "start", out var startSeconds)
-                    || !TryReadDouble(segmentElement, "end", out var endSeconds))
-                {
-                    continue;
-                }
-
-                var text = segmentElement.TryGetProperty("text", out var textElement)
-                    && textElement.ValueKind == JsonValueKind.String
-                        ? textElement.GetString() ?? string.Empty
-                        : string.Empty;
-
-                double? avgLogProb = TryReadDouble(segmentElement, "avg_logprob", out var parsedAvgLogProb)
-                    ? parsedAvgLogProb
+            var rootText = responseRoot.TryGetProperty("text", out var rootTextElement)
+                && rootTextElement.ValueKind == JsonValueKind.String
+                    ? rootTextElement.GetString()?.Trim()
                     : null;
 
-                var startMs = offsetMs + (long)Math.Round(startSeconds * 1000);
-                var endMs = offsetMs + (long)Math.Round(endSeconds * 1000);
-
-                segments.Add(new TranscriptSegment(
-                    participantUserId,
-                    startMs,
-                    endMs,
-                    text,
-                    avgLogProb));
+            if (string.IsNullOrWhiteSpace(rootText))
+            {
+                return segments;
             }
 
+            segments.Add(new TranscriptSegment(
+                participantUserId,
+                offsetMs,
+                offsetMs,
+                rootText,
+                null));
+
             return segments;
+        }
+
+        private static string ResolveAudioContentType(string objectKeyOrFileName)
+        {
+            return Path.GetExtension(objectKeyOrFileName).ToLowerInvariant() switch
+            {
+                ".wav" => "audio/wav",
+                ".mp3" => "audio/mpeg",
+                ".ogg" => "audio/ogg",
+                ".flac" => "audio/flac",
+                ".m4a" => "audio/mp4",
+                _ => "application/octet-stream"
+            };
         }
 
         private async Task<long> GetObjectSizeAsync(

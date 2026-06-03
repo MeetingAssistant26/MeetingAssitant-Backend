@@ -171,6 +171,49 @@ namespace tests.Unit.LiveSession
         }
 
         [Fact]
+        public async Task TranscriptGeneration_ShouldMarkFragmentFailed_WhenSttReturnsNoSegments()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var userId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, userId);
+
+            var objectKey = $"tracks/{meetingId}/{userId}.ogg";
+            var fragmentId = db.AddAvailableAudioFragment(meetingId, orgId, userId, objectKey, "TR_EMPTY_STT");
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [objectKey] = new("whisper-large-v3", [])
+            });
+            var publisher = new CollectingPublisher();
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance,
+                tracker);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            db.DbContext.MeetingTranscripts.Should().BeEmpty();
+            publisher.Notifications.OfType<MeetingTranscriptReadyEvent>().Should().BeEmpty();
+
+            var failedFragment = db.DbContext.ParticipantAudioFragments.Single(x => x.Id == fragmentId);
+            failedFragment.Status.Should().Be(ParticipantAudioFragmentStatus.Failed);
+            failedFragment.FailureCode.Should().Be("stt_failed");
+            failedFragment.FailureMessage.Should().Contain("no transcript segments");
+            failedFragment.FailedAtUtc.Should().NotBeNull();
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Steps.Should().ContainSingle(x =>
+                x.StepType == PostMeetingProcessingStepType.Stt
+                && x.Status == PostMeetingProcessingStatus.Failed
+                && x.ErrorCode == "all_fragments_failed");
+        }
+
+        [Fact]
         public async Task TranscriptGeneration_ShouldNotRepublishTranscriptReady_WhenTranscriptContentIsUnchanged()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();
