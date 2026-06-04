@@ -5,8 +5,10 @@ using System.Net.Http.Json;
 using FluentAssertions;
 using MeetingAssistant.Features.AgentApi.Models.Responses;
 using MeetingAssistant.Features.DevQa;
+using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
+using MeetingAssistant.Features.Rag.Models;
 using MeetingAssistant.Features.Tasks.Models.Enums;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Tests.Integration.Infrastructure;
@@ -358,6 +360,109 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
             new QaConfigureSttFailuresRequest(
                 Guid.NewGuid(),
                 [new QaSttFailureRuleRequest("qa/mtg:test/user:bob/track-bob.wav", FailCount: 1)]));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task RagFixtureArtifacts_ShouldUpsertTranscriptSummaryAndOptionalActionItems()
+    {
+        var scenario = await CreateScenarioAsync("qa-rag-fixture-artifacts");
+        const string transcriptText =
+            "[00:00:00 Alice] QA duplicate-current RAG capture transcript with roadmap launch context.";
+        const string summaryText =
+            "QA summary for duplicate-current RAG capture: roadmap launch milestones and risks.";
+
+        var response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/rag/fixture-artifacts",
+            new QaRagFixtureArtifactsRequest(
+                scenario.OrganizationId,
+                transcriptText,
+                summaryText,
+                ["Confirm duplicate-current RAG repair"]));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<QaRagFixtureArtifactsResponse>();
+        body.Should().NotBeNull();
+        body!.OrganizationId.Should().Be(scenario.OrganizationId);
+        body.MeetingId.Should().Be(scenario.MeetingId);
+        body.MeetingStatus.Should().Be(MeetingStatus.Completed.ToString());
+        body.TranscriptId.Should().NotBeEmpty();
+        body.SummaryId.Should().NotBeEmpty();
+        body.ActionItemCount.Should().Be(1);
+
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var transcript = await db.MeetingTranscripts
+            .IgnoreQueryFilters()
+            .SingleAsync(x => x.Id == body.TranscriptId);
+        transcript.FullText.Should().Be(transcriptText);
+        transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.Complete);
+
+        var summary = await db.MeetingSummaries
+            .IgnoreQueryFilters()
+            .SingleAsync(x => x.Id == body.SummaryId);
+        summary.SummaryText.Should().Be(summaryText);
+
+        var actionItems = await db.ActionItems
+            .IgnoreQueryFilters()
+            .Where(x => x.MeetingId == scenario.MeetingId)
+            .ToListAsync();
+        actionItems.Should().ContainSingle(x => x.Title == "Confirm duplicate-current RAG repair");
+    }
+
+    [Fact]
+    public async Task RagDuplicateCurrent_ShouldCloneCurrentPublishedKnowledgeDocument()
+    {
+        var scenario = await CreateScenarioAsync("qa-rag-duplicate-current-seed");
+        const string transcriptText =
+            "[00:00:00 Alice] QA duplicate-current RAG capture transcript with roadmap launch context.";
+        const string summaryText =
+            "QA summary for duplicate-current RAG capture: roadmap launch milestones and risks.";
+
+        var fixtureResponse = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/rag/fixture-artifacts",
+            new QaRagFixtureArtifactsRequest(scenario.OrganizationId, transcriptText, summaryText));
+        fixtureResponse.EnsureSuccessStatusCode();
+
+        var firstRagResponse = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/process",
+            new QaProcessRequest(scenario.OrganizationId, ["rag"], "inline"));
+        firstRagResponse.EnsureSuccessStatusCode();
+
+        var duplicateResponse = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/rag/duplicate-current",
+            new QaRagDuplicateCurrentRequest(
+                scenario.OrganizationId,
+                KnowledgeArtifactType.Transcript.ToString(),
+                ArtifactVersion: 1));
+        duplicateResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var duplicate = await duplicateResponse.Content.ReadFromJsonAsync<QaRagDuplicateCurrentResponse>();
+        duplicate.Should().NotBeNull();
+        duplicate!.SourceDocumentId.Should().NotBeEmpty();
+        duplicate.DuplicateDocumentId.Should().NotBe(duplicate.SourceDocumentId);
+        duplicate.DuplicateCurrentCount.Should().Be(2);
+
+        var statusResponse = await Client.GetAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/processing-status?organizationId={scenario.OrganizationId}");
+        statusResponse.EnsureSuccessStatusCode();
+        var status = await statusResponse.Content.ReadFromJsonAsync<QaProcessingStatusResponse>();
+        status.Should().NotBeNull();
+        status!.DuplicateCurrentKnowledgeDocuments.Should().ContainSingle();
+        status.DuplicateCurrentKnowledgeDocuments[0].DocumentIds.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task RagDuplicateCurrent_WithMissingSourceDocument_ShouldReturnNotFound()
+    {
+        var scenario = await CreateScenarioAsync("qa-rag-duplicate-current-missing-source");
+
+        var response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/rag/duplicate-current",
+            new QaRagDuplicateCurrentRequest(
+                scenario.OrganizationId,
+                KnowledgeArtifactType.Transcript.ToString(),
+                ArtifactVersion: 1));
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }

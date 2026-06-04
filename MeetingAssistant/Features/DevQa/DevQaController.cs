@@ -4,6 +4,7 @@ using System.Text.Json;
 using Hangfire;
 using MeetingAssistant.Features.ActionItems.Jobs;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
+using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.AgentApi.Services;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.Identity.Services;
@@ -873,6 +874,235 @@ public sealed class DevQaController(
         return Ok(await BuildProcessingStatusAsync(organizationId, meetingId, cancellationToken));
     }
 
+    [HttpPost("meetings/{meetingId:guid}/rag/fixture-artifacts")]
+    [ProducesResponseType(typeof(QaRagFixtureArtifactsResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> SeedRagFixtureArtifacts(
+        [FromRoute] Guid meetingId,
+        [FromBody] QaRagFixtureArtifactsRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (request is null)
+            return BadRequest(new { error = "Request body is required." });
+
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest(new { error = "OrganizationId is required." });
+
+        if (string.IsNullOrWhiteSpace(request.TranscriptText))
+            return BadRequest(new { error = "TranscriptText is required." });
+
+        if (string.IsNullOrWhiteSpace(request.SummaryText))
+            return BadRequest(new { error = "SummaryText is required." });
+
+        var meeting = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                x => x.Id == meetingId && x.OrganizationId == request.OrganizationId,
+                cancellationToken);
+        if (meeting is null)
+            return NotFound(new { error = "Meeting not found for organization." });
+
+        if (meeting.Status != MeetingStatus.Completed)
+        {
+            meeting.Status = MeetingStatus.Completed;
+            meeting.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        var now = DateTime.UtcNow;
+        var transcript = await _dbContext.MeetingTranscripts
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                x => x.MeetingId == meetingId && x.OrganizationId == request.OrganizationId,
+                cancellationToken);
+
+        if (transcript is null)
+        {
+            transcript = new MeetingTranscript
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = request.OrganizationId,
+                MeetingId = meetingId
+            };
+            _dbContext.MeetingTranscripts.Add(transcript);
+        }
+
+        transcript.FullText = request.TranscriptText.Trim();
+        transcript.SegmentsJson = "[]";
+        transcript.SttModel = "qa-fixture";
+        transcript.GeneratedAtUtc = now;
+        transcript.CompletenessStatus = MeetingTranscriptCompletenessStatus.Complete;
+        transcript.ExpectedAudioFragmentCount = 0;
+        transcript.TranscribedAudioFragmentCount = 0;
+        transcript.RetryableFailedAudioFragmentCount = 0;
+        transcript.TerminalFailedAudioFragmentCount = 0;
+        transcript.MissingAudioFragmentIdsJson = "[]";
+        transcript.WarningsJson = "[]";
+        transcript.UpdatedAtUtc = now;
+
+        var summary = await _dbContext.MeetingSummaries
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                x => x.MeetingId == meetingId && x.OrganizationId == request.OrganizationId,
+                cancellationToken);
+
+        if (summary is null)
+        {
+            summary = new MeetingSummary
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = request.OrganizationId,
+                MeetingId = meetingId
+            };
+            _dbContext.MeetingSummaries.Add(summary);
+        }
+
+        summary.SummaryText = request.SummaryText.Trim();
+        summary.LlmModel = "qa-fixture";
+        summary.GeneratedAtUtc = now;
+        summary.UpdatedAtUtc = now;
+
+        var actionItemCount = 0;
+        if (request.ActionItems is { Count: > 0 })
+        {
+            var hostUserId = await _dbContext.MeetingParticipants
+                .IgnoreQueryFilters()
+                .Where(x => x.MeetingId == meetingId && x.OrganizationId == request.OrganizationId)
+                .OrderByDescending(x => x.MeetingRole == MeetingRole.Host)
+                .ThenBy(x => x.MeetingRole)
+                .Select(x => x.UserId)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            foreach (var title in request.ActionItems)
+            {
+                if (string.IsNullOrWhiteSpace(title))
+                    continue;
+
+                _dbContext.ActionItems.Add(new ActionItem
+                {
+                    Id = Guid.NewGuid(),
+                    OrganizationId = request.OrganizationId,
+                    MeetingId = meetingId,
+                    Title = TruncateForStorage(title, 500),
+                    AssignedToUserId = hostUserId == Guid.Empty ? null : hostUserId,
+                    Status = ActionItemStatus.PendingReview,
+                    ExtractedAtUtc = now
+                });
+                actionItemCount++;
+            }
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return Ok(new QaRagFixtureArtifactsResponse(
+            request.OrganizationId,
+            meetingId,
+            meeting.Status.ToString(),
+            transcript.Id,
+            summary.Id,
+            actionItemCount));
+    }
+
+    [HttpPost("meetings/{meetingId:guid}/rag/duplicate-current")]
+    [ProducesResponseType(typeof(QaRagDuplicateCurrentResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> SeedRagDuplicateCurrent(
+        [FromRoute] Guid meetingId,
+        [FromBody] QaRagDuplicateCurrentRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (request is null)
+            return BadRequest(new { error = "Request body is required." });
+
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest(new { error = "OrganizationId is required." });
+
+        if (request.ArtifactVersion is < 1)
+            return BadRequest(new { error = "ArtifactVersion must be at least 1." });
+
+        if (!TryParseKnowledgeArtifactType(request.ArtifactType, out var artifactType))
+            return BadRequest(new { error = "ArtifactType is invalid.", allowedValues = Enum.GetNames<KnowledgeArtifactType>() });
+
+        var meetingExists = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Id == meetingId && x.OrganizationId == request.OrganizationId, cancellationToken);
+        if (!meetingExists)
+            return NotFound(new { error = "Meeting not found for organization." });
+
+        var sourceDocument = await _dbContext.KnowledgeDocuments
+            .IgnoreQueryFilters()
+            .Where(x => x.OrganizationId == request.OrganizationId
+                        && x.MeetingId == meetingId
+                        && x.ArtifactType == artifactType
+                        && x.ArtifactVersion == request.ArtifactVersion
+                        && x.Visibility == KnowledgeVisibility.Published
+                        && x.IsCurrent)
+            .OrderBy(x => x.GeneratedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (sourceDocument is null)
+        {
+            return NotFound(new
+            {
+                error = "No current published knowledge document exists for the requested artifact key.",
+                artifactType = artifactType.ToString(),
+                artifactVersion = request.ArtifactVersion
+            });
+        }
+
+        var duplicateGenerationId = Guid.NewGuid();
+        var duplicateDocumentId = Guid.NewGuid();
+        var generatedAtUtc = DateTime.UtcNow;
+
+        var duplicateDocument = new KnowledgeDocument
+        {
+            Id = duplicateDocumentId,
+            OrganizationId = sourceDocument.OrganizationId,
+            MeetingId = sourceDocument.MeetingId,
+            ArtifactType = sourceDocument.ArtifactType,
+            ArtifactId = sourceDocument.ArtifactId,
+            ArtifactVersion = sourceDocument.ArtifactVersion,
+            Title = sourceDocument.Title,
+            ContentHash = sourceDocument.ContentHash,
+            IndexGenerationId = duplicateGenerationId,
+            Visibility = KnowledgeVisibility.Published,
+            IsCurrent = true,
+            EmbeddingProvider = sourceDocument.EmbeddingProvider,
+            EmbeddingModel = sourceDocument.EmbeddingModel,
+            EmbeddingDimension = sourceDocument.EmbeddingDimension,
+            MetadataJson = sourceDocument.MetadataJson,
+            GeneratedAtUtc = generatedAtUtc
+        };
+
+        _dbContext.KnowledgeDocuments.Add(duplicateDocument);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        var duplicateCurrentCount = await _dbContext.KnowledgeDocuments
+            .IgnoreQueryFilters()
+            .CountAsync(
+                x => x.OrganizationId == request.OrganizationId
+                     && x.MeetingId == meetingId
+                     && x.ArtifactType == artifactType
+                     && x.ArtifactId == sourceDocument.ArtifactId
+                     && x.ArtifactVersion == request.ArtifactVersion
+                     && x.Visibility == KnowledgeVisibility.Published
+                     && x.IsCurrent,
+                cancellationToken);
+
+        return Ok(new QaRagDuplicateCurrentResponse(
+            request.OrganizationId,
+            meetingId,
+            sourceDocument.Id,
+            duplicateDocumentId,
+            artifactType.ToString(),
+            sourceDocument.ArtifactId,
+            sourceDocument.ArtifactVersion,
+            duplicateCurrentCount));
+    }
+
     private bool IsQaHarnessEnabled()
     {
         if (_environment.IsDevelopment() || _environment.IsEnvironment("Testing"))
@@ -1482,6 +1712,15 @@ public sealed class DevQaController(
         return string.IsNullOrWhiteSpace(slug) ? "qa" : slug;
     }
 
+    private static bool TryParseKnowledgeArtifactType(string? value, out KnowledgeArtifactType artifactType)
+    {
+        artifactType = default;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        return Enum.TryParse(value.Trim(), ignoreCase: true, out artifactType);
+    }
+
     private sealed record QaScenarioUserInternal(
         string Label,
         ApplicationUser User,
@@ -1811,3 +2050,32 @@ public sealed record QaPostProcessingEventStatusResponse(
     string? ErrorCode,
     string? ErrorMessage,
     DateTime CreatedAtUtc);
+
+public sealed record QaRagFixtureArtifactsRequest(
+    Guid OrganizationId,
+    string TranscriptText,
+    string SummaryText,
+    IReadOnlyList<string>? ActionItems = null);
+
+public sealed record QaRagFixtureArtifactsResponse(
+    Guid OrganizationId,
+    Guid MeetingId,
+    string MeetingStatus,
+    Guid TranscriptId,
+    Guid SummaryId,
+    int ActionItemCount);
+
+public sealed record QaRagDuplicateCurrentRequest(
+    Guid OrganizationId,
+    string ArtifactType,
+    int ArtifactVersion = 1);
+
+public sealed record QaRagDuplicateCurrentResponse(
+    Guid OrganizationId,
+    Guid MeetingId,
+    Guid SourceDocumentId,
+    Guid DuplicateDocumentId,
+    string ArtifactType,
+    Guid ArtifactId,
+    int ArtifactVersion,
+    int DuplicateCurrentCount);
