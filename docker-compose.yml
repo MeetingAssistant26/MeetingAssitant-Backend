@@ -232,7 +232,7 @@ services:
       - default
       - ai-network
     healthcheck:
-      test: ["CMD", "node", "dist/readiness.js", "--once"]
+      test: ["CMD", "node", "dist/readiness.js", "--once", "--include-worker"]
       interval: 30s
       timeout: 20s
       retries: 3

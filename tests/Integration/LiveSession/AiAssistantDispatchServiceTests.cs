@@ -38,6 +38,7 @@ namespace tests.Integration.LiveSession
             handler.RequestPaths.Should().Equal(
                 "/twirp/livekit.RoomService/CreateRoom",
                 "/twirp/livekit.AgentDispatchService/ListDispatch",
+                "/twirp/livekit.RoomService/ListParticipants",
                 "/twirp/livekit.AgentDispatchService/CreateDispatch");
             handler.RequestBodies.Last().Should().Contain("\"agent_name\":\"meeting-assistant\"");
             handler.RequestBodies.Last().Should().Contain($"\"room\":\"mtg:{meetingId}\"");
@@ -117,7 +118,9 @@ namespace tests.Integration.LiveSession
             result.Value.Enabled.Should().BeTrue();
             result.Value.AgentIsConnected.Should().BeFalse();
             result.Value.DispatchId.Should().BeNull();
-            handler.RequestPaths.Should().Equal("/twirp/livekit.AgentDispatchService/ListDispatch");
+            handler.RequestPaths.Should().Equal(
+                "/twirp/livekit.AgentDispatchService/ListDispatch",
+                "/twirp/livekit.RoomService/ListParticipants");
         }
 
         [Fact]
@@ -138,6 +141,7 @@ namespace tests.Integration.LiveSession
             handler.RequestPaths.Should().Equal(
                 "/twirp/livekit.RoomService/CreateRoom",
                 "/twirp/livekit.AgentDispatchService/ListDispatch",
+                "/twirp/livekit.RoomService/ListParticipants",
                 "/twirp/livekit.AgentDispatchService/CreateDispatch");
         }
 
@@ -190,21 +194,304 @@ namespace tests.Integration.LiveSession
             aiDebug.GetProperty("agentToken").GetString().Should().Be("debug-agent-token");
         }
 
-        private static AiAssistantDispatchService CreateService(
-            LiveSessionTestDb fixture,
-            HttpMessageHandler handler,
-            bool aiDebugEnabled = false,
-            bool persistPayloads = true)
+        [Fact]
+        public async Task GetStatusAsync_ConnectedDispatch_ShouldReportConnectedWithoutListParticipants()
         {
-            return new AiAssistantDispatchService(
-                fixture.DbContext,
-                new FakeHttpClientFactory(handler),
-                Options.Create(new LiveKitOptions
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript:
+                [
+                    FakeLiveKitDispatchHandler.ConnectedDispatchListJson("dispatch-connected")
+                ]);
+            var sut = CreateService(fixture, handler);
+
+            var result = await sut.GetStatusAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.AgentIsConnected.Should().BeTrue();
+            result.Value.DispatchId.Should().Be("dispatch-connected");
+            handler.RequestPaths.Should().Equal("/twirp/livekit.AgentDispatchService/ListDispatch");
+        }
+
+        [Fact]
+        public async Task GetStatusAsync_StaleDispatch_ShouldReportDisconnectedAndRemainReadOnly()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript: [FakeLiveKitDispatchHandler.StaleDispatchListJson]);
+            var sut = CreateService(fixture, handler);
+
+            var result = await sut.GetStatusAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.DispatchId.Should().Be("dispatch-stale");
+            result.Value.AgentIsConnected.Should().BeFalse();
+            handler.RequestPaths.Should().Equal(
+                "/twirp/livekit.AgentDispatchService/ListDispatch",
+                "/twirp/livekit.RoomService/ListParticipants");
+        }
+
+        [Fact]
+        public async Task EnableAsync_ExistingStaleDispatch_ShouldDeleteAndCreateFreshDispatch()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript: [FakeLiveKitDispatchHandler.StaleDispatchListJson],
+                createDispatchScript: [FakeLiveKitDispatchHandler.ConnectedDispatchJson("dispatch-fresh")]);
+            var sut = CreateService(fixture, handler);
+
+            var result = await sut.EnableAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.AgentIsConnected.Should().BeTrue();
+            result.Value.DispatchId.Should().Be("dispatch-fresh");
+            handler.RequestPaths.Should().Equal(
+                "/twirp/livekit.RoomService/CreateRoom",
+                "/twirp/livekit.AgentDispatchService/ListDispatch",
+                "/twirp/livekit.RoomService/ListParticipants",
+                "/twirp/livekit.AgentDispatchService/DeleteDispatch",
+                "/twirp/livekit.AgentDispatchService/CreateDispatch");
+            handler.RequestBodies
+                .Single(body => body.Contains("\"dispatch_id\"", StringComparison.Ordinal))
+                .Should().Contain("\"dispatch_id\":\"dispatch-stale\"");
+        }
+
+        [Fact]
+        public async Task EnableAsync_ExistingConnectedDispatch_ShouldReuseWithoutDeleteOrCreate()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript:
+                [
+                    FakeLiveKitDispatchHandler.ConnectedAndStaleDispatchListJson(
+                        connectedDispatchId: "dispatch-connected",
+                        staleDispatchId: "dispatch-stale")
+                ]);
+            var sut = CreateService(fixture, handler);
+
+            var result = await sut.EnableAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.AgentIsConnected.Should().BeTrue();
+            result.Value.DispatchId.Should().Be("dispatch-connected");
+            handler.RequestPaths.Should().Equal(
+                "/twirp/livekit.RoomService/CreateRoom",
+                "/twirp/livekit.AgentDispatchService/ListDispatch");
+        }
+
+        [Fact]
+        public async Task EnsureDispatchedForMeetingAsync_ExistingStaleDispatch_ShouldRepairWithoutAdminCheck()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript: [FakeLiveKitDispatchHandler.StaleDispatchListJson],
+                createDispatchScript: [FakeLiveKitDispatchHandler.ConnectedDispatchJson("dispatch-fresh")]);
+            var sut = CreateService(fixture, handler);
+
+            var result = await sut.EnsureDispatchedForMeetingAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.AgentIsConnected.Should().BeTrue();
+            result.Value.DispatchId.Should().Be("dispatch-fresh");
+            handler.RequestPaths.Should().Equal(
+                "/twirp/livekit.RoomService/CreateRoom",
+                "/twirp/livekit.AgentDispatchService/ListDispatch",
+                "/twirp/livekit.RoomService/ListParticipants",
+                "/twirp/livekit.AgentDispatchService/DeleteDispatch",
+                "/twirp/livekit.AgentDispatchService/CreateDispatch");
+        }
+
+        [Fact]
+        public async Task EnableAsync_CreatedDispatchHasAgentParticipantButListDispatchUnconnected_ShouldNotDeleteOrRetryAndReportConnected()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript:
+                [
+                    FakeLiveKitDispatchHandler.EmptyDispatchListJson,
+                    FakeLiveKitDispatchHandler.UnconnectedDispatchListJson("dispatch-1"),
+                    FakeLiveKitDispatchHandler.UnconnectedDispatchListJson("dispatch-1")
+                ],
+                createDispatchScript:
+                [
+                    FakeLiveKitDispatchHandler.UnconnectedDispatchJson("dispatch-1")
+                ],
+                listParticipantsScript:
+                [
+                    FakeLiveKitDispatchHandler.EmptyParticipantsListJson,
+                    FakeLiveKitDispatchHandler.AgentParticipantListJson("agent-AJ_first")
+                ]);
+            var sut = CreateService(
+                fixture,
+                handler,
+                liveKitOptions: new LiveKitOptions
                 {
                     ApiKey = "test-livekit-key",
                     ApiSecret = "0123456789abcdef0123456789abcdef",
                     EgressHost = "http://livekit.example",
-                    AgentName = "meeting-assistant"
+                    AgentName = "meeting-assistant",
+                    AgentDispatchConnectPollAttempts = 1,
+                    AgentDispatchConnectPollIntervalMs = 1
+                });
+
+            var result = await sut.EnableAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.AgentIsConnected.Should().BeTrue();
+            result.Value.DispatchId.Should().Be("dispatch-1");
+            handler.RequestPaths.Count(path => path.EndsWith("/CreateDispatch", StringComparison.Ordinal))
+                .Should().Be(1);
+            handler.RequestPaths.Count(path => path.EndsWith("/DeleteDispatch", StringComparison.Ordinal))
+                .Should().Be(0);
+        }
+
+        [Fact]
+        public async Task EnableAsync_ExistingUnconnectedDispatchWithAgentParticipant_ShouldReuseWithoutDeleteOrCreate()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript: [FakeLiveKitDispatchHandler.StaleDispatchListJson],
+                listParticipantsScript:
+                [
+                    FakeLiveKitDispatchHandler.AgentParticipantListJson("agent-AJ_first")
+                ]);
+            var sut = CreateService(fixture, handler);
+
+            var result = await sut.EnableAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.AgentIsConnected.Should().BeTrue();
+            result.Value.DispatchId.Should().Be("dispatch-stale");
+            handler.RequestPaths.Count(path => path.EndsWith("/DeleteDispatch", StringComparison.Ordinal))
+                .Should().Be(0);
+            handler.RequestPaths.Count(path => path.EndsWith("/CreateDispatch", StringComparison.Ordinal))
+                .Should().Be(0);
+        }
+
+        [Fact]
+        public async Task GetStatusAsync_UnconnectedDispatchWithAgentParticipant_ShouldReportConnectedAndRemainReadOnly()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript: [FakeLiveKitDispatchHandler.StaleDispatchListJson],
+                listParticipantsScript:
+                [
+                    FakeLiveKitDispatchHandler.AgentParticipantListJson("agent-AJ_first")
+                ]);
+            var sut = CreateService(fixture, handler);
+
+            var result = await sut.GetStatusAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.AgentIsConnected.Should().BeTrue();
+            result.Value.DispatchId.Should().Be("dispatch-stale");
+            handler.RequestPaths.Should().Equal(
+                "/twirp/livekit.AgentDispatchService/ListDispatch",
+                "/twirp/livekit.RoomService/ListParticipants");
+            handler.RequestPaths.Should().NotContain(path => path.EndsWith("/DeleteDispatch", StringComparison.Ordinal));
+            handler.RequestPaths.Should().NotContain(path => path.EndsWith("/CreateDispatch", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task EnableAsync_CreatedDispatchStillUnconnectedAfterPoll_ShouldNotDeleteCreatedDispatchOrRetry()
+        {
+            await using var fixture = await LiveSessionTestDb.CreateAsync();
+            var orgId = fixture.SeedOrganization();
+            var userId = fixture.SeedUser();
+            AddMembership(fixture, orgId, userId, OrganizationRole.Admin);
+            var meetingId = fixture.SeedMeeting(orgId, MeetingStatus.Scheduled);
+            var handler = new FakeLiveKitDispatchHandler(
+                listDispatchScript:
+                [
+                    FakeLiveKitDispatchHandler.EmptyDispatchListJson,
+                    FakeLiveKitDispatchHandler.UnconnectedDispatchListJson("dispatch-1"),
+                    FakeLiveKitDispatchHandler.UnconnectedDispatchListJson("dispatch-1")
+                ],
+                createDispatchScript:
+                [
+                    FakeLiveKitDispatchHandler.UnconnectedDispatchJson("dispatch-1")
+                ]);
+            var sut = CreateService(
+                fixture,
+                handler,
+                liveKitOptions: new LiveKitOptions
+                {
+                    ApiKey = "test-livekit-key",
+                    ApiSecret = "0123456789abcdef0123456789abcdef",
+                    EgressHost = "http://livekit.example",
+                    AgentName = "meeting-assistant",
+                    AgentDispatchConnectPollAttempts = 1,
+                    AgentDispatchConnectPollIntervalMs = 1
+                });
+
+            var result = await sut.EnableAsync(orgId, meetingId, userId);
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.Enabled.Should().BeTrue();
+            result.Value.AgentIsConnected.Should().BeFalse();
+            result.Value.DispatchId.Should().Be("dispatch-1");
+            handler.RequestPaths.Count(path => path.EndsWith("/CreateDispatch", StringComparison.Ordinal))
+                .Should().Be(1);
+            handler.RequestPaths.Count(path => path.EndsWith("/DeleteDispatch", StringComparison.Ordinal))
+                .Should().Be(0);
+        }
+
+        private static AiAssistantDispatchService CreateService(
+            LiveSessionTestDb fixture,
+            HttpMessageHandler handler,
+            bool aiDebugEnabled = false,
+            bool persistPayloads = true,
+            LiveKitOptions? liveKitOptions = null)
+        {
+            return new AiAssistantDispatchService(
+                fixture.DbContext,
+                new FakeHttpClientFactory(handler),
+                Options.Create(liveKitOptions ?? new LiveKitOptions
+                {
+                    ApiKey = "test-livekit-key",
+                    ApiSecret = "0123456789abcdef0123456789abcdef",
+                    EgressHost = "http://livekit.example",
+                    AgentName = "meeting-assistant",
+                    AgentDispatchConnectPollAttempts = 0
                 }),
                 Options.Create(new AiDebugOptions
                 {
@@ -258,10 +545,35 @@ namespace tests.Integration.LiveSession
                 => Task.FromResult(Result.Success("debug-agent-token"));
         }
 
-        private sealed class FakeLiveKitDispatchHandler(
-            bool existingDispatch = false,
-            bool roomUnavailable = false) : HttpMessageHandler
+        private sealed class FakeLiveKitDispatchHandler : HttpMessageHandler
         {
+            private readonly bool _roomUnavailable;
+            private readonly Queue<string> _listDispatchResponses;
+            private readonly Queue<string> _createDispatchResponses;
+            private readonly Queue<string> _listParticipantsResponses;
+            private readonly string _defaultListResponse;
+            private readonly string _defaultCreateResponse;
+            private readonly string _defaultListParticipantsResponse;
+
+            public FakeLiveKitDispatchHandler(
+                bool existingDispatch = false,
+                bool roomUnavailable = false,
+                IEnumerable<string>? listDispatchScript = null,
+                IEnumerable<string>? createDispatchScript = null,
+                IEnumerable<string>? listParticipantsScript = null)
+            {
+                _roomUnavailable = roomUnavailable;
+                _defaultListResponse = existingDispatch ? ListWithDispatchJson : EmptyDispatchListJson;
+                _defaultCreateResponse = ConnectedDispatchJson("dispatch-1");
+                _defaultListParticipantsResponse = EmptyParticipantsListJson;
+                _listDispatchResponses = new Queue<string>(
+                    listDispatchScript ?? [existingDispatch ? ListWithDispatchJson : EmptyDispatchListJson]);
+                _createDispatchResponses = new Queue<string>(
+                    createDispatchScript ?? [ConnectedDispatchJson("dispatch-1")]);
+                _listParticipantsResponses = new Queue<string>(
+                    listParticipantsScript ?? [EmptyParticipantsListJson]);
+            }
+
             public List<string> RequestPaths { get; } = [];
             public List<string> RequestBodies { get; } = [];
 
@@ -282,7 +594,7 @@ namespace tests.Integration.LiveSession
 
                 if (path.EndsWith("/ListDispatch", StringComparison.Ordinal))
                 {
-                    if (roomUnavailable)
+                    if (_roomUnavailable)
                     {
                         return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
                         {
@@ -293,12 +605,12 @@ namespace tests.Integration.LiveSession
                         };
                     }
 
-                    return Json(existingDispatch ? ListWithDispatchJson : "{\"agent_dispatches\":[]}");
+                    return Json(DequeueOrDefault(_listDispatchResponses, _defaultListResponse));
                 }
 
                 if (path.EndsWith("/CreateDispatch", StringComparison.Ordinal))
                 {
-                    return Json(DispatchJson);
+                    return Json(DequeueOrDefault(_createDispatchResponses, _defaultCreateResponse));
                 }
 
                 if (path.EndsWith("/DeleteDispatch", StringComparison.Ordinal))
@@ -306,25 +618,55 @@ namespace tests.Integration.LiveSession
                     return Json("{}");
                 }
 
+                if (path.EndsWith("/ListParticipants", StringComparison.Ordinal))
+                {
+                    return Json(DequeueOrDefault(_listParticipantsResponses, _defaultListParticipantsResponse));
+                }
+
                 return new HttpResponseMessage(HttpStatusCode.NotFound);
             }
+
+            private static string DequeueOrDefault(Queue<string> queue, string fallback)
+                => queue.Count > 0 ? queue.Dequeue() : fallback;
+
+            public static string ConnectedDispatchJson(string dispatchId) =>
+                "{\"id\":\"" + dispatchId
+                + "\",\"agent_name\":\"meeting-assistant\",\"state\":{\"jobs\":[{\"state\":{\"status\":\"JS_RUNNING\",\"participant_identity\":\"meeting-assistant\"}}]}}";
+
+            public static string UnconnectedDispatchJson(string dispatchId) =>
+                "{\"id\":\"" + dispatchId
+                + "\",\"agent_name\":\"meeting-assistant\",\"state\":{\"jobs\":[{\"state\":{\"status\":\"JS_PENDING\"}}]}}";
+
+            public static string EmptyDispatchListJson => "{\"agent_dispatches\":[]}";
+
+            public static string EmptyParticipantsListJson => "{\"participants\":[]}";
+
+            public static string AgentParticipantListJson(string identity) =>
+                "{\"participants\":[{\"identity\":\"" + identity + "\",\"kind\":\"AGENT\"}]}";
+
+            public static string StaleDispatchListJson =>
+                "{\"agent_dispatches\":[" + UnconnectedDispatchJson("dispatch-stale") + "]}";
+
+            public static string UnconnectedDispatchListJson(string dispatchId) =>
+                "{\"agent_dispatches\":[" + UnconnectedDispatchJson(dispatchId) + "]}";
+
+            public static string ConnectedDispatchListJson(string dispatchId) =>
+                "{\"agent_dispatches\":[" + ConnectedDispatchJson(dispatchId) + "]}";
+
+            public static string ConnectedAndStaleDispatchListJson(
+                string connectedDispatchId,
+                string staleDispatchId) =>
+                "{\"agent_dispatches\":["
+                + UnconnectedDispatchJson(staleDispatchId)
+                + ","
+                + ConnectedDispatchJson(connectedDispatchId)
+                + "]}";
 
             private static HttpResponseMessage Json(string json)
                 => new(HttpStatusCode.OK)
                 {
                     Content = new StringContent(json, Encoding.UTF8, "application/json")
                 };
-
-            private const string DispatchJson =
-                """
-                {
-                  "id":"dispatch-1",
-                  "agent_name":"meeting-assistant",
-                  "state":{
-                    "jobs":[{"state":{"status":"JS_RUNNING","participant_identity":"meeting-assistant"}}]
-                  }
-                }
-                """;
 
             private const string ListWithDispatchJson =
                 """

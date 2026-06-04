@@ -8,6 +8,8 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure
         public string WebhookSecret { get; init; } = string.Empty;
         public string EgressHost { get; init; } = string.Empty;
         public string AgentName { get; init; } = "meeting-assistant";
+        public int AgentDispatchConnectPollAttempts { get; init; } = 4;
+        public int AgentDispatchConnectPollIntervalMs { get; init; } = 500;
         public bool AiAssistantDefaultEnabled { get; init; } = true;
         public int ParticipantAudioIngestCeilingMinutes { get; init; } = 360;
         public string EgressBackupStoragePath { get; init; } = string.Empty;

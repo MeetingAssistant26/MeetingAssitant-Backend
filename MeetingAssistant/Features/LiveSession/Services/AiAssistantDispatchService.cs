@@ -69,13 +69,25 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 return Result.Success(new AiAssistantStatusResponse(false, false, null));
             }
 
+            var roomName = RoomName(meetingId);
             var dispatchesResult = await ListDispatchesAsync(
-                RoomName(meetingId),
+                roomName,
                 treatUnavailableRoomAsEmpty: true,
                 cancellationToken);
-            return dispatchesResult.IsSuccess
-                ? Result.Success(ToStatus(enabled: true, dispatchesResult.Value))
-                : Result.Failure<AiAssistantStatusResponse>(dispatchesResult.Error);
+            if (dispatchesResult.IsFailure)
+            {
+                return Result.Failure<AiAssistantStatusResponse>(dispatchesResult.Error);
+            }
+
+            if (IsAgentConnected(dispatchesResult.Value, agentParticipantPresent: false))
+            {
+                return Result.Success(ToStatus(enabled: true, dispatchesResult.Value));
+            }
+
+            var agentParticipantResult = await HasAgentParticipantAsync(roomName, cancellationToken);
+            return agentParticipantResult.IsSuccess
+                ? Result.Success(ToStatus(enabled: true, dispatchesResult.Value, agentParticipantResult.Value))
+                : Result.Failure<AiAssistantStatusResponse>(agentParticipantResult.Error);
         }
 
         public async Task<Result<AiAssistantStatusResponse>> EnableAsync(
@@ -290,10 +302,39 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 return Result.Failure<AiAssistantStatusResponse>(existingResult.Error);
             }
 
-            var existing = ActiveAssistantDispatches(existingResult.Value).FirstOrDefault();
-            if (existing is not null)
+            var active = ActiveAssistantDispatches(existingResult.Value).ToList();
+
+            if (IsAgentConnected(existingResult.Value, agentParticipantPresent: false))
             {
                 return Result.Success(ToStatus(enabled: true, existingResult.Value));
+            }
+
+            var agentParticipantResult = await HasAgentParticipantAsync(roomName, cancellationToken);
+            if (agentParticipantResult.IsFailure)
+            {
+                return Result.Failure<AiAssistantStatusResponse>(agentParticipantResult.Error);
+            }
+
+            if (IsAgentConnected(existingResult.Value, agentParticipantResult.Value))
+            {
+                return Result.Success(ToStatus(
+                    enabled: true,
+                    existingResult.Value,
+                    agentParticipantResult.Value));
+            }
+
+            if (active.Count > 0)
+            {
+                var deleteStaleResult = await DeleteActiveUnconnectedDispatchesAsync(
+                    organizationId,
+                    meetingId,
+                    roomName,
+                    existingResult.Value,
+                    cancellationToken);
+                if (deleteStaleResult.IsFailure)
+                {
+                    return Result.Failure<AiAssistantStatusResponse>(deleteStaleResult.Error);
+                }
             }
 
             var metadataResult = await BuildDispatchMetadataAsync(
@@ -306,9 +347,56 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 return Result.Failure<AiAssistantStatusResponse>(metadataResult.Error);
             }
 
+            return await CreateDispatchAndAwaitConnectionAsync(
+                organizationId,
+                meetingId,
+                roomName,
+                metadataResult.Value,
+                cancellationToken);
+        }
+
+        private async Task<Result> DeleteActiveUnconnectedDispatchesAsync(
+            Guid organizationId,
+            Guid meetingId,
+            string roomName,
+            IReadOnlyList<DispatchSummary> dispatches,
+            CancellationToken cancellationToken)
+        {
+            foreach (var dispatch in ActiveAssistantDispatches(dispatches).Where(d => !d.AgentIsConnected))
+            {
+                var deleteResult = await SendDispatchRequestAsync(
+                    "DeleteDispatch",
+                    new DeleteDispatchRequest(roomName, dispatch.DispatchId),
+                    _ => dispatch,
+                    cancellationToken);
+
+                if (deleteResult.IsFailure)
+                {
+                    return Result.Failure(deleteResult.Error);
+                }
+
+                _logger.LogInformation(
+                    "Deleted stale LiveKit AI assistant dispatch. OrganizationId={OrganizationId} MeetingId={MeetingId} RoomName={RoomName} DispatchId={DispatchId} AgentName={AgentName}",
+                    organizationId,
+                    meetingId,
+                    roomName,
+                    dispatch.DispatchId,
+                    AgentName);
+            }
+
+            return Result.Success();
+        }
+
+        private async Task<Result<AiAssistantStatusResponse>> CreateDispatchAndAwaitConnectionAsync(
+            Guid organizationId,
+            Guid meetingId,
+            string roomName,
+            string metadata,
+            CancellationToken cancellationToken)
+        {
             var created = await SendDispatchRequestAsync(
                 "CreateDispatch",
-                new CreateDispatchRequest(roomName, AgentName, metadataResult.Value),
+                new CreateDispatchRequest(roomName, AgentName, metadata),
                 ParseDispatch,
                 cancellationToken);
 
@@ -325,7 +413,99 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 created.Value.DispatchId,
                 AgentName);
 
-            return Result.Success(ToStatus(enabled: true, [created.Value]));
+            if (created.Value.AgentIsConnected)
+            {
+                return Result.Success(ToStatus(enabled: true, [created.Value]));
+            }
+
+            var pollResult = await PollForConnectedAssistantAsync(roomName, cancellationToken);
+            if (pollResult.IsFailure)
+            {
+                return Result.Failure<AiAssistantStatusResponse>(pollResult.Error);
+            }
+
+            var (lastObservedDispatches, agentParticipantPresent) = pollResult.Value;
+            if (IsAgentConnected(lastObservedDispatches, agentParticipantPresent))
+            {
+                return Result.Success(ToStatus(
+                    enabled: true,
+                    lastObservedDispatches,
+                    agentParticipantPresent,
+                    dispatchIdFallback: created.Value.DispatchId));
+            }
+
+            return Result.Success(new AiAssistantStatusResponse(
+                true,
+                false,
+                created.Value.DispatchId));
+        }
+
+        private async Task<Result<(IReadOnlyList<DispatchSummary> Dispatches, bool AgentParticipantPresent)>>
+            PollForConnectedAssistantAsync(
+                string roomName,
+                CancellationToken cancellationToken)
+        {
+            IReadOnlyList<DispatchSummary> lastObservedDispatches = [];
+            var agentParticipantPresent = false;
+            var pollAttempts = Math.Max(_options.AgentDispatchConnectPollAttempts, 0);
+            var pollInterval = TimeSpan.FromMilliseconds(Math.Max(_options.AgentDispatchConnectPollIntervalMs, 1));
+
+            for (var attempt = 0; attempt < pollAttempts; attempt++)
+            {
+                if (pollInterval > TimeSpan.Zero)
+                {
+                    await Task.Delay(pollInterval, cancellationToken);
+                }
+
+                var listResult = await ListDispatchesAsync(
+                    roomName,
+                    treatUnavailableRoomAsEmpty: false,
+                    cancellationToken);
+                if (listResult.IsFailure)
+                {
+                    return Result.Failure<(IReadOnlyList<DispatchSummary>, bool)>(listResult.Error);
+                }
+
+                lastObservedDispatches = listResult.Value;
+
+                if (IsAgentConnected(lastObservedDispatches, agentParticipantPresent: false))
+                {
+                    break;
+                }
+
+                var participantResult = await HasAgentParticipantAsync(roomName, cancellationToken);
+                if (participantResult.IsFailure)
+                {
+                    return Result.Failure<(IReadOnlyList<DispatchSummary>, bool)>(participantResult.Error);
+                }
+
+                agentParticipantPresent = participantResult.Value;
+                if (IsAgentConnected(lastObservedDispatches, agentParticipantPresent))
+                {
+                    break;
+                }
+            }
+
+            return Result.Success((lastObservedDispatches, agentParticipantPresent));
+        }
+
+        private async Task<Result<bool>> HasAgentParticipantAsync(
+            string roomName,
+            CancellationToken cancellationToken)
+        {
+            var result = await SendRoomServiceRequestAsync(
+                "ListParticipants",
+                new ListParticipantsRequest(roomName),
+                ParseHasAgentParticipant,
+                cancellationToken);
+
+            if (result.IsFailure
+                && result.Error == LiveSessionErrors.LiveKitRoomUnavailable)
+            {
+                return Result.Success(false);
+            }
+
+            return result;
         }
 
         private async Task<Result<string>> BuildDispatchMetadataAsync(
@@ -433,6 +613,77 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     "LiveKit room creation API call timed out. RoomName={RoomName}",
                     roomName);
                 return Result.Failure(LiveSessionErrors.LiveKitCallFailed);
+            }
+        }
+
+        private async Task<Result<T>> SendRoomServiceRequestAsync<T>(
+            string method,
+            object body,
+            Func<JsonDocument, T> parse,
+            CancellationToken cancellationToken)
+        {
+            var hostResult = ResolveLiveKitHttpHost();
+            if (hostResult.IsFailure)
+            {
+                return Result.Failure<T>(hostResult.Error);
+            }
+
+            if (string.IsNullOrWhiteSpace(_options.ApiKey) || string.IsNullOrWhiteSpace(_options.ApiSecret))
+            {
+                return Result.Failure<T>(LiveSessionErrors.LiveKitCallFailed);
+            }
+
+            var roomName = body switch
+            {
+                ListParticipantsRequest list => list.Room,
+                CreateRoomRequest create => create.Name,
+                _ => string.Empty
+            };
+
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{hostResult.Value}/twirp/livekit.RoomService/{method}");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", CreateRoomAdminToken(roomName));
+            request.Content = JsonContent.Create(body, options: JsonOptions);
+
+            try
+            {
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                    _logger.LogWarning(
+                        "LiveKit room service API call failed. Method={Method} StatusCode={StatusCode} Body={Body}",
+                        method,
+                        (int)response.StatusCode,
+                        errorBody);
+                    if (method == "ListParticipants" && IsLiveKitRoomUnavailable(errorBody))
+                    {
+                        return Result.Failure<T>(LiveSessionErrors.LiveKitRoomUnavailable);
+                    }
+
+                    return Result.Failure<T>(LiveSessionErrors.LiveKitCallFailed);
+                }
+
+                await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                return Result.Success(parse(document));
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "LiveKit room service API call failed. Method={Method}",
+                    method);
+                return Result.Failure<T>(LiveSessionErrors.LiveKitCallFailed);
+            }
+            catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "LiveKit room service API call timed out. Method={Method}",
+                    method);
+                return Result.Failure<T>(LiveSessionErrors.LiveKitCallFailed);
             }
         }
 
@@ -570,15 +821,27 @@ namespace MeetingAssistant.Features.LiveSession.Services
                    && errorBody.Contains("no response from servers", StringComparison.OrdinalIgnoreCase);
         }
 
-        private AiAssistantStatusResponse ToStatus(bool enabled, IReadOnlyList<DispatchSummary> dispatches)
+        private AiAssistantStatusResponse ToStatus(
+            bool enabled,
+            IReadOnlyList<DispatchSummary> dispatches,
+            bool agentParticipantPresent = false,
+            string? dispatchIdFallback = null)
         {
             var active = ActiveAssistantDispatches(dispatches).ToList();
-            var first = active.FirstOrDefault();
+            var agentIsConnected = IsAgentConnected(dispatches, agentParticipantPresent);
+            var preferred = active.FirstOrDefault(dispatch => dispatch.AgentIsConnected)
+                            ?? active.FirstOrDefault();
             return new AiAssistantStatusResponse(
                 enabled,
-                active.Any(dispatch => dispatch.AgentIsConnected),
-                first?.DispatchId);
+                agentIsConnected,
+                preferred?.DispatchId ?? dispatchIdFallback);
         }
+
+        private bool IsAgentConnected(
+            IReadOnlyList<DispatchSummary> dispatches,
+            bool agentParticipantPresent) =>
+            agentParticipantPresent
+            || ActiveAssistantDispatches(dispatches).Any(dispatch => dispatch.AgentIsConnected);
 
         private IEnumerable<DispatchSummary> ActiveAssistantDispatches(IReadOnlyList<DispatchSummary> dispatches)
         {
@@ -625,6 +888,46 @@ namespace MeetingAssistant.Features.LiveSession.Services
             }
 
             return new DispatchSummary(dispatchId, agentName, deleted, agentIsConnected);
+        }
+
+        private static bool ParseHasAgentParticipant(JsonDocument document)
+        {
+            if (!TryGetProperty(document.RootElement, "participants", out var participants)
+                || participants.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            return participants.EnumerateArray().Any(IsAgentParticipant);
+        }
+
+        private static bool IsAgentParticipant(JsonElement participant)
+        {
+            var identity = GetString(participant, "identity") ?? string.Empty;
+            if (identity.StartsWith("agent-", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!TryGetProperty(participant, "kind", out var kindElement))
+            {
+                return false;
+            }
+
+            if (kindElement.ValueKind == JsonValueKind.String)
+            {
+                var kind = kindElement.GetString();
+                return string.Equals(kind, "AGENT", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(kind, "KIND_AGENT", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (kindElement.ValueKind == JsonValueKind.Number
+                && kindElement.TryGetInt32(out var kindNumber))
+            {
+                return kindNumber == 4;
+            }
+
+            return false;
         }
 
         private static bool IsRunningJob(JsonElement job)
@@ -694,6 +997,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
             [property: JsonPropertyName("dispatch_id")] string DispatchId);
 
         private sealed record ListDispatchRequest([property: JsonPropertyName("room")] string Room);
+
+        private sealed record ListParticipantsRequest([property: JsonPropertyName("room")] string Room);
 
         private sealed record CreateRoomRequest([property: JsonPropertyName("name")] string Name);
 
