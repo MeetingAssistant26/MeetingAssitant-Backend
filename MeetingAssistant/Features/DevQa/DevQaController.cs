@@ -35,6 +35,7 @@ public sealed class DevQaController(
     IAgentAuthService agentAuthService,
     IBackgroundJobClient backgroundJobClient,
     IServiceProvider serviceProvider,
+    IQaSttFailureInjectionService qaSttFailureInjectionService,
     IHostEnvironment environment,
     IConfiguration configuration,
     ILogger<DevQaController> logger) : ControllerBase
@@ -57,6 +58,7 @@ public sealed class DevQaController(
     private readonly IAgentAuthService _agentAuthService = agentAuthService;
     private readonly IBackgroundJobClient _backgroundJobClient = backgroundJobClient;
     private readonly IServiceProvider _serviceProvider = serviceProvider;
+    private readonly IQaSttFailureInjectionService _qaSttFailureInjectionService = qaSttFailureInjectionService;
     private readonly IHostEnvironment _environment = environment;
     private readonly IConfiguration _configuration = configuration;
     private readonly ILogger<DevQaController> _logger = logger;
@@ -790,6 +792,66 @@ public sealed class DevQaController(
 
         var status = await BuildProcessingStatusAsync(request.OrganizationId, meetingId, cancellationToken);
         return Ok(new QaProcessResponse(request.Mode ?? "inline", startedAtUtc, DateTime.UtcNow, jobResults, status));
+    }
+
+    [HttpPost("meetings/{meetingId:guid}/stt-failures")]
+    [ProducesResponseType(typeof(QaSttFailureStateResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> ConfigureSttFailures(
+        [FromRoute] Guid meetingId,
+        [FromBody] QaConfigureSttFailuresRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (request is null)
+            return BadRequest(new { error = "Request body is required." });
+
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest(new { error = "OrganizationId is required." });
+
+        if (request.Rules is null || request.Rules.Count == 0)
+            return BadRequest(new { error = "At least one STT failure rule is required." });
+
+        var meetingExists = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Id == meetingId && x.OrganizationId == request.OrganizationId, cancellationToken);
+        if (!meetingExists)
+            return NotFound(new { error = "Meeting not found for organization." });
+
+        foreach (var rule in request.Rules)
+        {
+            if (string.IsNullOrWhiteSpace(rule.StorageObjectKey))
+                return BadRequest(new { error = "Each rule requires storageObjectKey." });
+
+            if (rule.FailCount is < 1)
+                return BadRequest(new { error = "Each rule failCount must be at least 1." });
+        }
+
+        _qaSttFailureInjectionService.SetRules(meetingId, request.OrganizationId, request.Rules);
+        return Ok(_qaSttFailureInjectionService.GetState(meetingId, request.OrganizationId));
+    }
+
+    [HttpGet("meetings/{meetingId:guid}/stt-failures")]
+    [ProducesResponseType(typeof(QaSttFailureStateResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetSttFailures(
+        [FromRoute] Guid meetingId,
+        [FromQuery] Guid organizationId,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (organizationId == Guid.Empty)
+            return BadRequest(new { error = "organizationId is required." });
+
+        var meetingExists = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Id == meetingId && x.OrganizationId == organizationId, cancellationToken);
+        if (!meetingExists)
+            return NotFound(new { error = "Meeting not found for organization." });
+
+        return Ok(_qaSttFailureInjectionService.GetState(meetingId, organizationId));
     }
 
     [HttpGet("meetings/{meetingId:guid}/processing-status")]

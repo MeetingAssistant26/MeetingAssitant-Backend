@@ -21,6 +21,7 @@
     <ProjectReference Include="..\..\MeetingAssistant\MeetingAssistant.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\Unit\DevQa\**\*.cs" Link="Unit\DevQa\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\Unit\LiveSession\**\*.cs" Link="Unit\LiveSession\%(RecursiveDir)%(Filename)%(Extension)" />
     <Compile Include="..\Integration\LiveSession\**\*.cs" Link="Integration\LiveSession\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>

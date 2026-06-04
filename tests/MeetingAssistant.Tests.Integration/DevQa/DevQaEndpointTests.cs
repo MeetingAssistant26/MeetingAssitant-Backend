@@ -313,6 +313,56 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task ConfigureSttFailures_ShouldPersistRulesAndReturnAttemptLedger()
+    {
+        var scenario = await CreateScenarioAsync("qa-stt-failure-injection");
+
+        var configureResponse = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/stt-failures",
+            new QaConfigureSttFailuresRequest(
+                scenario.OrganizationId,
+                [
+                    new QaSttFailureRuleRequest(
+                        "qa/mtg:test/user:bob/track-bob.wav",
+                        FailCount: 1,
+                        Mode: "throw",
+                        Message: "QA injected STT failure for retry capture")
+                ]));
+
+        configureResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var configured = await configureResponse.Content.ReadFromJsonAsync<QaSttFailureStateResponse>();
+        configured.Should().NotBeNull();
+        configured!.MeetingId.Should().Be(scenario.MeetingId);
+        configured.OrganizationId.Should().Be(scenario.OrganizationId);
+        configured.Rules.Should().ContainSingle();
+        configured.Rules[0].StorageObjectKey.Should().Be("qa/mtg:test/user:bob/track-bob.wav");
+        configured.Rules[0].FailCount.Should().Be(1);
+        configured.Attempts.Should().BeEmpty();
+
+        var getResponse = await Client.GetAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/stt-failures?organizationId={scenario.OrganizationId}");
+        getResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var fetched = await getResponse.Content.ReadFromJsonAsync<QaSttFailureStateResponse>();
+        fetched.Should().NotBeNull();
+        fetched!.Rules.Should().ContainSingle();
+        fetched.Rules[0].Message.Should().Be("QA injected STT failure for retry capture");
+    }
+
+    [Fact]
+    public async Task ConfigureSttFailures_WithWrongOrganization_ShouldReturnNotFound()
+    {
+        var scenario = await CreateScenarioAsync("qa-stt-failure-injection-wrong-org");
+
+        var response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/stt-failures",
+            new QaConfigureSttFailuresRequest(
+                Guid.NewGuid(),
+                [new QaSttFailureRuleRequest("qa/mtg:test/user:bob/track-bob.wav", FailCount: 1)]));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
     public async Task ReminderStatus_ShouldExposeAgentReminderLifecycleAcrossLinkedSeries()
     {
         var m1Start = DateTime.UtcNow.AddHours(1);

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using MediatR;
+using MeetingAssistant.Features.DevQa;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
@@ -17,13 +18,15 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         ISttService sttService,
         IPublisher publisher,
         ILogger<GenerateMeetingTranscriptJob> logger,
-        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
+        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
+        IQaSttFailureInjectionService? qaSttFailureInjectionService = null)
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ISttService _sttService = sttService;
         private readonly IPublisher _publisher = publisher;
         private readonly ILogger<GenerateMeetingTranscriptJob> _logger = logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
+        private readonly IQaSttFailureInjectionService? _qaSttFailureInjectionService = qaSttFailureInjectionService;
 
         private const int MaxSttParallelism = 1;
         private const int PersistedTranscriptSegmentVersion = 3;
@@ -198,6 +201,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 {
                     try
                     {
+                        _qaSttFailureInjectionService?.TryInjectFailure(
+                            meetingId,
+                            organizationId,
+                            track.ParticipantUserId,
+                            track.StorageObjectKey!);
+
                         var result = await _sttService.TranscribeTrackAsync(
                             track.ParticipantUserId,
                             track.StorageObjectKey!,

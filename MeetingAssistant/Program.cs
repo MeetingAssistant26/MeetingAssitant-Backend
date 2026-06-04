@@ -7,6 +7,7 @@ using MeetingAssistant.Features.Meetings;
 using MeetingAssistant.Features.Tasks;
 using MeetingAssistant.Features.LiveSession;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
+using MeetingAssistant.Features.DevQa;
 using MeetingAssistant.Features.DevSeeding;
 using MeetingAssistant.Features.AgentApi;
 using MeetingAssistant.Features.ActionItems;
@@ -41,6 +42,7 @@ namespace MeetingAssistant.Api
                 .AddMeetingsFeature()
                 .AddTasksFeature()
                 .AddLiveSessionFeature(builder.Configuration)
+                .AddDevQaFeature()
                 .AddAgentApiFeature()
                 .AddActionItemsFeature()
                 .AddRagFeature()
