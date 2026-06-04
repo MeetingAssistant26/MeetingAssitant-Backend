@@ -1,5 +1,6 @@
 using Hangfire;
 using Hangfire.Common;
+using MeetingAssistant.Api.Infrastructure.Hangfire;
 using Hangfire.States;
 using Livekit.Server.Sdk.Dotnet;
 using MediatR;
@@ -58,6 +59,11 @@ namespace tests.Integration.LiveSession
                 await _onPublish(notification, cancellationToken);
             }
         }
+    }
+
+    internal sealed class TestHangfireJobContextAccessor : IHangfireJobContextAccessor
+    {
+        public string? CurrentJobId { get; set; }
     }
 
     internal sealed class FakeBackgroundJobClient : IBackgroundJobClient

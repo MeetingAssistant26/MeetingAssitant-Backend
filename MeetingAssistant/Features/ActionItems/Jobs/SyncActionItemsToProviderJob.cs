@@ -1,3 +1,4 @@
+using MeetingAssistant.Api.Infrastructure.Hangfire;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.ActionItems.Services.Abstractions;
@@ -14,26 +15,52 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
         private readonly ITaskProviderFactory _providerFactory;
         private readonly ILogger<SyncActionItemsToProviderJob> _logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker;
+        private readonly IHangfireJobContextAccessor? _hangfireJobContextAccessor;
+
+        private Guid? _pipelineGenerationId;
+        private string? _currentHangfireJobId;
 
         public SyncActionItemsToProviderJob(
             ApplicationDbContext dbContext,
             ITaskProviderFactory providerFactory,
             ILogger<SyncActionItemsToProviderJob> logger,
-            IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
+            IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
+            IHangfireJobContextAccessor? hangfireJobContextAccessor = null)
         {
             _dbContext = dbContext;
             _providerFactory = providerFactory;
             _logger = logger;
             _postMeetingProcessingTracker = postMeetingProcessingTracker;
+            _hangfireJobContextAccessor = hangfireJobContextAccessor;
         }
 
         [Hangfire.AutomaticRetry(Attempts = 3)]
-        public async Task RunAsync(
+        public Task RunAsync(
             Guid meetingId,
             Guid organizationId,
             List<Guid> actionItemIds,
             CancellationToken cancellationToken)
+            => RunAsync(meetingId, organizationId, actionItemIds, pipelineGenerationId: null, cancellationToken);
+
+        public async Task RunAsync(
+            Guid meetingId,
+            Guid organizationId,
+            List<Guid> actionItemIds,
+            Guid? pipelineGenerationId,
+            CancellationToken cancellationToken)
         {
+            _currentHangfireJobId = _hangfireJobContextAccessor?.CurrentJobId;
+            _pipelineGenerationId = pipelineGenerationId;
+            if (_postMeetingProcessingTracker is not null && !_pipelineGenerationId.HasValue)
+            {
+                var run = await _postMeetingProcessingTracker.EnsureRunAsync(
+                    organizationId,
+                    meetingId,
+                    relatedHangfireJobId: _currentHangfireJobId,
+                    cancellationToken: cancellationToken);
+                _pipelineGenerationId = run.PipelineGenerationId;
+            }
+
             _logger.LogInformation("Starting sync for {Count} action items in meeting {MeetingId}", actionItemIds.Count, meetingId);
             if (_postMeetingProcessingTracker is not null)
             {
@@ -41,6 +68,8 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     organizationId,
                     meetingId,
                     PostMeetingProcessingStepType.ProviderSync,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
                     message: "Provider sync started.",
                     artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: actionItemIds),
                     cancellationToken: cancellationToken);
@@ -54,12 +83,14 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                 if (_postMeetingProcessingTracker is not null)
                 {
                     await _postMeetingProcessingTracker.FailStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.ProviderSync,
-                        "integration_not_active",
-                        "Integration is not active for organization.",
-                        artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: actionItemIds),
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ProviderSync,
+                    "integration_not_active",
+                    "Integration is not active for organization.",
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: actionItemIds),
                         cancellationToken: cancellationToken);
                 }
 
@@ -75,12 +106,14 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                 if (_postMeetingProcessingTracker is not null)
                 {
                     await _postMeetingProcessingTracker.FailStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.ProviderSync,
-                        "integration_config_missing",
-                        "Integration config not found for organization.",
-                        artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: actionItemIds),
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ProviderSync,
+                    "integration_config_missing",
+                    "Integration config not found for organization.",
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: actionItemIds),
                         cancellationToken: cancellationToken);
                 }
 
@@ -167,16 +200,20 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         PostMeetingProcessingStepType.ProviderSync,
                         "provider_sync_partial_failure",
                         $"Provider sync failed for {failedActionItemIds.Count} action item(s).",
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
                         artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: failedActionItemIds),
                         cancellationToken: cancellationToken);
                 }
                 else
                 {
                     await _postMeetingProcessingTracker.CompleteStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.ProviderSync,
-                        message: $"Provider sync completed for {syncedActionItemIds.Count} action item(s).",
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ProviderSync,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    message: $"Provider sync completed for {syncedActionItemIds.Count} action item(s).",
                         artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: syncedActionItemIds),
                         cancellationToken: cancellationToken);
                 }

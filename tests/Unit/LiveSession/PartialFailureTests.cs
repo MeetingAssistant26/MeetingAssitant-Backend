@@ -473,6 +473,7 @@ namespace tests.Unit.LiveSession
                 }),
                 NullLogger<ExtractActionItemsJob>.Instance,
                 tracker,
+                hangfireJobContextAccessor: null,
                 jobs);
 
             await job.RunAsync(meetingId, orgId, CancellationToken.None);

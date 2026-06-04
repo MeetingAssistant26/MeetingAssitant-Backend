@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using MediatR;
+using MeetingAssistant.Api.Infrastructure.Hangfire;
 using MeetingAssistant.Features.DevQa;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
@@ -20,7 +21,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         IPublisher publisher,
         ILogger<GenerateMeetingTranscriptJob> logger,
         IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
-        IQaSttFailureInjectionService? qaSttFailureInjectionService = null)
+        IQaSttFailureInjectionService? qaSttFailureInjectionService = null,
+        IHangfireJobContextAccessor? hangfireJobContextAccessor = null)
     {
         private readonly ApplicationDbContext _dbContext = dbContext;
         private readonly ISttService _sttService = sttService;
@@ -28,6 +30,10 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         private readonly ILogger<GenerateMeetingTranscriptJob> _logger = logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
         private readonly IQaSttFailureInjectionService? _qaSttFailureInjectionService = qaSttFailureInjectionService;
+        private readonly IHangfireJobContextAccessor? _hangfireJobContextAccessor = hangfireJobContextAccessor;
+
+        private Guid? _pipelineGenerationId;
+        private string? _currentHangfireJobId;
 
         private const int MaxSttParallelism = 1;
         private const int PersistedTranscriptSegmentVersion = 3;
@@ -45,17 +51,38 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             @"(?:^|/)track-(?<sid>[^/.\\]+)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        public async Task RunAsync(
+        public Task RunAsync(
             Guid meetingId,
             Guid organizationId,
             CancellationToken cancellationToken = default)
+            => RunAsync(meetingId, organizationId, pipelineGenerationId: null, cancellationToken);
+
+        public async Task RunAsync(
+            Guid meetingId,
+            Guid organizationId,
+            Guid? pipelineGenerationId,
+            CancellationToken cancellationToken = default)
         {
+            _currentHangfireJobId = _hangfireJobContextAccessor?.CurrentJobId;
+            _pipelineGenerationId = pipelineGenerationId;
+            if (_postMeetingProcessingTracker is not null && !_pipelineGenerationId.HasValue)
+            {
+                var run = await _postMeetingProcessingTracker.EnsureRunAsync(
+                    organizationId,
+                    meetingId,
+                    relatedHangfireJobId: _currentHangfireJobId,
+                    cancellationToken: cancellationToken);
+                _pipelineGenerationId = run.PipelineGenerationId;
+            }
+
             if (_postMeetingProcessingTracker is not null)
             {
                 await _postMeetingProcessingTracker.StartStepAsync(
                     organizationId,
                     meetingId,
                     PostMeetingProcessingStepType.Stt,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
                     message: "STT transcription started.",
                     cancellationToken: cancellationToken);
             }
@@ -77,9 +104,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         organizationId,
                         meetingId,
                         PostMeetingProcessingEventType.Info,
+                        _pipelineGenerationId,
                         PostMeetingProcessingStepType.Stt,
                         PostMeetingProcessingStatus.InProgress,
                         message: $"STT transcription is waiting for {pendingFragmentCount} participant audio fragment(s) to finish ingest.",
+                        relatedHangfireJobId: _currentHangfireJobId,
                         cancellationToken: cancellationToken);
                 }
 
@@ -148,6 +177,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         PostMeetingProcessingStepType.Stt,
                         "no_available_fragments",
                         "No available participant audio fragments or assistant speech traces were found for transcript generation.",
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
                         cancellationToken: cancellationToken);
                 }
 
@@ -283,6 +314,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         PostMeetingProcessingStepType.Stt,
                         "all_fragments_failed",
                         "All participant audio fragment transcriptions failed.",
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
                         artifact: new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds),
                         cancellationToken: cancellationToken);
                 }
@@ -335,6 +368,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         organizationId,
                         meetingId,
                         PostMeetingProcessingStepType.Stt,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
                         message: $"STT transcription completed for {participantSegmentCount} participant segment(s).",
                         artifact: fragmentsWithTiming.Count > 0
                             ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: fragmentsWithTiming.Select(x => x.Fragment.Id).ToList())
@@ -347,6 +382,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         organizationId,
                         meetingId,
                         PostMeetingProcessingStepType.Stt,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
                         message: $"STT transcription completed with warnings for {participantSegmentCount} participant segment(s); {failedFragmentIds.Count} audio fragment(s) remain untranscribed.",
                         artifact: failedFragmentIds.Count > 0
                             ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds)
@@ -357,9 +394,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         organizationId,
                         meetingId,
                         PostMeetingProcessingEventType.Info,
+                        _pipelineGenerationId,
                         PostMeetingProcessingStepType.Stt,
                         PostMeetingProcessingStatus.CompletedWithWarnings,
                         message: "Transcript coverage is degraded because one or more audio fragments failed STT.",
+                        relatedHangfireJobId: _currentHangfireJobId,
                         artifact: failedFragmentIds.Count > 0
                             ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds)
                             : null,
@@ -368,10 +407,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 }
 
                 await _postMeetingProcessingTracker.StartStepAsync(
-                    organizationId,
-                    meetingId,
-                    PostMeetingProcessingStepType.TranscriptPersistence,
-                    message: "Transcript persistence started.",
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.TranscriptPersistence,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
+                        message: "Transcript persistence started.",
                     cancellationToken: cancellationToken);
             }
 
@@ -483,6 +524,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         organizationId,
                         meetingId,
                         PostMeetingProcessingStepType.TranscriptPersistence,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
                         message: "Transcript persisted.",
                         artifact: new PostMeetingArtifactLink("meeting_transcript", transcript.Id),
                         cancellationToken: cancellationToken);
@@ -493,6 +536,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         organizationId,
                         meetingId,
                         PostMeetingProcessingStepType.TranscriptPersistence,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
                         message: "Degraded transcript persisted.",
                         artifact: new PostMeetingArtifactLink("meeting_transcript", transcript.Id),
                         cancellationToken: cancellationToken);
@@ -500,6 +545,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     await _postMeetingProcessingTracker.CompleteRunWithWarningsAsync(
                         organizationId,
                         meetingId,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
                         message: "Post-meeting processing completed with degraded transcript coverage.",
                         cancellationToken: cancellationToken);
                 }
@@ -508,7 +555,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             if (transcriptChanged && isTranscriptComplete)
             {
                 await _publisher.Publish(
-                    new MeetingTranscriptReadyEvent(meetingId, organizationId, DateTime.UtcNow),
+                    new MeetingTranscriptReadyEvent(meetingId, organizationId, DateTime.UtcNow, _pipelineGenerationId),
                     cancellationToken);
             }
         }

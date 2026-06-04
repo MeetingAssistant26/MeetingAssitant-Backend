@@ -1,6 +1,7 @@
 using System;
 using Hangfire;
 using Hangfire.PostgreSql;
+using MeetingAssistant.Api.Infrastructure.Hangfire;
 using MeetingAssistant.Features.Identity.Services;
 using MeetingAssistant.Features.LiveSession.Jobs;
 
@@ -10,6 +11,8 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
     {
         public static IServiceCollection AddHangfireServices(this IServiceCollection services, IConfiguration configuration)
         {
+            services.AddSingleton<IHangfireJobContextAccessor, HangfireJobContextAccessor>();
+            services.AddSingleton<HangfireJobContextFilter>();
             // Add Hangfire services.
             services.AddHangfire(config =>
             {
@@ -59,6 +62,11 @@ namespace MeetingAssistant.Infrastructure.DependencyInjection
                 "reconcile-participant-audio-egress",
                 job => job.RunAsync(default),
                 Cron.Minutely);
+        }
+
+        public static void ConfigureHangfireJobContextFilter(this Microsoft.AspNetCore.Builder.WebApplication app)
+        {
+            GlobalJobFilters.Filters.Add(app.Services.GetRequiredService<HangfireJobContextFilter>());
         }
 
         public static void UseSecureHangfireDashboard(this Microsoft.AspNetCore.Builder.WebApplication app)

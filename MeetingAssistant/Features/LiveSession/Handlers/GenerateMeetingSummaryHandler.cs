@@ -20,6 +20,7 @@ namespace MeetingAssistant.Features.LiveSession.Handlers
                 job => job.RunAsync(
                     notification.MeetingId,
                     notification.OrganizationId,
+                    notification.PipelineGenerationId,
                     CancellationToken.None));
 
             if (_postMeetingProcessingTracker is not null)
@@ -28,6 +29,7 @@ namespace MeetingAssistant.Features.LiveSession.Handlers
                     notification.OrganizationId,
                     notification.MeetingId,
                     PostMeetingProcessingStepType.SummaryGeneration,
+                    notification.PipelineGenerationId,
                     message: "Summary generation job enqueued.",
                     relatedHangfireJobId: jobId,
                     cancellationToken: cancellationToken);

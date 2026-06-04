@@ -754,7 +754,7 @@ public sealed class DevQaController(
         {
             foreach (var job in requestedJobs)
             {
-                var hangfireJobId = EnqueueJob(job, meetingId, request.OrganizationId);
+                var hangfireJobId = await EnqueueJobAsync(job, meetingId, request.OrganizationId, cancellationToken);
                 jobResults.Add(new QaProcessJobResponse(job, "enqueued", hangfireJobId, null, null));
             }
 
@@ -1504,17 +1504,102 @@ public sealed class DevQaController(
             BuildWarnings(fragments, currentDuplicates, transcript));
     }
 
-    private string EnqueueJob(string job, Guid meetingId, Guid organizationId)
+    private async Task<string> EnqueueJobAsync(
+        string job,
+        Guid meetingId,
+        Guid organizationId,
+        CancellationToken cancellationToken)
     {
-        return job switch
+        var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+
+        switch (job)
         {
-            "transcript" => _backgroundJobClient.Enqueue<GenerateMeetingTranscriptJob>(x => x.RunAsync(meetingId, organizationId, CancellationToken.None)),
-            "summary" => _backgroundJobClient.Enqueue<GenerateMeetingSummaryJob>(x => x.RunAsync(meetingId, organizationId, CancellationToken.None)),
-            "actionItems" => _backgroundJobClient.Enqueue<ExtractActionItemsJob>(x => x.RunAsync(meetingId, organizationId, CancellationToken.None)),
-            "personalizedSummaries" => _backgroundJobClient.Enqueue<GeneratePersonalizedMeetingSummariesJob>(x => x.RunAsync(meetingId, organizationId, CancellationToken.None)),
-            "rag" => _backgroundJobClient.Enqueue<ReindexMeetingKnowledgeJob>(x => x.RunAsync(meetingId, organizationId, CancellationToken.None)),
-            _ => throw new InvalidOperationException($"Unsupported QA job '{job}'.")
-        };
+            case "transcript":
+            {
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.Stt,
+                    message: "QA transcript rerun enqueued.",
+                    cancellationToken: cancellationToken);
+                var hangfireJobId = _backgroundJobClient.Enqueue<GenerateMeetingTranscriptJob>(
+                    x => x.RunAsync(meetingId, organizationId, pipelineGenerationId, CancellationToken.None));
+                await tracker.MarkStepPendingAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.Stt,
+                    pipelineGenerationId,
+                    message: "QA transcript rerun enqueued.",
+                    relatedHangfireJobId: hangfireJobId,
+                    cancellationToken: cancellationToken);
+                return hangfireJobId;
+            }
+            case "summary":
+            {
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.ResolveAutomaticPipelineGenerationIdAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    cancellationToken);
+                return _backgroundJobClient.Enqueue<GenerateMeetingSummaryJob>(
+                    x => x.RunAsync(meetingId, organizationId, pipelineGenerationId, CancellationToken.None));
+            }
+            case "actionItems":
+            {
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    message: "QA action item extraction rerun enqueued.",
+                    cancellationToken: cancellationToken);
+                var hangfireJobId = _backgroundJobClient.Enqueue<ExtractActionItemsJob>(
+                    x => x.RunAsync(meetingId, organizationId, pipelineGenerationId, CancellationToken.None));
+                await tracker.MarkStepPendingAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    pipelineGenerationId,
+                    message: "QA action item extraction rerun enqueued.",
+                    relatedHangfireJobId: hangfireJobId,
+                    cancellationToken: cancellationToken);
+                return hangfireJobId;
+            }
+            case "personalizedSummaries":
+            {
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.ResolveAutomaticPipelineGenerationIdAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    cancellationToken);
+                return _backgroundJobClient.Enqueue<GeneratePersonalizedMeetingSummariesJob>(
+                    x => x.RunAsync(meetingId, organizationId, pipelineGenerationId, CancellationToken.None));
+            }
+            case "rag":
+            {
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.KnowledgeIndexing,
+                    message: "QA knowledge reindex rerun enqueued.",
+                    cancellationToken: cancellationToken);
+                var hangfireJobId = _backgroundJobClient.Enqueue<ReindexMeetingKnowledgeJob>(
+                    x => x.RunAsync(meetingId, organizationId, pipelineGenerationId, CancellationToken.None));
+                await tracker.MarkStepPendingAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.KnowledgeIndexing,
+                    pipelineGenerationId,
+                    message: "QA knowledge reindex rerun enqueued.",
+                    relatedHangfireJobId: hangfireJobId,
+                    cancellationToken: cancellationToken);
+                return hangfireJobId;
+            }
+            default:
+                throw new InvalidOperationException($"Unsupported QA job '{job}'.");
+        }
     }
 
     private async Task RunJobInlineAsync(
@@ -1526,25 +1611,71 @@ public sealed class DevQaController(
         switch (job)
         {
             case "transcript":
+            {
+                var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.Stt,
+                    message: "QA transcript rerun started inline.",
+                    cancellationToken: cancellationToken);
                 await _serviceProvider.GetRequiredService<GenerateMeetingTranscriptJob>()
-                    .RunAsync(meetingId, organizationId, cancellationToken);
+                    .RunAsync(meetingId, organizationId, pipelineGenerationId, cancellationToken);
                 break;
+            }
             case "summary":
+            {
+                var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.ResolveAutomaticPipelineGenerationIdAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    cancellationToken);
                 await _serviceProvider.GetRequiredService<GenerateMeetingSummaryJob>()
-                    .RunAsync(meetingId, organizationId, cancellationToken);
+                    .RunAsync(meetingId, organizationId, pipelineGenerationId, cancellationToken);
                 break;
+            }
             case "actionItems":
+            {
+                var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    message: "QA action item extraction rerun started inline.",
+                    cancellationToken: cancellationToken);
                 await ActivatorUtilities.CreateInstance<ExtractActionItemsJob>(_serviceProvider)
-                    .RunAsync(meetingId, organizationId, cancellationToken);
+                    .RunAsync(meetingId, organizationId, pipelineGenerationId, cancellationToken);
                 break;
+            }
             case "personalizedSummaries":
+            {
+                var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.ResolveAutomaticPipelineGenerationIdAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    cancellationToken);
                 await _serviceProvider.GetRequiredService<GeneratePersonalizedMeetingSummariesJob>()
-                    .RunAsync(meetingId, organizationId, cancellationToken);
+                    .RunAsync(meetingId, organizationId, pipelineGenerationId, cancellationToken);
                 break;
+            }
             case "rag":
+            {
+                var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+                var pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                    tracker,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.KnowledgeIndexing,
+                    message: "QA knowledge reindex rerun started inline.",
+                    cancellationToken: cancellationToken);
                 await _serviceProvider.GetRequiredService<ReindexMeetingKnowledgeJob>()
-                    .RunAsync(meetingId, organizationId, cancellationToken);
+                    .RunAsync(meetingId, organizationId, pipelineGenerationId, cancellationToken);
                 break;
+            }
             default:
                 throw new InvalidOperationException($"Unsupported QA job '{job}'.");
         }

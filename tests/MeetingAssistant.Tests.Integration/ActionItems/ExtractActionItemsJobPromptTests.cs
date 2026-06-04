@@ -448,6 +448,7 @@ public sealed class ExtractActionItemsJobPromptTests
             }),
             NullLogger<ExtractActionItemsJob>.Instance,
             tracker,
+            hangfireJobContextAccessor: null,
             backgroundJobClient);
     }
 

@@ -20,6 +20,7 @@ namespace MeetingAssistant.Features.Rag.Handlers
                 job => job.RunAsync(
                     notification.MeetingId,
                     notification.OrganizationId,
+                    notification.PipelineGenerationId,
                     CancellationToken.None));
 
             if (_postMeetingProcessingTracker is not null)
@@ -28,6 +29,7 @@ namespace MeetingAssistant.Features.Rag.Handlers
                     notification.OrganizationId,
                     notification.MeetingId,
                     PostMeetingProcessingStepType.KnowledgeIndexing,
+                    notification.PipelineGenerationId,
                     message: "Knowledge indexing job enqueued after transcript persistence.",
                     relatedHangfireJobId: jobId,
                     cancellationToken: cancellationToken);

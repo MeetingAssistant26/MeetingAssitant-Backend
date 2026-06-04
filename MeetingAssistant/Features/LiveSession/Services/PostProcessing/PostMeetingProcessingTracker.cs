@@ -78,12 +78,18 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
             string? message = null,
             string? relatedHangfireJobId = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
             var step = await GetOrCreateStepAsync(run, stepType, cancellationToken);
 
             if (step.Status == PostMeetingProcessingStatus.Pending
@@ -110,15 +116,22 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
             var step = await GetOrCreateStepAsync(run, stepType, cancellationToken);
 
-            if (step.Status == PostMeetingProcessingStatus.Completed)
+            if (step.Status == PostMeetingProcessingStatus.Completed
+                && SameJob(step.RelatedHangfireJobId, relatedHangfireJobId))
             {
                 return step;
             }
@@ -131,7 +144,10 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             }
 
             var now = DateTime.UtcNow;
-            var isRetry = step.Status == PostMeetingProcessingStatus.Failed || step.AttemptCount > 0;
+            var isRetry = step.Status == PostMeetingProcessingStatus.Failed
+                || step.Status == PostMeetingProcessingStatus.Completed
+                || step.Status == PostMeetingProcessingStatus.CompletedWithWarnings
+                || step.AttemptCount > 0;
 
             step.Status = PostMeetingProcessingStatus.InProgress;
             step.AttemptCount += 1;
@@ -164,7 +180,10 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
                 AddRunStatusEvent(run, PostMeetingProcessingEventType.RunStatusChanged, "Post-meeting processing is in progress.", relatedHangfireJobId);
             }
 
-            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+            if (!string.IsNullOrWhiteSpace(relatedHangfireJobId))
+            {
+                run.RelatedHangfireJobId = relatedHangfireJobId;
+            }
 
             AddStepEvent(
                 run,
@@ -182,12 +201,18 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
             var step = await GetOrCreateStepAsync(run, stepType, cancellationToken);
 
             if (step.Status == PostMeetingProcessingStatus.Completed
@@ -211,7 +236,10 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
                 ? PostMeetingProcessingStatus.InProgress
                 : run.Status;
             run.StartedAtUtc ??= now;
-            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+            if (!string.IsNullOrWhiteSpace(relatedHangfireJobId))
+            {
+                run.RelatedHangfireJobId = relatedHangfireJobId;
+            }
 
             AddStepEvent(run, step, PostMeetingProcessingEventType.StepCompleted, message, relatedHangfireJobId, artifact);
             if (artifact is { ArtifactId: not null } || artifact?.ArtifactIds?.Count > 0)
@@ -227,12 +255,18 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
             var step = await GetOrCreateStepAsync(run, stepType, cancellationToken);
 
             if (step.Status == PostMeetingProcessingStatus.CompletedWithWarnings
@@ -256,7 +290,10 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
                 ? PostMeetingProcessingStatus.InProgress
                 : run.Status;
             run.StartedAtUtc ??= now;
-            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+            if (!string.IsNullOrWhiteSpace(relatedHangfireJobId))
+            {
+                run.RelatedHangfireJobId = relatedHangfireJobId;
+            }
 
             AddStepEvent(run, step, PostMeetingProcessingEventType.StepCompleted, message, relatedHangfireJobId, artifact);
             if (artifact is { ArtifactId: not null } || artifact?.ArtifactIds?.Count > 0)
@@ -274,12 +311,18 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             PostMeetingProcessingStepType stepType,
             string errorCode,
             string errorMessage,
+            Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
             var step = await GetOrCreateStepAsync(run, stepType, cancellationToken);
             var truncatedError = Truncate(errorMessage, MaxErrorMessageLength);
 
@@ -313,7 +356,11 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
                 run.Status = PostMeetingProcessingStatus.Failed;
                 run.StartedAtUtc ??= now;
                 run.FailedAtUtc = now;
-                run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+                if (!string.IsNullOrWhiteSpace(relatedHangfireJobId))
+                {
+                    run.RelatedHangfireJobId = relatedHangfireJobId;
+                }
+
                 run.ErrorCode = errorCode;
                 run.ErrorMessage = truncatedError;
 
@@ -322,7 +369,10 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             else
             {
                 run.StartedAtUtc ??= now;
-                run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+                if (!string.IsNullOrWhiteSpace(relatedHangfireJobId))
+                {
+                    run.RelatedHangfireJobId = relatedHangfireJobId;
+                }
             }
 
             AddStepEvent(run, step, PostMeetingProcessingEventType.StepFailed, message, relatedHangfireJobId, artifact, errorCode, truncatedError);
@@ -335,12 +385,18 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
             var step = await GetOrCreateStepAsync(run, stepType, cancellationToken);
 
             if (step.Status == PostMeetingProcessingStatus.Skipped
@@ -364,7 +420,10 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
                 ? PostMeetingProcessingStatus.InProgress
                 : run.Status;
             run.StartedAtUtc ??= now;
-            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+            if (!string.IsNullOrWhiteSpace(relatedHangfireJobId))
+            {
+                run.RelatedHangfireJobId = relatedHangfireJobId;
+            }
 
             AddStepEvent(run, step, PostMeetingProcessingEventType.StepSkipped, message, relatedHangfireJobId, artifact);
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -375,6 +434,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingEventType eventType,
+            Guid? pipelineGenerationId = null,
             PostMeetingProcessingStepType? stepType = null,
             PostMeetingProcessingStatus? status = null,
             string? message = null,
@@ -385,7 +445,12 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             string? metadataJson = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
             PostMeetingProcessingStep? step = null;
             if (stepType.HasValue)
             {
@@ -412,11 +477,17 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
         public async Task<PostMeetingProcessingRun> CompleteRunAsync(
             Guid organizationId,
             Guid meetingId,
+            Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
 
             if (run.Status == PostMeetingProcessingStatus.Completed && SameJob(run.RelatedHangfireJobId, relatedHangfireJobId))
             {
@@ -428,7 +499,11 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             run.StartedAtUtc ??= now;
             run.CompletedAtUtc = now;
             run.FailedAtUtc = null;
-            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+            if (!string.IsNullOrWhiteSpace(relatedHangfireJobId))
+            {
+                run.RelatedHangfireJobId = relatedHangfireJobId;
+            }
+
             run.ErrorCode = null;
             run.ErrorMessage = null;
 
@@ -445,11 +520,17 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
         public async Task<PostMeetingProcessingRun> CompleteRunWithWarningsAsync(
             Guid organizationId,
             Guid meetingId,
+            Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             CancellationToken cancellationToken = default)
         {
-            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var run = await EnsureRunAsync(
+                organizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId,
+                cancellationToken);
 
             if (run.Status == PostMeetingProcessingStatus.CompletedWithWarnings && SameJob(run.RelatedHangfireJobId, relatedHangfireJobId))
             {
@@ -461,7 +542,11 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             run.StartedAtUtc ??= now;
             run.CompletedAtUtc = now;
             run.FailedAtUtc = null;
-            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+            if (!string.IsNullOrWhiteSpace(relatedHangfireJobId))
+            {
+                run.RelatedHangfireJobId = relatedHangfireJobId;
+            }
+
             run.ErrorCode = null;
             run.ErrorMessage = null;
 
@@ -517,6 +602,13 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             PostMeetingProcessingStepType stepType,
             CancellationToken cancellationToken)
         {
+            var trackedStep = _dbContext.PostMeetingProcessingSteps.Local
+                .FirstOrDefault(x => x.RunId == run.Id && x.StepType == stepType);
+            if (trackedStep is not null)
+            {
+                return trackedStep;
+            }
+
             var step = await _dbContext.PostMeetingProcessingSteps
                 .IgnoreQueryFilters()
                 .FirstOrDefaultAsync(x => x.RunId == run.Id && x.StepType == stepType, cancellationToken);
@@ -602,7 +694,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
                 StepType = step?.StepType,
                 EventType = eventType,
                 Status = status,
-                RelatedHangfireJobId = relatedHangfireJobId ?? step?.RelatedHangfireJobId ?? run.RelatedHangfireJobId,
+                RelatedHangfireJobId = relatedHangfireJobId,
                 Message = Truncate(message, MaxMessageLength),
                 ArtifactType = artifact?.ArtifactType ?? step?.ArtifactType,
                 ArtifactId = artifact?.ArtifactId ?? step?.ArtifactId,
@@ -649,8 +741,17 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
 
         private static bool SameJob(string? currentJobId, string? requestedJobId)
         {
-            return string.IsNullOrWhiteSpace(requestedJobId)
-                   || string.Equals(currentJobId, requestedJobId, StringComparison.Ordinal);
+            if (string.IsNullOrWhiteSpace(requestedJobId) && string.IsNullOrWhiteSpace(currentJobId))
+            {
+                return true;
+            }
+
+            if (string.IsNullOrWhiteSpace(requestedJobId) || string.IsNullOrWhiteSpace(currentJobId))
+            {
+                return false;
+            }
+
+            return string.Equals(currentJobId, requestedJobId, StringComparison.Ordinal);
         }
 
         private static string? SerializeArtifactIds(IReadOnlyCollection<Guid>? artifactIds)

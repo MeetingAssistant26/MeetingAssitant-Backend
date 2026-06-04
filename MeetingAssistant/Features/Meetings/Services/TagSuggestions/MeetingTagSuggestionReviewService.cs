@@ -335,7 +335,12 @@ namespace MeetingAssistant.Features.Meetings.Services.TagSuggestions
             string? reindexJobId = null;
             if (tagAssociationsChanged || changedSuggestionState)
             {
-                reindexJobId = EnqueueKnowledgeReindex(meetingId, organizationId);
+                reindexJobId = await EnqueueKnowledgeReindexAsync(
+                    meetingId,
+                    organizationId,
+                    "Knowledge tag metadata refresh job enqueued after tag suggestion review.",
+                    manualRerun: true,
+                    cancellationToken);
                 foreach (var suggestion in suggestions.Where(x => confirmedSuggestionIds.Contains(x.Id)))
                 {
                     suggestion.MetadataJson = WriteReviewMetadata(
@@ -350,10 +355,6 @@ namespace MeetingAssistant.Features.Meetings.Services.TagSuggestions
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
-            if (reindexJobId is not null)
-            {
-                await MarkKnowledgeReindexPendingAsync(organizationId, meetingId, reindexJobId, cancellationToken);
-            }
 
             var refreshedSuggestions = await _dbContext.MeetingTagSuggestions
                 .IgnoreQueryFilters()
@@ -382,8 +383,12 @@ namespace MeetingAssistant.Features.Meetings.Services.TagSuggestions
                 return Result.Failure<MeetingTagMetadataRefreshResponse>(access.Error);
             }
 
-            var jobId = EnqueueKnowledgeReindex(meetingId, organizationId);
-            await MarkKnowledgeReindexPendingAsync(organizationId, meetingId, jobId, cancellationToken);
+            var jobId = await EnqueueKnowledgeReindexAsync(
+                meetingId,
+                organizationId,
+                "Knowledge tag metadata refresh job enqueued after tag suggestion review.",
+                manualRerun: true,
+                cancellationToken);
 
             return Result.Success(new MeetingTagMetadataRefreshResponse(jobId, true));
         }
@@ -492,30 +497,47 @@ namespace MeetingAssistant.Features.Meetings.Services.TagSuggestions
                 .FirstOrDefaultAsync(cancellationToken);
         }
 
-        private string EnqueueKnowledgeReindex(Guid meetingId, Guid organizationId)
-        {
-            return _backgroundJobClient.Enqueue<ReindexMeetingKnowledgeJob>(
-                job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
-        }
-
-        private async Task MarkKnowledgeReindexPendingAsync(
-            Guid organizationId,
+        private async Task<string> EnqueueKnowledgeReindexAsync(
             Guid meetingId,
-            string reindexJobId,
+            Guid organizationId,
+            string message,
+            bool manualRerun,
             CancellationToken cancellationToken)
         {
-            if (_postMeetingProcessingTracker is null)
+            Guid? pipelineGenerationId = null;
+            if (_postMeetingProcessingTracker is not null)
             {
-                return;
+                pipelineGenerationId = manualRerun
+                    ? await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                        _postMeetingProcessingTracker,
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.KnowledgeIndexing,
+                        message: message,
+                        cancellationToken: cancellationToken)
+                    : await PostMeetingProcessingPipeline.ResolveAutomaticPipelineGenerationIdAsync(
+                        _postMeetingProcessingTracker,
+                        organizationId,
+                        meetingId,
+                        cancellationToken);
             }
 
-            await _postMeetingProcessingTracker.MarkStepPendingAsync(
-                organizationId,
-                meetingId,
-                PostMeetingProcessingStepType.KnowledgeIndexing,
-                message: "Knowledge tag metadata refresh job enqueued after tag suggestion review.",
-                relatedHangfireJobId: reindexJobId,
-                cancellationToken: cancellationToken);
+            var jobId = _backgroundJobClient.Enqueue<ReindexMeetingKnowledgeJob>(
+                job => job.RunAsync(meetingId, organizationId, pipelineGenerationId, CancellationToken.None));
+
+            if (_postMeetingProcessingTracker is not null && pipelineGenerationId.HasValue)
+            {
+                await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.KnowledgeIndexing,
+                    pipelineGenerationId,
+                    message: message,
+                    relatedHangfireJobId: jobId,
+                    cancellationToken: cancellationToken);
+            }
+
+            return jobId;
         }
 
         private static MeetingTagSuggestionResponse MapSuggestion(MeetingTagSuggestion suggestion)

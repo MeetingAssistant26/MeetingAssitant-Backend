@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Hangfire;
+using MeetingAssistant.Api.Infrastructure.Hangfire;
 using MeetingAssistant.Features.ActionItems.Models;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
@@ -36,8 +37,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
         private readonly IPromptProvider _promptProvider;
         private readonly ILogger<ExtractActionItemsJob> _logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker;
+        private readonly IHangfireJobContextAccessor? _hangfireJobContextAccessor;
         private readonly IBackgroundJobClient? _backgroundJobClient;
         private readonly string _model;
+
+        private Guid? _pipelineGenerationId;
+        private string? _currentHangfireJobId;
 
         public ExtractActionItemsJob(
             ApplicationDbContext dbContext,
@@ -46,6 +51,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             IOptions<OpenAiCompatibleOptions> options,
             ILogger<ExtractActionItemsJob> logger,
             IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
+        IHangfireJobContextAccessor? hangfireJobContextAccessor = null,
             IBackgroundJobClient? backgroundJobClient = null)
         {
             _dbContext = dbContext;
@@ -53,13 +59,33 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             _promptProvider = promptProvider;
             _logger = logger;
             _postMeetingProcessingTracker = postMeetingProcessingTracker;
+            _hangfireJobContextAccessor = hangfireJobContextAccessor;
             _backgroundJobClient = backgroundJobClient;
             _model = options.Value.Llm.Model;
         }
 
         [Hangfire.AutomaticRetry(Attempts = 3)]
-        public async Task RunAsync(Guid meetingId, Guid organizationId, CancellationToken cancellationToken)
+        public Task RunAsync(Guid meetingId, Guid organizationId, CancellationToken cancellationToken)
+            => RunAsync(meetingId, organizationId, pipelineGenerationId: null, cancellationToken);
+
+        public async Task RunAsync(
+            Guid meetingId,
+            Guid organizationId,
+            Guid? pipelineGenerationId,
+            CancellationToken cancellationToken)
         {
+            _currentHangfireJobId = _hangfireJobContextAccessor?.CurrentJobId;
+            _pipelineGenerationId = pipelineGenerationId;
+            if (_postMeetingProcessingTracker is not null && !_pipelineGenerationId.HasValue)
+            {
+                var run = await _postMeetingProcessingTracker.EnsureRunAsync(
+                    organizationId,
+                    meetingId,
+                    relatedHangfireJobId: _currentHangfireJobId,
+                    cancellationToken: cancellationToken);
+                _pipelineGenerationId = run.PipelineGenerationId;
+            }
+
             _logger.LogInformation("Starting action item extraction for meeting {MeetingId}", meetingId);
             if (_postMeetingProcessingTracker is not null)
             {
@@ -67,6 +93,8 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     organizationId,
                     meetingId,
                     PostMeetingProcessingStepType.ActionExtraction,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
                     message: "Action item extraction started.",
                     cancellationToken: cancellationToken);
             }
@@ -83,12 +111,14 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     if (_postMeetingProcessingTracker is not null)
                     {
                         await _postMeetingProcessingTracker.FailStepAsync(
-                            organizationId,
-                            meetingId,
-                            PostMeetingProcessingStepType.ActionExtraction,
-                            "transcript_unavailable",
-                            "No transcript found for action item extraction.",
-                            cancellationToken: cancellationToken);
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    "transcript_unavailable",
+                    "No transcript found for action item extraction.",
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    cancellationToken: cancellationToken);
                     }
 
                     _logger.LogWarning("No transcript found for meeting {MeetingId}", meetingId);
@@ -100,17 +130,20 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     if (_postMeetingProcessingTracker is not null)
                     {
                         await _postMeetingProcessingTracker.SkipStepAsync(
-                            organizationId,
-                            meetingId,
-                            PostMeetingProcessingStepType.ActionExtraction,
-                            message: MeetingTranscriptCompletenessGuard.BuildIncompleteMessage(transcript),
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    message: MeetingTranscriptCompletenessGuard.BuildIncompleteMessage(transcript),
                             cancellationToken: cancellationToken);
 
                         await _postMeetingProcessingTracker.RecordEventAsync(
-                            organizationId,
-                            meetingId,
-                            PostMeetingProcessingEventType.Info,
-                            PostMeetingProcessingStepType.ActionExtraction,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingEventType.Info,
+                    _pipelineGenerationId,
+                    PostMeetingProcessingStepType.ActionExtraction,
                             PostMeetingProcessingStatus.Skipped,
                             message: "Action item extraction skipped because meeting transcript is incomplete.",
                             errorCode: MeetingTranscriptCompletenessGuard.IncompleteErrorCode,
@@ -140,10 +173,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                             .ToListAsync(cancellationToken);
 
                         await _postMeetingProcessingTracker.CompleteStepAsync(
-                            organizationId,
-                            meetingId,
-                            PostMeetingProcessingStepType.ActionExtraction,
-                            message: "Action items already exist for meeting. Skipping extraction.",
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    message: "Action items already exist for meeting. Skipping extraction.",
                             artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: existingIds),
                             cancellationToken: cancellationToken);
                     }
@@ -193,10 +228,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     if (_postMeetingProcessingTracker is not null)
                     {
                         await _postMeetingProcessingTracker.CompleteStepAsync(
-                            organizationId,
-                            meetingId,
-                            PostMeetingProcessingStepType.ActionExtraction,
-                            message: "No action items extracted.",
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    message: "No action items extracted.",
                             artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: Array.Empty<Guid>()),
                             cancellationToken: cancellationToken);
                     }
@@ -255,10 +292,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     if (_postMeetingProcessingTracker is not null)
                     {
                         await _postMeetingProcessingTracker.CompleteStepAsync(
-                            organizationId,
-                            meetingId,
-                            PostMeetingProcessingStepType.ActionExtraction,
-                            message: "No usable action items extracted.",
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    message: "No usable action items extracted.",
                             artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: Array.Empty<Guid>()),
                             cancellationToken: cancellationToken);
                     }
@@ -289,10 +328,12 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         .ToListAsync(cancellationToken);
 
                     await _postMeetingProcessingTracker.CompleteStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.ActionExtraction,
-                        message: $"Extracted {createdCount} action item(s).",
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    message: $"Extracted {createdCount} action item(s).",
                         artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: createdIds),
                         cancellationToken: cancellationToken);
                 }
@@ -320,12 +361,14 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                 if (_postMeetingProcessingTracker is not null)
                 {
                     await _postMeetingProcessingTracker.FailStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.ActionExtraction,
-                        "action_extraction_failed",
-                        ex.GetBaseException().Message,
-                        cancellationToken: cancellationToken);
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    "action_extraction_failed",
+                    ex.GetBaseException().Message,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    cancellationToken: cancellationToken);
                 }
 
                 await EnqueuePersonalizedSummariesAsync(
@@ -365,7 +408,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             }
 
             var personalizedSummaryJobId = _backgroundJobClient?.Enqueue<GeneratePersonalizedMeetingSummariesJob>(
-                job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
+                job => job.RunAsync(meetingId, organizationId, _pipelineGenerationId, CancellationToken.None));
 
             if (personalizedSummaryJobId is null || _postMeetingProcessingTracker is null)
             {
@@ -373,10 +416,11 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             }
 
             await _postMeetingProcessingTracker.MarkStepPendingAsync(
-                organizationId,
-                meetingId,
-                PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
-                message: message,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                    _pipelineGenerationId,
+                    message: message,
                 relatedHangfireJobId: personalizedSummaryJobId,
                 cancellationToken: cancellationToken);
         }
@@ -388,7 +432,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             CancellationToken cancellationToken)
         {
             var knowledgeJobId = _backgroundJobClient?.Enqueue<ReindexMeetingKnowledgeJob>(
-                job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
+                job => job.RunAsync(meetingId, organizationId, _pipelineGenerationId, CancellationToken.None));
 
             if (knowledgeJobId is null || _postMeetingProcessingTracker is null)
             {
@@ -396,10 +440,11 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
             }
 
             await _postMeetingProcessingTracker.MarkStepPendingAsync(
-                organizationId,
-                meetingId,
-                PostMeetingProcessingStepType.KnowledgeIndexing,
-                message: message,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.KnowledgeIndexing,
+                    _pipelineGenerationId,
+                    message: message,
                 relatedHangfireJobId: knowledgeJobId,
                 cancellationToken: cancellationToken);
         }

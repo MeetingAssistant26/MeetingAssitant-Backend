@@ -16,18 +16,30 @@ namespace MeetingAssistant.Features.LiveSession.Handlers
 
         public async Task Handle(ParticipantAudioReadyEvent notification, CancellationToken cancellationToken)
         {
+            Guid? pipelineGenerationId = null;
+            if (_postMeetingProcessingTracker is not null)
+            {
+                pipelineGenerationId = await PostMeetingProcessingPipeline.ResolveAutomaticPipelineGenerationIdAsync(
+                    _postMeetingProcessingTracker,
+                    notification.OrganizationId,
+                    notification.MeetingId,
+                    cancellationToken);
+            }
+
             var jobId = _backgroundJobClient.Enqueue<GenerateMeetingTranscriptJob>(
                 job => job.RunAsync(
                     notification.MeetingId,
                     notification.OrganizationId,
+                    pipelineGenerationId,
                     CancellationToken.None));
 
-            if (_postMeetingProcessingTracker is not null)
+            if (_postMeetingProcessingTracker is not null && pipelineGenerationId.HasValue)
             {
                 await _postMeetingProcessingTracker.MarkStepPendingAsync(
                     notification.OrganizationId,
                     notification.MeetingId,
                     PostMeetingProcessingStepType.Stt,
+                    pipelineGenerationId,
                     message: "STT transcription job enqueued.",
                     relatedHangfireJobId: jobId,
                     cancellationToken: cancellationToken);

@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Hangfire;
+using MeetingAssistant.Api.Infrastructure.Hangfire;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
@@ -16,7 +17,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         ApplicationDbContext dbContext,
         ISummarizerService summarizerService,
         ILogger<GeneratePersonalizedMeetingSummariesJob> logger,
-        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
+        IPostMeetingProcessingTracker? postMeetingProcessingTracker = null,
+        IHangfireJobContextAccessor? hangfireJobContextAccessor = null)
     {
         private const string ParticipantSpeakerRole = "participant";
         private const string AssistantDisplayName = "AI Assistant";
@@ -39,20 +41,45 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         private readonly ISummarizerService _summarizerService = summarizerService;
         private readonly ILogger<GeneratePersonalizedMeetingSummariesJob> _logger = logger;
         private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker = postMeetingProcessingTracker;
+        private readonly IHangfireJobContextAccessor? _hangfireJobContextAccessor = hangfireJobContextAccessor;
+
+        private Guid? _pipelineGenerationId;
+        private string? _currentHangfireJobId;
 
         [AutomaticRetry(Attempts = 3)]
         [DisableConcurrentExecution(timeoutInSeconds: 3600)]
-        public async Task RunAsync(
+        public Task RunAsync(
             Guid meetingId,
             Guid organizationId,
             CancellationToken cancellationToken = default)
+            => RunAsync(meetingId, organizationId, pipelineGenerationId: null, cancellationToken);
+
+        public async Task RunAsync(
+            Guid meetingId,
+            Guid organizationId,
+            Guid? pipelineGenerationId,
+            CancellationToken cancellationToken = default)
         {
+            _currentHangfireJobId = _hangfireJobContextAccessor?.CurrentJobId;
+            _pipelineGenerationId = pipelineGenerationId;
+            if (_postMeetingProcessingTracker is not null && !_pipelineGenerationId.HasValue)
+            {
+                var run = await _postMeetingProcessingTracker.EnsureRunAsync(
+                    organizationId,
+                    meetingId,
+                    relatedHangfireJobId: _currentHangfireJobId,
+                    cancellationToken: cancellationToken);
+                _pipelineGenerationId = run.PipelineGenerationId;
+            }
+
             if (_postMeetingProcessingTracker is not null)
             {
                 await _postMeetingProcessingTracker.StartStepAsync(
                     organizationId,
                     meetingId,
                     PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
                     message: "Personalized summary generation started.",
                     cancellationToken: cancellationToken);
             }
@@ -67,12 +94,14 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 if (_postMeetingProcessingTracker is not null)
                 {
                     await _postMeetingProcessingTracker.FailStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
-                        "transcript_unavailable",
-                        "Personalized summary generation skipped because meeting transcript was unavailable.",
-                        cancellationToken: cancellationToken);
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                    "transcript_unavailable",
+                    "Personalized summary generation skipped because meeting transcript was unavailable.",
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    cancellationToken: cancellationToken);
                 }
 
                 _logger.LogInformation(
@@ -86,17 +115,20 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 if (_postMeetingProcessingTracker is not null)
                 {
                     await _postMeetingProcessingTracker.SkipStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
-                        message: MeetingTranscriptCompletenessGuard.BuildIncompleteMessage(transcript),
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    message: MeetingTranscriptCompletenessGuard.BuildIncompleteMessage(transcript),
                         cancellationToken: cancellationToken);
 
                     await _postMeetingProcessingTracker.RecordEventAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingEventType.Info,
-                        PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingEventType.Info,
+                    _pipelineGenerationId,
+                    PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
                         PostMeetingProcessingStatus.Skipped,
                         message: "Personalized summary generation skipped because meeting transcript is incomplete.",
                         errorCode: MeetingTranscriptCompletenessGuard.IncompleteErrorCode,
@@ -132,10 +164,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 if (_postMeetingProcessingTracker is not null)
                 {
                     await _postMeetingProcessingTracker.CompleteStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
-                        message: "No meeting participants found for personalized summary generation.",
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    message: "No meeting participants found for personalized summary generation.",
                         artifact: new PostMeetingArtifactLink("personalized_meeting_summary", ArtifactIds: Array.Empty<Guid>()),
                         cancellationToken: cancellationToken);
                 }
@@ -216,12 +250,14 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     if (_postMeetingProcessingTracker is not null)
                     {
                         await _postMeetingProcessingTracker.FailStepAsync(
-                            organizationId,
-                            meetingId,
-                            PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
-                            "personalized_summary_failed",
-                            ex.GetBaseException().Message,
-                            cancellationToken: cancellationToken);
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                    "personalized_summary_failed",
+                    ex.GetBaseException().Message,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
+                    cancellationToken: cancellationToken);
                     }
 
                     throw;
@@ -313,6 +349,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     organizationId,
                     meetingId,
                     PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                    _pipelineGenerationId,
+                    _currentHangfireJobId,
                     message: $"Generated {generatedCount} personalized meeting summary artifact(s); skipped {skippedCount} participant(s) without personalized relevance.",
                     artifact: new PostMeetingArtifactLink("personalized_meeting_summary", ArtifactIds: summaryIds),
                     cancellationToken: cancellationToken);

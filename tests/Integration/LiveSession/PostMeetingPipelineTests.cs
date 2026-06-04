@@ -100,6 +100,7 @@ namespace tests.Integration.LiveSession
                 summarizer,
                 NullLogger<GenerateMeetingSummaryJob>.Instance,
                 tracker,
+                hangfireJobContextAccessor: null,
                 jobs);
 
             await summaryJob.RunAsync(meetingId, orgId);
@@ -136,6 +137,25 @@ namespace tests.Integration.LiveSession
                 .OfType<MeetingTranscriptReadyEvent>()
                 .Should()
                 .ContainSingle(x => x.MeetingId == meetingId);
+
+            var transcriptGenerationId = jobs.CreatedJobs
+                .Single(x => x.Type == typeof(GenerateMeetingTranscriptJob))
+                .Args[2] as Guid?;
+            transcriptGenerationId.Should().NotBeNull();
+
+            var summaryGenerationId = jobs.CreatedJobs
+                .Single(x => x.Type == typeof(GenerateMeetingSummaryJob))
+                .Args[2] as Guid?;
+            summaryGenerationId.Should().Be(transcriptGenerationId);
+
+            var tagSuggestionGenerationId = jobs.CreatedJobs
+                .Single(x => x.Type == typeof(SuggestMeetingTagsJob))
+                .Args[2] as Guid?;
+            var knowledgeGenerationId = jobs.CreatedJobs
+                .Single(x => x.Type == typeof(ReindexMeetingKnowledgeJob))
+                .Args[2] as Guid?;
+            tagSuggestionGenerationId.Should().Be(transcriptGenerationId);
+            knowledgeGenerationId.Should().Be(transcriptGenerationId);
 
             var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
             snapshot.Run!.Status.Should().Be(PostMeetingProcessingStatus.Completed);

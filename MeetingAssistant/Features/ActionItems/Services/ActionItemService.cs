@@ -1,6 +1,8 @@
 using System.ComponentModel.DataAnnotations;
 using Hangfire;
 using MeetingAssistant.Features.ActionItems.Jobs;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.ActionItems.Models;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
@@ -20,17 +22,20 @@ namespace MeetingAssistant.Features.ActionItems.Services
         private readonly ApplicationDbContext _dbContext;
         private readonly ITaskProviderFactory _providerFactory;
         private readonly IBackgroundJobClient _backgroundJobClient;
+        private readonly IPostMeetingProcessingTracker? _postMeetingProcessingTracker;
         private readonly ILogger<ActionItemService> _logger;
 
         public ActionItemService(
             ApplicationDbContext dbContext,
             ITaskProviderFactory providerFactory,
             IBackgroundJobClient backgroundJobClient,
-            ILogger<ActionItemService> logger)
+            ILogger<ActionItemService> logger,
+            IPostMeetingProcessingTracker? postMeetingProcessingTracker = null)
         {
             _dbContext = dbContext;
             _providerFactory = providerFactory;
             _backgroundJobClient = backgroundJobClient;
+            _postMeetingProcessingTracker = postMeetingProcessingTracker;
             _logger = logger;
         }
 
@@ -473,8 +478,32 @@ namespace MeetingAssistant.Features.ActionItems.Services
             if (existingCount > 0)
                 return Result.Failure(new Error("Conflict", "Delete existing action items first before re-extracting.", 409));
 
-            _backgroundJobClient.Enqueue<ExtractActionItemsJob>(
-                job => job.RunAsync(meetingId, organizationId, CancellationToken.None));
+            Guid? pipelineGenerationId = null;
+            if (_postMeetingProcessingTracker is not null)
+            {
+                pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                    _postMeetingProcessingTracker,
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    message: "Manual action item re-extract enqueued.",
+                    cancellationToken: cancellationToken);
+            }
+
+            var jobId = _backgroundJobClient.Enqueue<ExtractActionItemsJob>(
+                job => job.RunAsync(meetingId, organizationId, pipelineGenerationId, CancellationToken.None));
+
+            if (_postMeetingProcessingTracker is not null && pipelineGenerationId.HasValue)
+            {
+                await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                    organizationId,
+                    meetingId,
+                    PostMeetingProcessingStepType.ActionExtraction,
+                    pipelineGenerationId,
+                    message: "Manual action item re-extract enqueued.",
+                    relatedHangfireJobId: jobId,
+                    cancellationToken: cancellationToken);
+            }
 
             return Result.Success();
         }

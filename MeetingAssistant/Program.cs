@@ -116,6 +116,7 @@ namespace MeetingAssistant.Api
 
             if (!app.Environment.IsEnvironment("Testing"))
             {
+                app.ConfigureHangfireJobContextFilter();
                 app.UseSecureHangfireDashboard();
                 app.RegisterRecurringJobs();
 

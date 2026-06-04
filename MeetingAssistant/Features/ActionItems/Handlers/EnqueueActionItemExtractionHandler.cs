@@ -20,6 +20,7 @@ namespace MeetingAssistant.Features.ActionItems.Handlers
                 job => job.RunAsync(
                     notification.MeetingId,
                     notification.OrganizationId,
+                    notification.PipelineGenerationId,
                     CancellationToken.None));
 
             if (_postMeetingProcessingTracker is not null)
@@ -28,6 +29,7 @@ namespace MeetingAssistant.Features.ActionItems.Handlers
                     notification.OrganizationId,
                     notification.MeetingId,
                     PostMeetingProcessingStepType.ActionExtraction,
+                    notification.PipelineGenerationId,
                     message: "Action item extraction job enqueued.",
                     relatedHangfireJobId: jobId,
                     cancellationToken: cancellationToken);

@@ -3,7 +3,9 @@ using FluentAssertions;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
+using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -432,6 +434,251 @@ namespace tests.Integration.LiveSession
             };
             db.DbContext.PostMeetingProcessingRuns.Add(run);
             return run;
+        }
+
+        [Fact]
+        public async Task DistinctPipelineGenerations_ShouldCreateSeparateRunsAndSteps()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var generationA = Guid.NewGuid();
+            var generationB = Guid.NewGuid();
+
+            await tracker.CompleteStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.Stt,
+                generationA,
+                relatedHangfireJobId: "hf-generation-a",
+                message: "Generation A STT completed.");
+            await tracker.StartStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.Stt,
+                generationB,
+                relatedHangfireJobId: "hf-generation-b",
+                message: "Generation B STT started.");
+
+            var runs = await db.DbContext.PostMeetingProcessingRuns
+                .IgnoreQueryFilters()
+                .Where(x => x.OrganizationId == orgId && x.MeetingId == meetingId)
+                .ToListAsync();
+
+            runs.Should().HaveCount(2);
+            runs.Select(x => x.PipelineGenerationId).Should().BeEquivalentTo([generationA, generationB]);
+
+            var steps = await db.DbContext.PostMeetingProcessingSteps
+                .IgnoreQueryFilters()
+                .Where(x => x.OrganizationId == orgId && x.MeetingId == meetingId && x.StepType == PostMeetingProcessingStepType.Stt)
+                .ToListAsync();
+
+            steps.Should().HaveCount(2);
+            steps.Should().ContainSingle(x =>
+                x.RunId == runs.Single(r => r.PipelineGenerationId == generationA).Id
+                && x.Status == PostMeetingProcessingStatus.Completed
+                && x.RelatedHangfireJobId == "hf-generation-a");
+            steps.Should().ContainSingle(x =>
+                x.RunId == runs.Single(r => r.PipelineGenerationId == generationB).Id
+                && x.Status == PostMeetingProcessingStatus.InProgress
+                && x.RelatedHangfireJobId == "hf-generation-b");
+        }
+
+        [Fact]
+        public async Task StartStepAsync_WithDifferentHangfireJobId_ShouldNotShortCircuitCompletedStep()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+
+            await tracker.CompleteStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.Stt,
+                relatedHangfireJobId: "old-job");
+            var restarted = await tracker.StartStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.Stt,
+                relatedHangfireJobId: "new-job",
+                message: "STT rerun started.");
+
+            restarted.Status.Should().Be(PostMeetingProcessingStatus.InProgress);
+            restarted.RelatedHangfireJobId.Should().Be("new-job");
+            restarted.AttemptCount.Should().Be(1);
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Events.Should().Contain(x =>
+                x.EventType == PostMeetingProcessingEventType.StepRetried
+                && x.RelatedHangfireJobId == "new-job");
+        }
+
+        [Fact]
+        public async Task RecordEventAsync_ShouldUseExplicitJobIdWithoutStaleFallback()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var generationId = Guid.NewGuid();
+
+            await tracker.CompleteStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.Stt,
+                generationId,
+                relatedHangfireJobId: "stale-job");
+            var processingEvent = await tracker.RecordEventAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingEventType.Info,
+                generationId,
+                PostMeetingProcessingStepType.Stt,
+                PostMeetingProcessingStatus.InProgress,
+                message: "Inline progress event without explicit job id.");
+
+            processingEvent.RelatedHangfireJobId.Should().BeNull();
+        }
+
+        [Fact]
+        public async Task GenerateMeetingTranscriptJob_ShouldAttributeTrackerEventsToSeededHangfireJobId()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 04, 10, 00, 00, DateTimeKind.Utc);
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            var aliceId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, aliceId);
+            db.DbContext.AiAssistantTraceEvents.Add(new AiAssistantTraceEvent
+            {
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                SessionId = "trace-session-attribution",
+                TurnId = "trace-turn-attribution",
+                Sequence = 20,
+                EventType = AiAssistantTraceEventTypes.SttCompleted,
+                OccurredAtUtc = roomStartedAtUtc.AddSeconds(5),
+                StepType = "stt",
+                Text = "Attribution test transcript from traces."
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            var hangfireContext = new TestHangfireJobContextAccessor { CurrentJobId = "hf-transcript-current" };
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var pipelineGenerationId = Guid.NewGuid();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                new StubSttService(new Dictionary<string, TrackTranscriptionResult>()),
+                new CollectingPublisher(),
+                NullLogger<GenerateMeetingTranscriptJob>.Instance,
+                tracker,
+                hangfireJobContextAccessor: hangfireContext);
+
+            await transcriptJob.RunAsync(meetingId, orgId, pipelineGenerationId);
+
+            var run = await db.DbContext.PostMeetingProcessingRuns
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.PipelineGenerationId == pipelineGenerationId);
+            run.RelatedHangfireJobId.Should().Be("hf-transcript-current");
+
+            var sttStep = await db.DbContext.PostMeetingProcessingSteps
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.RunId == run.Id && x.StepType == PostMeetingProcessingStepType.Stt);
+            sttStep.RelatedHangfireJobId.Should().Be("hf-transcript-current");
+
+            var sttEvents = await db.DbContext.PostMeetingProcessingEvents
+                .IgnoreQueryFilters()
+                .Where(x => x.RunId == run.Id && x.StepType == PostMeetingProcessingStepType.Stt)
+                .ToListAsync();
+            sttEvents.Should().NotBeEmpty();
+            sttEvents.Where(x => x.EventType is PostMeetingProcessingEventType.StepStarted or PostMeetingProcessingEventType.StepCompleted)
+                .Should()
+                .OnlyContain(x => x.RelatedHangfireJobId == "hf-transcript-current");
+        }
+
+        [Fact]
+        public async Task BeginManualRerunAsync_ShouldCreateFreshGenerationAndPendingStepForActionExtraction()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var staleGeneration = Guid.NewGuid();
+
+            await tracker.CompleteStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.ActionExtraction,
+                staleGeneration,
+                relatedHangfireJobId: "old-action-job");
+
+            var pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                tracker,
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.ActionExtraction,
+                message: "Manual action item re-extract pending.",
+                relatedHangfireJobId: "new-action-job");
+
+            pipelineGenerationId.Should().NotBe(staleGeneration);
+
+            var runs = await db.DbContext.PostMeetingProcessingRuns
+                .IgnoreQueryFilters()
+                .Where(x => x.OrganizationId == orgId && x.MeetingId == meetingId)
+                .ToListAsync();
+            runs.Should().HaveCount(2);
+
+            var pendingStep = await db.DbContext.PostMeetingProcessingSteps
+                .IgnoreQueryFilters()
+                .SingleAsync(x =>
+                    x.OrganizationId == orgId
+                    && x.MeetingId == meetingId
+                    && x.Run!.PipelineGenerationId == pipelineGenerationId
+                    && x.StepType == PostMeetingProcessingStepType.ActionExtraction);
+            pendingStep.Status.Should().Be(PostMeetingProcessingStatus.Pending);
+            pendingStep.RelatedHangfireJobId.Should().Be("new-action-job");
+        }
+
+        [Fact]
+        public async Task BeginManualRerunAsync_ShouldCreateFreshGenerationAndPendingStepForKnowledgeIndexing()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var staleGeneration = Guid.NewGuid();
+
+            await tracker.CompleteStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.KnowledgeIndexing,
+                staleGeneration,
+                relatedHangfireJobId: "old-knowledge-job");
+
+            var pipelineGenerationId = await PostMeetingProcessingPipeline.BeginManualRerunAsync(
+                tracker,
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.KnowledgeIndexing,
+                message: "Manual knowledge reindex pending.",
+                relatedHangfireJobId: "new-knowledge-job");
+
+            pipelineGenerationId.Should().NotBe(staleGeneration);
+
+            var pendingStep = await db.DbContext.PostMeetingProcessingSteps
+                .IgnoreQueryFilters()
+                .SingleAsync(x =>
+                    x.OrganizationId == orgId
+                    && x.MeetingId == meetingId
+                    && x.Run!.PipelineGenerationId == pipelineGenerationId
+                    && x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing);
+            pendingStep.Status.Should().Be(PostMeetingProcessingStatus.Pending);
+            pendingStep.RelatedHangfireJobId.Should().Be("new-knowledge-job");
         }
 
         private static PostMeetingProcessingStep CreateStep(
