@@ -303,6 +303,9 @@ public sealed class DevQaController(
         if (request.SourceMeetingId == Guid.Empty)
             return BadRequest(new { error = "SourceMeetingId is required." });
 
+        if (request.RecurringOccurrenceIndex is < 0)
+            return BadRequest(new { error = "RecurringOccurrenceIndex must be non-negative." });
+
         var organizationExists = await _dbContext.Organizations
             .IgnoreQueryFilters()
             .AnyAsync(x => x.Id == organizationId, cancellationToken);
@@ -311,7 +314,6 @@ public sealed class DevQaController(
 
         var sourceMeeting = await _dbContext.Meetings
             .IgnoreQueryFilters()
-            .AsNoTracking()
             .Include(x => x.Participants)
             .Include(x => x.Tags)
                 .ThenInclude(x => x.MeetingTag)
@@ -375,6 +377,76 @@ public sealed class DevQaController(
             }
         }
 
+        if (request.LinkRecurringSeries == true)
+        {
+            var seriesId = sourceMeeting.RecurringSeriesId;
+            if (!seriesId.HasValue)
+            {
+                var createdByUserId = sourceMeeting.Participants
+                    .Where(participant => participant.MeetingRole == MeetingRole.Host)
+                    .Select(participant => participant.UserId)
+                    .FirstOrDefault();
+
+                if (createdByUserId == Guid.Empty)
+                {
+                    createdByUserId = sourceMeeting.Participants
+                        .Select(participant => participant.UserId)
+                        .FirstOrDefault();
+                }
+
+                if (createdByUserId == Guid.Empty)
+                    return BadRequest(new { error = "Source meeting has no participant to own recurring series." });
+
+                var series = new RecurringMeetingSeries
+                {
+                    OrganizationId = organizationId,
+                    Title = sourceMeeting.Title,
+                    Description = sourceMeeting.Description,
+                    ScheduledStartTimeUtc = sourceMeeting.ScheduledStartUtc.TimeOfDay,
+                    ScheduledEndTimeUtc = sourceMeeting.ScheduledEndUtc.TimeOfDay,
+                    Frequency = RecurrenceFrequency.Weekly,
+                    Interval = 1,
+                    DaysOfWeek = sourceMeeting.ScheduledStartUtc.DayOfWeek.ToString(),
+                    Status = RecurringMeetingSeriesStatus.Active,
+                    CreatedByUserId = createdByUserId
+                };
+
+                _dbContext.RecurringMeetingSeries.Add(series);
+                sourceMeeting.RecurringSeriesId = series.Id;
+                seriesId = series.Id;
+            }
+
+            sourceMeeting.RecurringOccurrenceIndex ??= 0;
+
+            var maxExistingOccurrenceIndex = await _dbContext.Meetings
+                .IgnoreQueryFilters()
+                .Where(x => x.OrganizationId == organizationId
+                            && x.RecurringSeriesId == seriesId
+                            && x.RecurringOccurrenceIndex.HasValue)
+                .MaxAsync(x => (int?)x.RecurringOccurrenceIndex, cancellationToken);
+
+            var maxOccurrenceIndex = Math.Max(
+                sourceMeeting.RecurringOccurrenceIndex ?? 0,
+                maxExistingOccurrenceIndex ?? 0);
+            var targetOccurrenceIndex = request.RecurringOccurrenceIndex ?? maxOccurrenceIndex + 1;
+
+            var duplicateOccurrenceIndex = sourceMeeting.RecurringOccurrenceIndex == targetOccurrenceIndex
+                                           || await _dbContext.Meetings
+                                               .IgnoreQueryFilters()
+                                               .AnyAsync(
+                                                   x => x.OrganizationId == organizationId
+                                                        && x.RecurringSeriesId == seriesId
+                                                        && x.Id != sourceMeeting.Id
+                                                        && x.RecurringOccurrenceIndex == targetOccurrenceIndex,
+                                                   cancellationToken);
+
+            if (duplicateOccurrenceIndex)
+                return BadRequest(new { error = "RecurringOccurrenceIndex already exists in this series." });
+
+            meeting.RecurringSeriesId = seriesId;
+            meeting.RecurringOccurrenceIndex = targetOccurrenceIndex;
+        }
+
         _dbContext.Meetings.Add(meeting);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -394,7 +466,88 @@ public sealed class DevQaController(
                 ? sourceMeeting.Tags
                     .Select(tag => new QaScenarioTagResponse(tag.MeetingTagId, tag.MeetingTag.Name))
                     .ToList()
-                : []));
+                : [],
+            meeting.ScheduledStartUtc,
+            meeting.ScheduledEndUtc,
+            meeting.RecurringSeriesId,
+            meeting.RecurringOccurrenceIndex));
+    }
+
+    [HttpGet("organizations/{organizationId:guid}/reminders")]
+    [ProducesResponseType(typeof(IReadOnlyList<QaReminderStatusResponse>), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetReminderStatuses(
+        [FromRoute] Guid organizationId,
+        [FromQuery] Guid? meetingId,
+        [FromQuery] bool? includeSeries,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        var organizationExists = await _dbContext.Organizations
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Id == organizationId, cancellationToken);
+        if (!organizationExists)
+            return NotFound(new { error = "Organization not found." });
+
+        Meeting? meeting = null;
+        if (meetingId.HasValue)
+        {
+            meeting = await _dbContext.Meetings
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(
+                    x => x.Id == meetingId.Value && x.OrganizationId == organizationId,
+                    cancellationToken);
+            if (meeting is null)
+                return NotFound(new { error = "Meeting not found for organization." });
+        }
+
+        var query =
+            from reminder in _dbContext.Reminders.IgnoreQueryFilters().AsNoTracking()
+            where reminder.OrganizationId == organizationId
+            join sourceMeeting in _dbContext.Meetings.IgnoreQueryFilters().AsNoTracking()
+                on reminder.MeetingId equals sourceMeeting.Id into sourceMeetings
+            from sourceMeeting in sourceMeetings.DefaultIfEmpty()
+            select new { Reminder = reminder, SourceMeeting = sourceMeeting };
+
+        if (meetingId.HasValue)
+        {
+            if (includeSeries == true && meeting!.RecurringSeriesId.HasValue)
+            {
+                query = query.Where(x => x.Reminder.MeetingId == meetingId.Value
+                                         || (x.SourceMeeting != null
+                                             && x.SourceMeeting.OrganizationId == organizationId
+                                             && x.SourceMeeting.RecurringSeriesId == meeting.RecurringSeriesId));
+            }
+            else
+            {
+                query = query.Where(x => x.Reminder.MeetingId == meetingId.Value);
+            }
+        }
+
+        var rows = await query
+            .OrderBy(x => x.Reminder.ReminderAtUtc)
+            .ThenBy(x => x.Reminder.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+
+        return Ok(rows
+            .Select(x => new QaReminderStatusResponse(
+                x.Reminder.Id,
+                x.Reminder.OrganizationId,
+                x.Reminder.MeetingId,
+                x.Reminder.Text,
+                x.Reminder.Scope.ToString(),
+                x.Reminder.Channel.ToString(),
+                x.Reminder.Status.ToString(),
+                x.Reminder.ReminderAtUtc,
+                x.Reminder.DeliveredAtUtc,
+                x.Reminder.CreatedByUserId,
+                x.Reminder.TargetUserId,
+                x.SourceMeeting?.RecurringSeriesId,
+                x.SourceMeeting?.RecurringOccurrenceIndex,
+                x.SourceMeeting?.ScheduledStartUtc))
+            .ToList());
     }
 
     [HttpPost("meetings/{meetingId:guid}/agent-token")]
@@ -1303,7 +1456,9 @@ public sealed record QaCreateAdditionalMeetingRequest(
     MeetingStatus? Status = null,
     bool? AiAssistantEnabled = null,
     bool? CopyParticipants = null,
-    bool? CopyTags = null);
+    bool? CopyTags = null,
+    bool? LinkRecurringSeries = null,
+    int? RecurringOccurrenceIndex = null);
 
 public sealed record QaAdditionalMeetingResponse(
     Guid OrganizationId,
@@ -1312,7 +1467,11 @@ public sealed record QaAdditionalMeetingResponse(
     string MeetingTitle,
     string LiveKitRoomName,
     IReadOnlyList<QaAdditionalMeetingParticipantResponse> Participants,
-    IReadOnlyList<QaScenarioTagResponse> Tags);
+    IReadOnlyList<QaScenarioTagResponse> Tags,
+    DateTime ScheduledStartUtc,
+    DateTime ScheduledEndUtc,
+    Guid? RecurringSeriesId,
+    int? RecurringOccurrenceIndex);
 
 public sealed record QaAdditionalMeetingParticipantResponse(
     Guid MeetingParticipantId,
@@ -1328,6 +1487,22 @@ public sealed record QaAgentTokenResponse(
     string AccessToken,
     DateTime ExpiresAtUtc,
     int ExpiresInMinutes);
+
+public sealed record QaReminderStatusResponse(
+    Guid Id,
+    Guid OrganizationId,
+    Guid? MeetingId,
+    string Text,
+    string Scope,
+    string Channel,
+    string Status,
+    DateTime ReminderAtUtc,
+    DateTime? DeliveredAtUtc,
+    Guid? CreatedByUserId,
+    Guid? TargetUserId,
+    Guid? SourceMeetingRecurringSeriesId,
+    int? SourceMeetingRecurringOccurrenceIndex,
+    DateTime? SourceMeetingScheduledStartUtc);
 
 public sealed class QaAudioFragmentUploadRequest
 {

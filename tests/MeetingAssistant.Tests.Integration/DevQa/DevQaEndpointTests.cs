@@ -3,10 +3,15 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using FluentAssertions;
+using MeetingAssistant.Features.AgentApi.Models.Responses;
 using MeetingAssistant.Features.DevQa;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
+using MeetingAssistant.Features.Tasks.Models.Enums;
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using MeetingAssistant.Tests.Integration.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace MeetingAssistant.Tests.Integration.DevQa;
@@ -125,6 +130,85 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
         body.Participants.Select(participant => participant.MeetingRole)
             .Should().BeEquivalentTo(MeetingRole.Host.ToString(), MeetingRole.Participant.ToString());
         body.Tags.Select(tag => tag.Name).Should().BeEquivalentTo("qa", "automation");
+        body.RecurringSeriesId.Should().BeNull();
+        body.RecurringOccurrenceIndex.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateAdditionalMeeting_WithLinkRecurringSeries_ShouldLinkSourceAndAdditionalOccurrences()
+    {
+        var scenario = await CreateScenarioAsync("qa-additional-meeting-linked-series");
+        var m2Start = DateTime.UtcNow.AddDays(7);
+        var m3Start = m2Start.AddDays(7);
+
+        var m2Response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/organizations/{scenario.OrganizationId}/meetings",
+            new QaCreateAdditionalMeetingRequest(
+                scenario.MeetingId,
+                ScheduledStartUtc: m2Start,
+                ScheduledEndUtc: m2Start.AddHours(1),
+                LinkRecurringSeries: true,
+                RecurringOccurrenceIndex: 1));
+        m2Response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var m2 = await m2Response.Content.ReadFromJsonAsync<QaAdditionalMeetingResponse>();
+        m2.Should().NotBeNull();
+
+        var m3Response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/organizations/{scenario.OrganizationId}/meetings",
+            new QaCreateAdditionalMeetingRequest(
+                m2!.MeetingId,
+                ScheduledStartUtc: m3Start,
+                ScheduledEndUtc: m3Start.AddHours(1),
+                LinkRecurringSeries: true,
+                RecurringOccurrenceIndex: 2));
+        m3Response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var m3 = await m3Response.Content.ReadFromJsonAsync<QaAdditionalMeetingResponse>();
+        m3.Should().NotBeNull();
+
+        m2.RecurringSeriesId.Should().NotBeNull();
+        m2.RecurringOccurrenceIndex.Should().Be(1);
+        m3!.RecurringSeriesId.Should().Be(m2.RecurringSeriesId);
+        m3.RecurringOccurrenceIndex.Should().Be(2);
+
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var m1 = await db.Meetings
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstAsync(x => x.Id == scenario.MeetingId);
+        m1.RecurringSeriesId.Should().Be(m2.RecurringSeriesId);
+        m1.RecurringOccurrenceIndex.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task CreateAdditionalMeeting_WithoutLinkRecurringSeries_ShouldRemainOneOff()
+    {
+        var scenario = await CreateScenarioAsync("qa-additional-meeting-one-off");
+
+        var response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/organizations/{scenario.OrganizationId}/meetings",
+            new QaCreateAdditionalMeetingRequest(scenario.MeetingId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<QaAdditionalMeetingResponse>();
+        body.Should().NotBeNull();
+        body!.RecurringSeriesId.Should().BeNull();
+        body.RecurringOccurrenceIndex.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateAdditionalMeeting_WithNegativeRecurringOccurrenceIndex_ShouldReturnBadRequest()
+    {
+        var scenario = await CreateScenarioAsync("qa-additional-meeting-negative-index");
+
+        var response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/organizations/{scenario.OrganizationId}/meetings",
+            new QaCreateAdditionalMeetingRequest(
+                scenario.MeetingId,
+                LinkRecurringSeries: true,
+                RecurringOccurrenceIndex: -1));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact]
@@ -228,10 +312,72 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
+    [Fact]
+    public async Task ReminderStatus_ShouldExposeAgentReminderLifecycleAcrossLinkedSeries()
+    {
+        var m1Start = DateTime.UtcNow.AddHours(1);
+        var scenario = await CreateScenarioAsync(
+            "qa-reminder-status-linked-series",
+            meeting: new QaScenarioMeetingRequest(
+                Title: "QA reminder status linked series",
+                ScheduledStartUtc: m1Start,
+                ScheduledEndUtc: m1Start.AddHours(1)));
+
+        var m2Start = m1Start.AddDays(7);
+        var additionalMeetingResponse = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/organizations/{scenario.OrganizationId}/meetings",
+            new QaCreateAdditionalMeetingRequest(
+                scenario.MeetingId,
+                ScheduledStartUtc: m2Start,
+                ScheduledEndUtc: m2Start.AddHours(1),
+                LinkRecurringSeries: true,
+                RecurringOccurrenceIndex: 1));
+        additionalMeetingResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var m2 = await additionalMeetingResponse.Content.ReadFromJsonAsync<QaAdditionalMeetingResponse>();
+        m2.Should().NotBeNull();
+
+        SetAgentAuthorization(scenario.OrganizationId, scenario.MeetingId);
+        var createReminderResponse = await Client.PostAsJsonAsync(
+            $"/api/agent/meetings/{scenario.MeetingId}/reminders",
+            new
+            {
+                text = "Confirm carry-forward reminder lifecycle",
+                scope = "Public",
+                targetUserId = (Guid?)null,
+                reminderAtUtc = m2!.ScheduledStartUtc,
+                createdByUserId = scenario.Users.Values.First().UserId
+            });
+        createReminderResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+        var reminder = await createReminderResponse.Content.ReadFromJsonAsync<AgentReminderResponse>();
+        reminder.Should().NotBeNull();
+
+        var activeStatusResponse = await Client.GetAsync(
+            $"/api/dev/qa/organizations/{scenario.OrganizationId}/reminders?meetingId={m2.MeetingId}&includeSeries=true");
+        activeStatusResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var activeStatuses = await activeStatusResponse.Content.ReadFromJsonAsync<List<QaReminderStatusResponse>>();
+        activeStatuses.Should().NotBeNull();
+        activeStatuses!.Should().ContainSingle(x => x.Id == reminder!.Id)
+            .Which.Status.Should().Be(ReminderStatus.Active.ToString());
+
+        SetAgentAuthorization(scenario.OrganizationId, m2.MeetingId);
+        var markDeliveredResponse = await Client.PostAsync($"/api/agent/reminders/{reminder!.Id}/mark-delivered", null);
+        markDeliveredResponse.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var deliveredStatusResponse = await Client.GetAsync(
+            $"/api/dev/qa/organizations/{scenario.OrganizationId}/reminders?meetingId={m2.MeetingId}&includeSeries=true");
+        deliveredStatusResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var deliveredStatuses = await deliveredStatusResponse.Content.ReadFromJsonAsync<List<QaReminderStatusResponse>>();
+        deliveredStatuses.Should().NotBeNull();
+        var delivered = deliveredStatuses!.Should().ContainSingle(x => x.Id == reminder.Id).Which;
+        delivered.Status.Should().Be(ReminderStatus.Delivered.ToString());
+        delivered.DeliveredAtUtc.Should().NotBeNull();
+    }
+
     private async Task<QaScenarioResponse> CreateScenarioAsync(
         string scenario,
         IReadOnlyList<QaScenarioUserRequest>? users = null,
-        IReadOnlyList<string>? tags = null)
+        IReadOnlyList<string>? tags = null,
+        QaScenarioMeetingRequest? meeting = null)
     {
         var response = await Client.PostAsJsonAsync(
             "/api/dev/qa/scenario",
@@ -239,12 +385,18 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
                 Scenario: scenario,
                 RunId: Guid.NewGuid().ToString("N"),
                 Users: users,
-                Meeting: new QaScenarioMeetingRequest(Title: $"QA {scenario}"),
+                Meeting: meeting ?? new QaScenarioMeetingRequest(Title: $"QA {scenario}"),
                 Tags: tags));
 
         response.EnsureSuccessStatusCode();
         var body = await response.Content.ReadFromJsonAsync<QaScenarioResponse>();
         body.Should().NotBeNull();
         return body!;
+    }
+
+    private void SetAgentAuthorization(Guid organizationId, Guid meetingId)
+    {
+        var token = TestJwtTokenHelper.GenerateAgentToken(organizationId, meetingId);
+        Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
     }
 }
