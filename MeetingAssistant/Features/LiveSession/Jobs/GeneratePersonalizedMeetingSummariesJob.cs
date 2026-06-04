@@ -10,6 +10,7 @@ using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace MeetingAssistant.Features.LiveSession.Jobs
 {
@@ -26,6 +27,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         private const string EligibilityReasonParticipantSpoke = "participant_spoke";
         private const string EligibilityReasonParticipantMentioned = "participant_mentioned";
         private const string EligibilityReasonSkippedNoRelevance = "no_personalization_signal_or_transcript_relevance";
+        private const string UniqueViolationSqlState = "23505";
+        private const int SqliteConstraintViolationErrorCode = 19;
+        private const int MaxPersistAttempts = 3;
+        private const string MeetingUserUniqueIndex = "IX_PersonalizedMeetingSummaries_MeetingId_UserId";
+        private const string MeetingParticipantUniqueIndex = "IX_PersonalizedMeetingSummaries_MeetingParticipantId";
 
         private static readonly JsonSerializerOptions PersonalizationJsonOptions = new(JsonSerializerDefaults.Web)
         {
@@ -278,66 +284,13 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             }
 
             var evaluatedAtUtc = DateTime.UtcNow;
-            foreach (var evaluated in evaluatedSummaries)
-            {
-                var summary = await _dbContext.PersonalizedMeetingSummaries
-                    .IgnoreQueryFilters()
-                    .FirstOrDefaultAsync(
-                        x => x.MeetingId == meetingId && x.OrganizationId == organizationId && x.UserId == evaluated.UserId,
-                        cancellationToken);
-
-                if (summary == null)
-                {
-                    summary = new PersonalizedMeetingSummary
-                    {
-                        MeetingId = meetingId,
-                        OrganizationId = organizationId,
-                        MeetingParticipantId = evaluated.MeetingParticipantId,
-                        UserId = evaluated.UserId
-                    };
-
-                    _dbContext.PersonalizedMeetingSummaries.Add(summary);
-                }
-                else
-                {
-                    summary.MeetingParticipantId = evaluated.MeetingParticipantId;
-                }
-
-                summary.Status = evaluated.Status;
-                summary.TargetDisplayName = evaluated.TargetDisplayName;
-                summary.EligibilityReason = evaluated.EligibilityReason;
-                summary.EligibilityContextJson = evaluated.EligibilityContextJson;
-
-                if (evaluated.Status == PersonalizedMeetingSummaryStatus.Generated)
-                {
-                    var summaryResult = evaluated.SummaryResult
-                        ?? throw new InvalidOperationException("Generated personalized summary evaluation is missing a summary result.");
-
-                    summary.SummaryText = summaryResult.SummaryText;
-                    summary.LlmModel = summaryResult.Model;
-                    summary.PromptTokens = summaryResult.PromptTokens;
-                    summary.CompletionTokens = summaryResult.CompletionTokens;
-                    summary.GeneratedAtUtc = evaluatedAtUtc;
-                    summary.PromptName = summaryResult.PromptName;
-                    summary.PromptVersion = summaryResult.PromptVersion;
-                    summary.PersonalizationContextJson = evaluated.PersonalizationContextJson;
-                }
-                else
-                {
-                    summary.SummaryText = null;
-                    summary.LlmModel = null;
-                    summary.PromptTokens = null;
-                    summary.CompletionTokens = null;
-                    summary.GeneratedAtUtc = null;
-                    summary.PromptName = null;
-                    summary.PromptVersion = null;
-                    summary.PersonalizationContextJson = null;
-                }
-
-                TranscriptSourceIdentity.ApplySourceFields(summary, transcriptIdentity);
-            }
-
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await PersistEvaluatedSummariesAsync(
+                meetingId,
+                organizationId,
+                evaluatedSummaries,
+                transcriptIdentity,
+                evaluatedAtUtc,
+                cancellationToken);
 
             var generatedCount = evaluatedSummaries.Count(x => x.Status == PersonalizedMeetingSummaryStatus.Generated);
             var skippedCount = evaluatedSummaries.Count - generatedCount;
@@ -366,6 +319,175 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 generatedCount,
                 skippedCount,
                 meetingId);
+        }
+
+        private async Task PersistEvaluatedSummariesAsync(
+            Guid meetingId,
+            Guid organizationId,
+            IReadOnlyList<EvaluatedPersonalizedSummary> evaluatedSummaries,
+            TranscriptSourceIdentity.Identity transcriptIdentity,
+            DateTime evaluatedAtUtc,
+            CancellationToken cancellationToken)
+        {
+            var userIds = evaluatedSummaries.Select(x => x.UserId).ToList();
+
+            for (var attempt = 1; attempt <= MaxPersistAttempts; attempt++)
+            {
+                try
+                {
+                    await MergeEvaluatedSummariesAsync(
+                        meetingId,
+                        organizationId,
+                        evaluatedSummaries,
+                        transcriptIdentity,
+                        evaluatedAtUtc,
+                        userIds,
+                        cancellationToken);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                    return;
+                }
+                catch (DbUpdateException ex) when (IsPersonalizedSummaryUniqueViolation(ex))
+                {
+                    _dbContext.ChangeTracker.Clear();
+
+                    _logger.LogWarning(
+                        ex,
+                        "Personalized meeting summary persistence hit a unique constraint; retrying merge. MeetingId={MeetingId} Attempt={Attempt}",
+                        meetingId,
+                        attempt);
+
+                    if (attempt >= MaxPersistAttempts)
+                    {
+                        throw;
+                    }
+                }
+            }
+        }
+
+        private async Task MergeEvaluatedSummariesAsync(
+            Guid meetingId,
+            Guid organizationId,
+            IReadOnlyList<EvaluatedPersonalizedSummary> evaluatedSummaries,
+            TranscriptSourceIdentity.Identity transcriptIdentity,
+            DateTime evaluatedAtUtc,
+            IReadOnlyCollection<Guid> userIds,
+            CancellationToken cancellationToken)
+        {
+            var existingByUserId = await _dbContext.PersonalizedMeetingSummaries
+                .IgnoreQueryFilters()
+                .Where(x => x.MeetingId == meetingId
+                            && x.OrganizationId == organizationId
+                            && userIds.Contains(x.UserId))
+                .ToDictionaryAsync(x => x.UserId, cancellationToken);
+
+            foreach (var evaluated in evaluatedSummaries)
+            {
+                if (!existingByUserId.TryGetValue(evaluated.UserId, out var summary))
+                {
+                    summary = new PersonalizedMeetingSummary
+                    {
+                        MeetingId = meetingId,
+                        OrganizationId = organizationId,
+                        MeetingParticipantId = evaluated.MeetingParticipantId,
+                        UserId = evaluated.UserId
+                    };
+
+                    _dbContext.PersonalizedMeetingSummaries.Add(summary);
+                    existingByUserId[evaluated.UserId] = summary;
+                }
+                else if (HasNewerTranscriptSource(summary, transcriptIdentity.TranscriptRevision))
+                {
+                    continue;
+                }
+                else
+                {
+                    summary.MeetingParticipantId = evaluated.MeetingParticipantId;
+                }
+
+                ApplyEvaluatedSummaryFields(summary, evaluated, transcriptIdentity, evaluatedAtUtc);
+            }
+        }
+
+        private static bool HasNewerTranscriptSource(PersonalizedMeetingSummary summary, int evaluatedTranscriptRevision)
+        {
+            return summary.SourceTranscriptRevision.HasValue
+                   && summary.SourceTranscriptRevision.Value > evaluatedTranscriptRevision;
+        }
+
+        private static void ApplyEvaluatedSummaryFields(
+            PersonalizedMeetingSummary summary,
+            EvaluatedPersonalizedSummary evaluated,
+            TranscriptSourceIdentity.Identity transcriptIdentity,
+            DateTime evaluatedAtUtc)
+        {
+            summary.Status = evaluated.Status;
+            summary.TargetDisplayName = evaluated.TargetDisplayName;
+            summary.EligibilityReason = evaluated.EligibilityReason;
+            summary.EligibilityContextJson = evaluated.EligibilityContextJson;
+
+            if (evaluated.Status == PersonalizedMeetingSummaryStatus.Generated)
+            {
+                var summaryResult = evaluated.SummaryResult
+                    ?? throw new InvalidOperationException("Generated personalized summary evaluation is missing a summary result.");
+
+                summary.SummaryText = summaryResult.SummaryText;
+                summary.LlmModel = summaryResult.Model;
+                summary.PromptTokens = summaryResult.PromptTokens;
+                summary.CompletionTokens = summaryResult.CompletionTokens;
+                summary.GeneratedAtUtc = evaluatedAtUtc;
+                summary.PromptName = summaryResult.PromptName;
+                summary.PromptVersion = summaryResult.PromptVersion;
+                summary.PersonalizationContextJson = evaluated.PersonalizationContextJson;
+            }
+            else
+            {
+                summary.SummaryText = null;
+                summary.LlmModel = null;
+                summary.PromptTokens = null;
+                summary.CompletionTokens = null;
+                summary.GeneratedAtUtc = null;
+                summary.PromptName = null;
+                summary.PromptVersion = null;
+                summary.PersonalizationContextJson = null;
+            }
+
+            TranscriptSourceIdentity.ApplySourceFields(summary, transcriptIdentity);
+        }
+
+        private static bool IsPersonalizedSummaryUniqueViolation(DbUpdateException exception)
+        {
+            if (exception.InnerException is PostgresException postgresException
+                && postgresException.SqlState == UniqueViolationSqlState
+                && IsPersonalizedSummaryConstraint(postgresException.ConstraintName))
+            {
+                return true;
+            }
+
+            return IsSqlitePersonalizedSummaryUniqueViolation(exception.InnerException);
+        }
+
+        private static bool IsPersonalizedSummaryConstraint(string? constraintName)
+        {
+            return string.Equals(constraintName, MeetingUserUniqueIndex, StringComparison.Ordinal)
+                   || string.Equals(constraintName, MeetingParticipantUniqueIndex, StringComparison.Ordinal);
+        }
+
+        private static bool IsSqlitePersonalizedSummaryUniqueViolation(Exception? exception)
+        {
+            if (exception?.GetType().FullName != "Microsoft.Data.Sqlite.SqliteException")
+            {
+                return false;
+            }
+
+            var errorCode = exception.GetType().GetProperty("SqliteErrorCode")?.GetValue(exception) as int?;
+            if (errorCode != SqliteConstraintViolationErrorCode)
+            {
+                return false;
+            }
+
+            var message = exception.Message;
+            return message.Contains("PersonalizedMeetingSummaries", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("IX_PersonalizedMeetingSummaries", StringComparison.OrdinalIgnoreCase);
         }
 
         private static PersonalizationContext BuildPersonalizationContext(

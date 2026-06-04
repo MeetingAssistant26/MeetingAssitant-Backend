@@ -15,6 +15,7 @@ using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using System.Collections.Concurrent;
 
 namespace tests.Integration.LiveSession
@@ -193,6 +194,39 @@ namespace tests.Integration.LiveSession
         }
     }
 
+    internal sealed class PersonalizedSummaryRaceSaveChangesInterceptor(
+        Func<DbContext, IEnumerable<PersonalizedMeetingSummary>, CancellationToken, Task> onFirstPersonalizedSummaryInsert)
+        : SaveChangesInterceptor
+    {
+        private int _firstPersonalizedSummarySaveAttempted;
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context is null)
+            {
+                return await base.SavingChangesAsync(eventData, result, cancellationToken);
+            }
+
+            var pendingSummaries = eventData.Context.ChangeTracker
+                .Entries<PersonalizedMeetingSummary>()
+                .Where(x => x.State == EntityState.Added)
+                .Select(x => x.Entity)
+                .ToArray();
+
+            if (pendingSummaries.Length == 0
+                || Interlocked.CompareExchange(ref _firstPersonalizedSummarySaveAttempted, 1, 0) != 0)
+            {
+                return await base.SavingChangesAsync(eventData, result, cancellationToken);
+            }
+
+            await onFirstPersonalizedSummaryInsert(eventData.Context, pendingSummaries, cancellationToken);
+            return await base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
     internal sealed class LiveSessionTestDb : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;
@@ -208,23 +242,40 @@ namespace tests.Integration.LiveSession
             _tenantOrganizationId = tenantOrganizationId;
         }
 
-        public static async Task<LiveSessionTestDb> CreateAsync(Guid? tenantOrganizationId = null)
+        public static Task<LiveSessionTestDb> CreateAsync(Guid? tenantOrganizationId = null)
+            => CreateAsync(tenantOrganizationId, interceptors: null);
+
+        public static async Task<LiveSessionTestDb> CreateAsync(
+            Guid? tenantOrganizationId = null,
+            params IInterceptor[]? interceptors)
         {
             var effectiveTenantId = tenantOrganizationId ?? Guid.NewGuid();
-            return await CreateWithAmbientTenantAsync(effectiveTenantId, effectiveTenantId);
+            return await CreateWithAmbientTenantAsync(effectiveTenantId, effectiveTenantId, interceptors);
         }
+
+        public static Task<LiveSessionTestDb> CreateWithAmbientTenantAsync(
+            Guid? ambientTenantOrganizationId,
+            Guid? defaultOrganizationId = null)
+            => CreateWithAmbientTenantAsync(ambientTenantOrganizationId, defaultOrganizationId, interceptors: null);
 
         public static async Task<LiveSessionTestDb> CreateWithAmbientTenantAsync(
             Guid? ambientTenantOrganizationId,
-            Guid? defaultOrganizationId = null)
+            Guid? defaultOrganizationId = null,
+            params IInterceptor[]? interceptors)
         {
             var effectiveTenantId = defaultOrganizationId ?? ambientTenantOrganizationId ?? Guid.NewGuid();
             var connection = new SqliteConnection("DataSource=:memory:");
             await connection.OpenAsync();
 
-            var options = new DbContextOptionsBuilder<ApplicationDbContext>()
-                .UseSqlite(connection)
-                .Options;
+            var optionsBuilder = new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseSqlite(connection);
+
+            if (interceptors is { Length: > 0 })
+            {
+                optionsBuilder.AddInterceptors(interceptors);
+            }
+
+            var options = optionsBuilder.Options;
 
             var dbContext = new ApplicationDbContext(
                 options,

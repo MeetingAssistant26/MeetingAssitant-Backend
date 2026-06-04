@@ -15,6 +15,8 @@ using MeetingAssistant.Features.Meetings.Jobs;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Rag.Jobs;
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -602,6 +604,8 @@ namespace tests.Integration.LiveSession
             db.DbContext.PersonalizedMeetingSummaries.Count(x => x.Status == PersonalizedMeetingSummaryStatus.Generated).Should().Be(4);
             db.DbContext.PersonalizedMeetingSummaries.Should().ContainSingle(x => x.Status == PersonalizedMeetingSummaryStatus.Skipped && x.UserId == eveId);
             var aliceSummary = db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == aliceId);
+            var aliceSummaryIdAfterFirstRun = aliceSummary.Id;
+            var eveSummaryIdAfterFirstRun = db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == eveId).Id;
             aliceSummary.MeetingParticipantId.Should().Be(aliceParticipantId);
             aliceSummary.Status.Should().Be(PersonalizedMeetingSummaryStatus.Generated);
             aliceSummary.SummaryText.Should().Be("Alice personalized summary v1");
@@ -682,14 +686,179 @@ namespace tests.Integration.LiveSession
             await job.RunAsync(meetingId, orgId);
 
             db.DbContext.PersonalizedMeetingSummaries.Should().HaveCount(5);
+            db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == aliceId).Id.Should().Be(aliceSummaryIdAfterFirstRun);
             db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == aliceId).SummaryText.Should().Be("Alice personalized summary v2");
+            db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == eveId).Id.Should().Be(eveSummaryIdAfterFirstRun);
             db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == eveId).Status.Should().Be(PersonalizedMeetingSummaryStatus.Skipped);
             db.DbContext.PersonalizedMeetingSummaries.Single(x => x.UserId == eveId).SummaryText.Should().BeNull();
+            summarizer.PersonalizedCalls.Should().HaveCount(8);
             var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
             snapshot.Steps.Should().Contain(x =>
                 x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration
                 && x.Status == PostMeetingProcessingStatus.Completed
                 && x.ArtifactType == "personalized_meeting_summary");
+        }
+
+        [Fact]
+        public async Task PersonalizedSummaryGeneration_WhenDuplicateInsertWinsRace_ShouldRetryAndPersistOneSummaryPerParticipant()
+        {
+            Guid? raceAliceUserId = null;
+            Guid? raceAliceParticipantId = null;
+            Guid? raceMeetingId = null;
+            Guid? raceOrganizationId = null;
+
+            await using var db = await LiveSessionTestDb.CreateAsync(interceptors:
+            [
+                new PersonalizedSummaryRaceSaveChangesInterceptor(async (context, pendingSummaries, cancellationToken) =>
+                {
+                    if (raceAliceUserId is null
+                        || raceMeetingId is null
+                        || raceOrganizationId is null
+                        || raceAliceParticipantId is null)
+                    {
+                        return;
+                    }
+
+                    var alicePending = pendingSummaries.FirstOrDefault(x => x.UserId == raceAliceUserId.Value);
+                    if (alicePending == null)
+                    {
+                        return;
+                    }
+
+                    await InsertConflictingPersonalizedSummaryAsync(
+                        context,
+                        raceMeetingId.Value,
+                        raceOrganizationId.Value,
+                        raceAliceParticipantId.Value,
+                        raceAliceUserId.Value,
+                        "race placeholder summary",
+                        cancellationToken);
+                })
+            ]);
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            raceOrganizationId = orgId;
+            raceMeetingId = meetingId;
+
+            raceAliceUserId = db.SeedUser("Alice");
+            var raceBobUserId = db.SeedUser("Bob");
+            raceAliceParticipantId = db.AddParticipant(meetingId, orgId, raceAliceUserId.Value);
+            db.AddParticipant(meetingId, orgId, raceBobUserId);
+
+            db.DbContext.UserOrgMemberships.Add(new UserOrgMembership
+            {
+                OrganizationId = orgId,
+                UserId = raceAliceUserId.Value,
+                OrgRole = OrganizationRole.Member,
+                JobRole = "Backend Lead",
+                IsEnabled = true
+            });
+            var transcript = new MeetingTranscript
+            {
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                FullText = "[00:00:01 Alice] Launch readiness is green.\n[00:00:05 Bob] Timeline remains unchanged.",
+                SegmentsJson = SerializePersistedSegments(
+                    CreatePersistedSegment(raceAliceUserId.Value, "Alice", "Launch readiness is green."),
+                    CreatePersistedSegment(raceBobUserId, "Bob", "Timeline remains unchanged.")),
+                SttModel = "test-stt",
+                GeneratedAtUtc = DateTime.UtcNow
+            };
+            InitializeNew(transcript, transcript.FullText);
+            db.DbContext.MeetingTranscripts.Add(transcript);
+            await db.DbContext.SaveChangesAsync();
+
+            var summarizer = new StubSummarizerService(new SummaryResult(
+                "fallback personalized summary",
+                "personalized-model",
+                1,
+                1,
+                "PersonalizedMeetingSummarizer",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Alice personalized summary",
+                "personalized-model",
+                11,
+                5,
+                "PersonalizedMeetingSummarizer",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            summarizer.EnqueuePersonalizedResult(new SummaryResult(
+                "Bob personalized summary",
+                "personalized-model",
+                12,
+                6,
+                "PersonalizedMeetingSummarizer",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var job = new GeneratePersonalizedMeetingSummariesJob(
+                db.DbContext,
+                summarizer,
+                NullLogger<GeneratePersonalizedMeetingSummariesJob>.Instance,
+                tracker);
+
+            var run = () => job.RunAsync(meetingId, orgId);
+            await run.Should().NotThrowAsync();
+
+            db.DbContext.ChangeTracker.Clear();
+            var summaries = await db.DbContext.PersonalizedMeetingSummaries
+                .IgnoreQueryFilters()
+                .Where(x => x.MeetingId == meetingId && x.OrganizationId == orgId)
+                .ToListAsync();
+            summaries.Should().HaveCount(2);
+            summaries.Select(x => x.UserId).Should().BeEquivalentTo([raceAliceUserId.Value, raceBobUserId]);
+
+            var aliceSummary = summaries.Single(x => x.UserId == raceAliceUserId.Value);
+            aliceSummary.Status.Should().Be(PersonalizedMeetingSummaryStatus.Generated);
+            aliceSummary.SummaryText.Should().Be("Alice personalized summary");
+            aliceSummary.SummaryText.Should().NotBe("race placeholder summary");
+            aliceSummary.SourceTranscriptId.Should().Be(transcript.Id);
+            aliceSummary.SourceTranscriptHash.Should().Be(transcript.TranscriptHash);
+            aliceSummary.SourceTranscriptRevision.Should().Be(transcript.TranscriptRevision);
+
+            var bobSummary = summaries.Single(x => x.UserId == raceBobUserId);
+            bobSummary.Status.Should().Be(PersonalizedMeetingSummaryStatus.Generated);
+            bobSummary.SummaryText.Should().Be("Bob personalized summary");
+            bobSummary.SourceTranscriptId.Should().Be(transcript.Id);
+            bobSummary.SourceTranscriptHash.Should().Be(transcript.TranscriptHash);
+            bobSummary.SourceTranscriptRevision.Should().Be(transcript.TranscriptRevision);
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration
+                && x.Status == PostMeetingProcessingStatus.Completed);
+        }
+
+        private static async Task InsertConflictingPersonalizedSummaryAsync(
+            DbContext context,
+            Guid meetingId,
+            Guid organizationId,
+            Guid meetingParticipantId,
+            Guid userId,
+            string summaryText,
+            CancellationToken cancellationToken)
+        {
+            var connection = (SqliteConnection)context.Database.GetDbConnection();
+            var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+            await using var raceContext = new ApplicationDbContext(
+                options,
+                new Microsoft.AspNetCore.Http.HttpContextAccessor(),
+                new StaticTenantProvider(organizationId),
+                new NoopPublisher());
+            raceContext.PersonalizedMeetingSummaries.Add(new PersonalizedMeetingSummary
+            {
+                MeetingId = meetingId,
+                OrganizationId = organizationId,
+                MeetingParticipantId = meetingParticipantId,
+                UserId = userId,
+                Status = PersonalizedMeetingSummaryStatus.Generated,
+                SummaryText = summaryText,
+                TargetDisplayName = "Alice",
+                GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-5)
+            });
+            await raceContext.SaveChangesAsync(cancellationToken);
         }
 
         [Fact]
