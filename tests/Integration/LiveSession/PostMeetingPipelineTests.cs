@@ -612,7 +612,9 @@ namespace tests.Integration.LiveSession
             aliceSummary.PersonalizationContextJson.Should().Contain("Owns API launch readiness.");
             aliceSummary.PersonalizationContextJson.Should().Contain("Review API launch checklist");
             aliceSummary.EligibilityReason.Should().Be("personalization_signal");
-            aliceSummary.EligibilityContextJson.Should().Contain("hasStrongPersonalizationSignal");
+            aliceSummary.EligibilityContextJson.Should().Contain("\"hasJobRole\":true");
+            aliceSummary.EligibilityContextJson.Should().Contain("\"hasOrganizationContext\":true");
+            aliceSummary.EligibilityContextJson.Should().Contain("\"hasStrongPersonalizationSignal\":true");
             summarizer.PersonalizedCalls.Should().ContainSingle(x =>
                 x.Participant == "Alice"
                 && x.PersonalizationContext != null

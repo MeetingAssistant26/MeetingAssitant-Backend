@@ -52,6 +52,9 @@ public sealed class PromptProviderTests
 
         prompt.Should().Contain("personalized meeting summaries");
         prompt.Should().Contain("Summary for Alice:");
+        prompt.Should().Contain("Role/context relevance:");
+        prompt.Should().Contain(
+            "include exactly one concise Role/context relevance sentence");
         prompt.Should().Contain(context);
         prompt.Should().Contain($"Transcript:{Environment.NewLine}{transcript}");
         prompt.Should().NotContain("{participant}");
@@ -133,6 +136,9 @@ public sealed class PromptProviderTests
         document.RootElement.GetProperty("temperature").GetDouble().Should().Be(0.2);
         var content = document.RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
         content.Should().Contain("Summary for Alice:");
+        content.Should().Contain("Role/context relevance:");
+        content.Should().Contain(
+            "include exactly one concise Role/context relevance sentence");
         content.Should().Contain(context);
         content.Should().Contain($"Transcript:{Environment.NewLine}{transcript}");
         content.Should().NotContain("{participant}");
