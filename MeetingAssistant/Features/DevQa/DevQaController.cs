@@ -38,6 +38,14 @@ public sealed class DevQaController(
     ILogger<DevQaController> logger) : ControllerBase
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private const int MaxOrganizationSlugLength = 100;
+    private const int MaxOrganizationNameLength = 150;
+    private const int MaxMeetingTitleLength = 200;
+    private const int MaxMeetingTagNameLength = 50;
+    private const int MaxGeneratedEmailLength = 100;
+    private const int MaxGeneratedDisplayNameLength = 150;
+    private const int MaxMeetingDescriptionLength = 2000;
+    private const string GeneratedEmailDomain = "@meetingassistant.local";
 
     private readonly ApplicationDbContext _dbContext = dbContext;
     private readonly UserManager<ApplicationUser> _userManager = userManager;
@@ -69,10 +77,12 @@ public sealed class DevQaController(
             ? "qa-scenario"
             : request.Scenario!.Trim();
         var scenarioSlug = Slugify(scenarioName);
-        var orgSlug = Slugify(request.OrganizationSlug ?? $"{scenarioSlug}-{runId}");
-        var orgName = string.IsNullOrWhiteSpace(request.OrganizationName)
-            ? $"QA {scenarioName} {runId}"
-            : request.OrganizationName!.Trim();
+        var orgSlug = BuildQaOrganizationSlug(request.OrganizationSlug ?? $"{scenarioSlug}-{runId}");
+        var orgName = TruncateForStorage(
+            string.IsNullOrWhiteSpace(request.OrganizationName)
+                ? $"QA {scenarioName} {runId}"
+                : request.OrganizationName!,
+            MaxOrganizationNameLength);
 
         var requestedUsers = request.Users is { Count: > 0 }
             ? request.Users
@@ -101,10 +111,12 @@ public sealed class DevQaController(
         foreach (var requestedUser in requestedUsers)
         {
             var label = NormalizeLabel(requestedUser.Label);
-            var email = $"qa+{scenarioSlug}-{runId}-{label}@meetingassistant.local";
-            var displayName = string.IsNullOrWhiteSpace(requestedUser.DisplayName)
-                ? $"QA {label}"
-                : requestedUser.DisplayName!.Trim();
+            var email = BuildQaGeneratedEmail(scenarioSlug, runId, label);
+            var displayName = TruncateForStorage(
+                string.IsNullOrWhiteSpace(requestedUser.DisplayName)
+                    ? $"QA {label}"
+                    : requestedUser.DisplayName!,
+                MaxGeneratedDisplayNameLength);
             var password = string.IsNullOrWhiteSpace(requestedUser.Password)
                 ? "Password#123"
                 : requestedUser.Password!;
@@ -160,7 +172,10 @@ public sealed class DevQaController(
             if (string.IsNullOrWhiteSpace(tagName))
                 continue;
 
-            var normalizedTagName = tagName.Trim();
+            var normalizedTagName = TruncateForStorage(tagName, MaxMeetingTagNameLength);
+            if (string.IsNullOrWhiteSpace(normalizedTagName))
+                continue;
+
             if (tagsByName.ContainsKey(normalizedTagName))
                 continue;
 
@@ -180,10 +195,14 @@ public sealed class DevQaController(
         var meeting = new Meeting
         {
             OrganizationId = organization.Id,
-            Title = string.IsNullOrWhiteSpace(meetingRequest.Title)
-                ? $"QA {scenarioName} {runId}"
-                : meetingRequest.Title!.Trim(),
-            Description = meetingRequest.Description ?? $"Autonomous QA scenario {scenarioName} created at {now:O}.",
+            Title = TruncateForStorage(
+                string.IsNullOrWhiteSpace(meetingRequest.Title)
+                    ? $"QA {scenarioName} {runId}"
+                    : meetingRequest.Title!,
+                MaxMeetingTitleLength),
+            Description = TruncateForStorage(
+                meetingRequest.Description ?? $"Autonomous QA scenario {scenarioName} created at {now:O}.",
+                MaxMeetingDescriptionLength),
             ScheduledStartUtc = meetingRequest.ScheduledStartUtc ?? now.AddMinutes(-5),
             ScheduledEndUtc = meetingRequest.ScheduledEndUtc ?? now.AddHours(1),
             Status = meetingRequest.Status ?? MeetingStatus.Scheduled,
@@ -939,6 +958,91 @@ public sealed class DevQaController(
         return string.IsNullOrWhiteSpace(value)
             ? $"user-{Guid.NewGuid():N}"[..13]
             : Slugify(value);
+    }
+
+    private static string TruncateForStorage(string value, int maxLength)
+    {
+        if (maxLength <= 0)
+            return string.Empty;
+
+        var trimmed = (value ?? string.Empty).Trim();
+        if (trimmed.Length <= maxLength)
+            return trimmed;
+
+        var length = maxLength;
+        if (length > 0 && char.IsHighSurrogate(trimmed[length - 1]))
+            length--;
+
+        return length <= 0
+            ? string.Empty
+            : trimmed[..length].Trim();
+    }
+
+    private static string BuildQaOrganizationSlug(string requestedOrDefault)
+    {
+        var slug = string.IsNullOrWhiteSpace(requestedOrDefault)
+            ? "qa-scenario"
+            : Slugify(requestedOrDefault);
+
+        if (string.IsNullOrWhiteSpace(slug))
+            slug = "qa-scenario";
+
+        if (slug.Length <= MaxOrganizationSlugLength)
+            return slug;
+
+        var hash = ShortHash(slug);
+        var prefixLength = Math.Max(0, MaxOrganizationSlugLength - hash.Length - 1);
+        var prefix = TruncateForStorage(slug, prefixLength).Trim('-');
+        return string.IsNullOrWhiteSpace(prefix)
+            ? TruncateForStorage(hash, MaxOrganizationSlugLength)
+            : $"{prefix}-{hash}";
+    }
+
+    private static string BuildQaGeneratedEmail(string scenarioSlug, string runId, string label)
+    {
+        var hash = ShortHash($"{scenarioSlug}|{runId}|{label}");
+        var shortScenario = TruncateSlugSegment(scenarioSlug, 20);
+        var shortRun = TruncateSlugSegment(runId, 24);
+        var localBudget = MaxGeneratedEmailLength - GeneratedEmailDomain.Length;
+        var labelBudget = localBudget
+                          - "qa+".Length
+                          - shortScenario.Length
+                          - shortRun.Length
+                          - hash.Length
+                          - 3; // hyphen separators
+
+        if (labelBudget < 1)
+        {
+            shortRun = TruncateSlugSegment(shortRun, Math.Max(1, shortRun.Length + labelBudget - 1));
+            labelBudget = localBudget
+                          - "qa+".Length
+                          - shortScenario.Length
+                          - shortRun.Length
+                          - hash.Length
+                          - 3;
+        }
+
+        var shortLabel = TruncateSlugSegment(label, Math.Max(1, labelBudget));
+        var email = $"qa+{shortScenario}-{shortRun}-{shortLabel}-{hash}{GeneratedEmailDomain}";
+        return email.Length <= MaxGeneratedEmailLength
+            ? email
+            : $"qa+{hash}{GeneratedEmailDomain}";
+    }
+
+    private static string ShortHash(string value, int chars = 10)
+    {
+        if (chars <= 0)
+            return string.Empty;
+
+        var hash = Sha256(value);
+        return hash[..Math.Min(chars, hash.Length)];
+    }
+
+    private static string TruncateSlugSegment(string value, int maxLength)
+    {
+        var slug = Slugify(value);
+        var truncated = TruncateForStorage(slug, maxLength).Trim('-');
+        return string.IsNullOrWhiteSpace(truncated) ? "qa" : truncated;
     }
 
     private static string Slugify(string value)
