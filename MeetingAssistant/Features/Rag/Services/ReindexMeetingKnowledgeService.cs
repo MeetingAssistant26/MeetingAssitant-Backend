@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.LiveSession.Models;
+using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Rag.Models;
@@ -37,6 +38,32 @@ namespace MeetingAssistant.Features.Rag.Services
                 .Select(x => new MeetingSnapshot(x.Id, x.OrganizationId, x.Title))
                 .FirstOrDefaultAsync(cancellationToken)
                 ?? throw new InvalidOperationException($"Meeting '{meetingId}' was not found for knowledge indexing.");
+
+            var transcript = await _dbContext.MeetingTranscripts
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.OrganizationId == organizationId && x.MeetingId == meetingId, cancellationToken);
+
+            if (transcript is null || string.IsNullOrWhiteSpace(transcript.FullText))
+            {
+                _logger.LogInformation(
+                    "Knowledge reindex skipped because meeting transcript was unavailable. MeetingId={MeetingId} OrganizationId={OrganizationId}",
+                    meetingId,
+                    organizationId);
+
+                return new ReindexMeetingKnowledgeResult(Guid.NewGuid(), 0, 0, Array.Empty<Guid>());
+            }
+
+            if (!MeetingTranscriptCompletenessGuard.IsCompleteForDownstream(transcript))
+            {
+                _logger.LogInformation(
+                    "Knowledge reindex skipped because meeting transcript is incomplete. MeetingId={MeetingId} OrganizationId={OrganizationId} CompletenessStatus={CompletenessStatus}",
+                    meetingId,
+                    organizationId,
+                    transcript.CompletenessStatus);
+
+                return new ReindexMeetingKnowledgeResult(Guid.NewGuid(), 0, 0, Array.Empty<Guid>());
+            }
 
             var confirmedTags = await LoadConfirmedTagsAsync(organizationId, meetingId, cancellationToken);
             var artifacts = await BuildArtifactsAsync(meeting, confirmedTags, cancellationToken);

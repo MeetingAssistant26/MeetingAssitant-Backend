@@ -134,6 +134,36 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     return;
                 }
 
+                if (!MeetingTranscriptCompletenessGuard.IsCompleteForDownstream(transcript))
+                {
+                    if (_postMeetingProcessingTracker is not null)
+                    {
+                        await _postMeetingProcessingTracker.SkipStepAsync(
+                            organizationId,
+                            meetingId,
+                            PostMeetingProcessingStepType.ActionExtraction,
+                            message: MeetingTranscriptCompletenessGuard.BuildIncompleteMessage(transcript),
+                            cancellationToken: cancellationToken);
+
+                        await _postMeetingProcessingTracker.RecordEventAsync(
+                            organizationId,
+                            meetingId,
+                            PostMeetingProcessingEventType.Info,
+                            PostMeetingProcessingStepType.ActionExtraction,
+                            PostMeetingProcessingStatus.Skipped,
+                            message: "Action item extraction skipped because meeting transcript is incomplete.",
+                            errorCode: MeetingTranscriptCompletenessGuard.IncompleteErrorCode,
+                            errorMessage: MeetingTranscriptCompletenessGuard.BuildIncompleteMessage(transcript),
+                            cancellationToken: cancellationToken);
+                    }
+
+                    _logger.LogWarning(
+                        "Action item extraction skipped because meeting transcript is incomplete. MeetingId={MeetingId} CompletenessStatus={CompletenessStatus}",
+                        meetingId,
+                        transcript.CompletenessStatus);
+                    return;
+                }
+
                 var participants = await _dbContext.MeetingParticipants
                     .AsNoTracking()
                     .IgnoreQueryFilters()

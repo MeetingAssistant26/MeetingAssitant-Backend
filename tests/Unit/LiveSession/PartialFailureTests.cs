@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using FluentAssertions;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
@@ -5,6 +6,9 @@ using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using MeetingAssistant.Features.Rag.Jobs;
+using MeetingAssistant.Features.Rag.Services;
+using MeetingAssistant.Infrastructure.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using tests.Integration.LiveSession;
 using Xunit;
@@ -14,7 +18,7 @@ namespace tests.Unit.LiveSession
     public class PartialFailureTests
     {
         [Fact]
-        public async Task TranscriptAndSummary_ShouldStillBeGenerated_WhenOneTrackTranscriptionFails()
+        public async Task SttFailure_ShouldNotMarkAudioFragmentFailed_AndShouldRecordRetryableSttMetadata()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
@@ -22,29 +26,22 @@ namespace tests.Unit.LiveSession
 
             var user1 = db.SeedUser("Alice");
             var user2 = db.SeedUser("Bob");
-            var user3 = db.SeedUser("Carol");
 
             db.AddParticipant(meetingId, orgId, user1);
             db.AddParticipant(meetingId, orgId, user2);
-            db.AddParticipant(meetingId, orgId, user3);
 
             var key1 = $"tracks/{meetingId}/{user1}.ogg";
             var key2 = $"tracks/{meetingId}/{user2}.ogg";
-            var key3 = $"tracks/{meetingId}/{user3}.ogg";
 
             db.AddAvailableAudioFragment(meetingId, orgId, user1, key1, "TR_USER_1");
             var failedFragmentId = db.AddAvailableAudioFragment(meetingId, orgId, user2, key2, "TR_USER_2");
-            db.AddAvailableAudioFragment(meetingId, orgId, user3, key3, "TR_USER_3");
 
             var stt = new StubSttService(
                 new Dictionary<string, TrackTranscriptionResult>
                 {
                     [key1] = new(
                         "whisper-large-v3",
-                        [new TranscriptSegment(user1, 0, 1_000, "alice update", 0.95)]),
-                    [key3] = new(
-                        "whisper-large-v3",
-                        [new TranscriptSegment(user3, 2_000, 3_000, "carol decision", 0.9)])
+                        [new TranscriptSegment(user1, 0, 1_000, "alice update", 0.95)])
                 },
                 new Dictionary<string, Exception>
                 {
@@ -62,42 +59,191 @@ namespace tests.Unit.LiveSession
 
             var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
             transcript.FullText.Should().Contain("alice update");
-            transcript.FullText.Should().Contain("carol decision");
             transcript.FullText.Should().NotContain("Bob");
+            transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.CompletedWithWarnings);
+            transcript.RetryableFailedAudioFragmentCount.Should().Be(1);
+            transcript.MissingAudioFragmentIdsJson.Should().Contain(failedFragmentId.ToString());
 
             var failedFragment = db.DbContext.ParticipantAudioFragments.Single(x => x.Id == failedFragmentId);
-            failedFragment.Status.Should().Be(ParticipantAudioFragmentStatus.Failed);
-            failedFragment.FailureCode.Should().Be("stt_failed");
-            failedFragment.FailureMessage.Should().Contain("simulated stt failure");
-            failedFragment.FailedAtUtc.Should().NotBeNull();
+            failedFragment.Status.Should().Be(ParticipantAudioFragmentStatus.Available);
+            failedFragment.StorageObjectKey.Should().Be(key2);
+            failedFragment.SttStatus.Should().Be(ParticipantAudioFragmentSttStatus.FailedRetryable);
+            failedFragment.SttAttemptCount.Should().Be(1);
+            failedFragment.SttFailureCode.Should().Be("stt_failed");
+            failedFragment.SttFailureMessage.Should().Contain("simulated stt failure");
+            failedFragment.FailureCode.Should().BeNull();
+            failedFragment.FailedAtUtc.Should().BeNull();
 
-            db.DbContext.ParticipantAudioFragments
-                .Where(x => x.Id != failedFragmentId)
-                .Select(x => x.Status)
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
                 .Should()
-                .OnlyContain(x => x == ParticipantAudioFragmentStatus.Available);
+                .BeEmpty();
+        }
+
+        [Fact]
+        public async Task SecondTranscriptRun_ShouldRetryPreviouslySttFailedFragment_AndPublishCompleteTranscript()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+
+            var aliceId = db.SeedUser("Alice");
+            var bobId = db.SeedUser("Bob");
+            db.AddParticipant(meetingId, orgId, aliceId);
+            db.AddParticipant(meetingId, orgId, bobId);
+
+            var aliceKey = $"tracks/{meetingId}/{aliceId}.ogg";
+            var bobKey = $"tracks/{meetingId}/{bobId}.ogg";
+            var bobFragmentId = db.AddAvailableAudioFragment(meetingId, orgId, bobId, bobKey, "TR_BOB");
+            db.AddAvailableAudioFragment(meetingId, orgId, aliceId, aliceKey, "TR_ALICE");
+
+            var stt = new FailOnceThenSucceedSttService(
+                bobKey,
+                new InvalidOperationException("simulated first-pass stt failure"),
+                new Dictionary<string, TrackTranscriptionResult>
+                {
+                    [aliceKey] = new(
+                        "whisper-large-v3",
+                        [new TranscriptSegment(aliceId, 0, 1_000, "alice spoke", 0.95)]),
+                    [bobKey] = new(
+                        "whisper-large-v3",
+                        [new TranscriptSegment(bobId, 2_000, 3_000, "bob spoke", 0.9)])
+                });
+
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+            publisher.Notifications.OfType<MeetingTranscriptReadyEvent>().Should().BeEmpty();
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.FullText.Should().Contain("alice spoke");
+            transcript.FullText.Should().Contain("bob spoke");
+            transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.Complete);
+
+            var bobFragment = db.DbContext.ParticipantAudioFragments.Single(x => x.Id == bobFragmentId);
+            bobFragment.Status.Should().Be(ParticipantAudioFragmentStatus.Available);
+            bobFragment.SttStatus.Should().Be(ParticipantAudioFragmentSttStatus.Succeeded);
+            bobFragment.SttAttemptCount.Should().Be(2);
 
             publisher.Notifications
                 .OfType<MeetingTranscriptReadyEvent>()
                 .Should()
                 .ContainSingle(x => x.MeetingId == meetingId);
+        }
 
-            var summarizer = new StubSummarizerService(new SummaryResult(
-                "Partial summary generated.",
-                "gpt-4o-mini",
-                50,
-                20));
+        [Fact]
+        public async Task PartialTranscript_ShouldPersistCompletedWithWarningsMetadata()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var aliceId = db.SeedUser("Alice");
+            var bobId = db.SeedUser("Bob");
+            db.AddParticipant(meetingId, orgId, aliceId);
+            db.AddParticipant(meetingId, orgId, bobId);
+
+            var aliceKey = $"tracks/{meetingId}/{aliceId}.ogg";
+            var bobKey = $"tracks/{meetingId}/{bobId}.ogg";
+            var bobFragmentId = db.AddAvailableAudioFragment(meetingId, orgId, bobId, bobKey, "TR_BOB");
+            db.AddAvailableAudioFragment(meetingId, orgId, aliceId, aliceKey, "TR_ALICE");
+
+            var stt = new StubSttService(
+                new Dictionary<string, TrackTranscriptionResult>
+                {
+                    [aliceKey] = new(
+                        "whisper-large-v3",
+                        [new TranscriptSegment(aliceId, 0, 1_000, "alice only", 0.95)])
+                },
+                new Dictionary<string, Exception>
+                {
+                    [bobKey] = new InvalidOperationException("bob stt failed")
+                });
+
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                new CollectingPublisher(),
+                NullLogger<GenerateMeetingTranscriptJob>.Instance,
+                tracker);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.CompletedWithWarnings);
+            transcript.ExpectedAudioFragmentCount.Should().Be(2);
+            transcript.TranscribedAudioFragmentCount.Should().Be(1);
+            transcript.RetryableFailedAudioFragmentCount.Should().Be(1);
+            transcript.MissingAudioFragmentIdsJson.Should().Contain(bobFragmentId.ToString());
+            transcript.WarningsJson.Should().Contain("Degraded transcript");
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.Stt
+                && x.Status == PostMeetingProcessingStatus.CompletedWithWarnings);
+            snapshot.Run!.Status.Should().Be(PostMeetingProcessingStatus.CompletedWithWarnings);
+        }
+
+        [Fact]
+        public async Task DownstreamJobs_ShouldSkipWhenTranscriptIsIncomplete()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+
+            db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+            {
+                MeetingId = meetingId,
+                OrganizationId = orgId,
+                FullText = "partial transcript only",
+                SegmentsJson = "[]",
+                SttModel = "whisper-large-v3",
+                GeneratedAtUtc = DateTime.UtcNow,
+                CompletenessStatus = MeetingTranscriptCompletenessStatus.CompletedWithWarnings,
+                ExpectedAudioFragmentCount = 2,
+                TranscribedAudioFragmentCount = 1,
+                RetryableFailedAudioFragmentCount = 1
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var summarizer = new StubSummarizerService(new SummaryResult("should not run", "gpt-4o-mini", 1, 1));
 
             var summaryJob = new GenerateMeetingSummaryJob(
                 db.DbContext,
                 summarizer,
-                NullLogger<GenerateMeetingSummaryJob>.Instance);
-
+                NullLogger<GenerateMeetingSummaryJob>.Instance,
+                tracker);
             await summaryJob.RunAsync(meetingId, orgId);
 
-            var summary = db.DbContext.MeetingSummaries.Single(x => x.MeetingId == meetingId);
-            summary.SummaryText.Should().Be("Partial summary generated.");
-            summarizer.LastTranscript.Should().Be(transcript.FullText);
+            db.DbContext.MeetingSummaries.Should().BeEmpty();
+            summarizer.LastTranscript.Should().BeNull();
+
+            var ragJob = new ReindexMeetingKnowledgeJob(
+                db.DbContext,
+                new ReindexMeetingKnowledgeService(
+                    db.DbContext,
+                    new NoopEmbeddingService(),
+                    NullLogger<ReindexMeetingKnowledgeService>.Instance),
+                NullLogger<ReindexMeetingKnowledgeJob>.Instance,
+                tracker);
+            await ragJob.RunAsync(meetingId, orgId);
+            db.DbContext.KnowledgeDocuments.Where(x => x.MeetingId == meetingId).Should().BeEmpty();
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.SummaryGeneration
+                && x.Status == PostMeetingProcessingStatus.Skipped);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing
+                && x.Status == PostMeetingProcessingStatus.Skipped);
         }
 
         [Fact]
@@ -171,7 +317,7 @@ namespace tests.Unit.LiveSession
         }
 
         [Fact]
-        public async Task TranscriptGeneration_ShouldMarkFragmentFailed_WhenSttReturnsNoSegments()
+        public async Task SttNoSegments_ShouldRecordRetryableSttMetadataWithoutMarkingAudioFragmentFailed()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
@@ -201,10 +347,12 @@ namespace tests.Unit.LiveSession
             publisher.Notifications.OfType<MeetingTranscriptReadyEvent>().Should().BeEmpty();
 
             var failedFragment = db.DbContext.ParticipantAudioFragments.Single(x => x.Id == fragmentId);
-            failedFragment.Status.Should().Be(ParticipantAudioFragmentStatus.Failed);
-            failedFragment.FailureCode.Should().Be("stt_failed");
-            failedFragment.FailureMessage.Should().Contain("no transcript segments");
-            failedFragment.FailedAtUtc.Should().NotBeNull();
+            failedFragment.Status.Should().Be(ParticipantAudioFragmentStatus.Available);
+            failedFragment.SttStatus.Should().Be(ParticipantAudioFragmentSttStatus.FailedRetryable);
+            failedFragment.SttFailureCode.Should().Be("stt_no_segments");
+            failedFragment.SttFailureMessage.Should().Contain("no transcript segments");
+            failedFragment.FailureCode.Should().BeNull();
+            failedFragment.FailedAtUtc.Should().BeNull();
 
             var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
             snapshot.Steps.Should().ContainSingle(x =>
@@ -246,6 +394,44 @@ namespace tests.Unit.LiveSession
                 .OfType<MeetingTranscriptReadyEvent>()
                 .Should()
                 .ContainSingle(x => x.MeetingId == meetingId);
+        }
+
+        private sealed class NoopEmbeddingService : IEmbeddingService
+        {
+            public EmbeddingMetadata Metadata { get; } = new("noop", "noop", 1);
+
+            public Task<float[]> EmbedAsync(string text, CancellationToken cancellationToken = default)
+                => Task.FromResult(Array.Empty<float>());
+
+            public Task<float[][]> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken = default)
+                => Task.FromResult(texts.Select(_ => Array.Empty<float>()).ToArray());
+        }
+
+        private sealed class FailOnceThenSucceedSttService(
+            string failObjectKey,
+            Exception firstFailure,
+            IReadOnlyDictionary<string, TrackTranscriptionResult> resultsByObjectKey) : ISttService
+        {
+            private readonly ConcurrentDictionary<string, int> _attemptCounts = new(StringComparer.Ordinal);
+
+            public Task<TrackTranscriptionResult> TranscribeTrackAsync(
+                Guid participantUserId,
+                string storageObjectKey,
+                CancellationToken ct = default)
+            {
+                var attempt = _attemptCounts.AddOrUpdate(storageObjectKey, 1, (_, current) => current + 1);
+                if (string.Equals(storageObjectKey, failObjectKey, StringComparison.Ordinal) && attempt == 1)
+                {
+                    throw firstFailure;
+                }
+
+                if (resultsByObjectKey.TryGetValue(storageObjectKey, out var result))
+                {
+                    return Task.FromResult(result);
+                }
+
+                throw new KeyNotFoundException($"No STT result configured for object key '{storageObjectKey}'.");
+            }
         }
     }
 }

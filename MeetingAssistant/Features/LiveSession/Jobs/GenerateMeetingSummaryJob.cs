@@ -61,6 +61,36 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return;
             }
 
+            if (!MeetingTranscriptCompletenessGuard.IsCompleteForDownstream(transcript))
+            {
+                if (_postMeetingProcessingTracker is not null)
+                {
+                    await _postMeetingProcessingTracker.SkipStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.SummaryGeneration,
+                        message: MeetingTranscriptCompletenessGuard.BuildIncompleteMessage(transcript),
+                        cancellationToken: cancellationToken);
+
+                    await _postMeetingProcessingTracker.RecordEventAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingEventType.Info,
+                        PostMeetingProcessingStepType.SummaryGeneration,
+                        PostMeetingProcessingStatus.Skipped,
+                        message: "Summary generation skipped because meeting transcript is incomplete.",
+                        errorCode: MeetingTranscriptCompletenessGuard.IncompleteErrorCode,
+                        errorMessage: MeetingTranscriptCompletenessGuard.BuildIncompleteMessage(transcript),
+                        cancellationToken: cancellationToken);
+                }
+
+                _logger.LogInformation(
+                    "Summary generation skipped because meeting transcript is incomplete. MeetingId={MeetingId} CompletenessStatus={CompletenessStatus}",
+                    meetingId,
+                    transcript.CompletenessStatus);
+                return;
+            }
+
             SummaryResult summaryResult;
             try
             {

@@ -153,6 +153,7 @@ public sealed class ReindexMeetingKnowledgeTests(MeetingAssistantWebFactory fact
             new ThrowingEmbeddingService(),
             NullLogger<ReindexMeetingKnowledgeService>.Instance);
         var failingJob = new ReindexMeetingKnowledgeJob(
+            db,
             failingService,
             NullLogger<ReindexMeetingKnowledgeJob>.Instance,
             new PostMeetingProcessingTracker(db));
