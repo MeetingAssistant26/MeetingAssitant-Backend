@@ -6,6 +6,7 @@ using FluentAssertions;
 using MeetingAssistant.Features.AgentApi.Models.Responses;
 using MeetingAssistant.Features.DevQa;
 using MeetingAssistant.Features.LiveSession.Models;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Rag.Models;
@@ -362,6 +363,77 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
                 [new QaSttFailureRuleRequest("qa/mtg:test/user:bob/track-bob.wav", FailCount: 1)]));
 
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task StalePostProcessingTrackerState_ShouldSeedCompletedSttStepWithOldHangfireJobId()
+    {
+        var scenario = await CreateScenarioAsync("qa-post-processing-attribution-seed");
+        var alice = scenario.Users["alice"];
+
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var fragment = new ParticipantAudioFragment
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = scenario.OrganizationId,
+            MeetingId = scenario.MeetingId,
+            ParticipantUserId = alice.UserId,
+            TrackSid = "qa-attribution-track",
+            StorageObjectKey = $"qa/mtg:{scenario.MeetingId}/user:{alice.UserId}/track-attribution.wav",
+            StorageLocation = "qa",
+            Status = ParticipantAudioFragmentStatus.Available,
+            SttStatus = ParticipantAudioFragmentSttStatus.NotStarted,
+            StorageAvailableAtUtc = DateTime.UtcNow
+        };
+        db.ParticipantAudioFragments.Add(fragment);
+        await db.SaveChangesAsync();
+
+        const string oldHangfireJobId = "qa-old-stt-job";
+        var response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/post-processing/stale-tracker-state",
+            new QaStalePostProcessingTrackerStateRequest(
+                scenario.OrganizationId,
+                StepType: "Stt",
+                OldHangfireJobId: oldHangfireJobId,
+                Status: "Completed",
+                CompleteRun: true));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await response.Content.ReadFromJsonAsync<QaStalePostProcessingTrackerStateResponse>();
+        body.Should().NotBeNull();
+        body!.OrganizationId.Should().Be(scenario.OrganizationId);
+        body.MeetingId.Should().Be(scenario.MeetingId);
+        body.RunId.Should().NotBeEmpty();
+        body.PipelineGenerationId.Should().NotBeEmpty();
+        body.StepId.Should().NotBeEmpty();
+        body.OldHangfireJobId.Should().Be(oldHangfireJobId);
+        body.StepType.Should().Be(PostMeetingProcessingStepType.Stt.ToString());
+        body.StepStatus.Should().Be(PostMeetingProcessingStatus.Completed.ToString());
+        body.FragmentIds.Should().ContainSingle().Which.Should().Be(fragment.Id);
+
+        var statusResponse = await Client.GetAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/processing-status?organizationId={scenario.OrganizationId}");
+        statusResponse.EnsureSuccessStatusCode();
+        var status = await statusResponse.Content.ReadFromJsonAsync<QaProcessingStatusResponse>();
+        status.Should().NotBeNull();
+        status!.PostProcessingRuns.Should().ContainSingle(x => x.Id == body.RunId);
+        status.PostProcessingSteps.Should().ContainSingle(step =>
+            step.StepType == PostMeetingProcessingStepType.Stt.ToString()
+            && step.Status == PostMeetingProcessingStatus.Completed.ToString()
+            && step.RelatedHangfireJobId == oldHangfireJobId);
+    }
+
+    [Fact]
+    public async Task StalePostProcessingTrackerState_WithoutFragments_ShouldReturnBadRequest()
+    {
+        var scenario = await CreateScenarioAsync("qa-post-processing-attribution-no-fragments");
+
+        var response = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/post-processing/stale-tracker-state",
+            new QaStalePostProcessingTrackerStateRequest(scenario.OrganizationId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
     [Fact]

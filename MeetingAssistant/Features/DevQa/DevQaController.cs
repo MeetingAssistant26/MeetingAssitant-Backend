@@ -12,6 +12,7 @@ using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Rag.Jobs;
@@ -874,6 +875,100 @@ public sealed class DevQaController(
         return Ok(await BuildProcessingStatusAsync(organizationId, meetingId, cancellationToken));
     }
 
+    [HttpPost("meetings/{meetingId:guid}/post-processing/stale-tracker-state")]
+    [ProducesResponseType(typeof(QaStalePostProcessingTrackerStateResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> SeedStalePostProcessingTrackerState(
+        [FromRoute] Guid meetingId,
+        [FromBody] QaStalePostProcessingTrackerStateRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (request is null)
+            return BadRequest(new { error = "Request body is required." });
+
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest(new { error = "OrganizationId is required." });
+
+        var meetingExists = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Id == meetingId && x.OrganizationId == request.OrganizationId, cancellationToken);
+        if (!meetingExists)
+            return NotFound(new { error = "Meeting not found for organization." });
+
+        if (!TryParsePostProcessingStepType(request.StepType, out var stepType))
+            return BadRequest(new { error = $"Unsupported stepType '{request.StepType}'." });
+
+        if (!TryParsePostProcessingStatus(request.Status, out var stepStatus))
+            return BadRequest(new { error = $"Unsupported status '{request.Status}' for stale tracker seeding." });
+
+        if (stepStatus != PostMeetingProcessingStatus.Completed)
+            return BadRequest(new { error = "Only Completed step status is supported for stale tracker seeding." });
+
+        var fragments = await _dbContext.ParticipantAudioFragments
+            .IgnoreQueryFilters()
+            .Where(x => x.MeetingId == meetingId
+                        && x.OrganizationId == request.OrganizationId
+                        && x.Status == ParticipantAudioFragmentStatus.Available
+                        && x.StorageObjectKey != null)
+            .OrderBy(x => x.CreatedAtUtc)
+            .ThenBy(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        if (fragments.Count == 0)
+        {
+            return BadRequest(new
+            {
+                error = "No available uploaded audio fragments exist for this meeting. Upload audio before seeding stale tracker state."
+            });
+        }
+
+        var oldHangfireJobId = string.IsNullOrWhiteSpace(request.OldHangfireJobId)
+            ? "qa-old-stt-job"
+            : request.OldHangfireJobId.Trim();
+        var fragmentIds = fragments.Select(x => x.Id).ToList();
+        var artifact = new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: fragmentIds);
+
+        var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+        var run = await tracker.EnsureRunAsync(
+            request.OrganizationId,
+            meetingId,
+            relatedHangfireJobId: oldHangfireJobId,
+            cancellationToken: cancellationToken);
+
+        var step = await tracker.CompleteStepAsync(
+            request.OrganizationId,
+            meetingId,
+            stepType,
+            relatedHangfireJobId: oldHangfireJobId,
+            message: "QA stale post-processing tracker state seeded.",
+            artifact: artifact,
+            cancellationToken: cancellationToken);
+
+        if (request.CompleteRun)
+        {
+            run = await tracker.CompleteRunAsync(
+                request.OrganizationId,
+                meetingId,
+                relatedHangfireJobId: oldHangfireJobId,
+                message: "QA stale post-processing run completion seeded.",
+                cancellationToken: cancellationToken);
+        }
+
+        return Ok(new QaStalePostProcessingTrackerStateResponse(
+            request.OrganizationId,
+            meetingId,
+            run.Id,
+            run.PipelineGenerationId,
+            step.Id,
+            oldHangfireJobId,
+            step.StepType.ToString(),
+            step.Status.ToString(),
+            run.Status.ToString(),
+            fragmentIds));
+    }
+
     [HttpPost("meetings/{meetingId:guid}/rag/fixture-artifacts")]
     [ProducesResponseType(typeof(QaRagFixtureArtifactsResponse), StatusCodes.Status200OK)]
     public async Task<IActionResult> SeedRagFixtureArtifacts(
@@ -1495,6 +1590,28 @@ public sealed class DevQaController(
                                                           or "Skipped");
     }
 
+    private static bool TryParsePostProcessingStepType(string? value, out PostMeetingProcessingStepType stepType)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            stepType = PostMeetingProcessingStepType.Stt;
+            return true;
+        }
+
+        return Enum.TryParse(value, ignoreCase: true, out stepType);
+    }
+
+    private static bool TryParsePostProcessingStatus(string? value, out PostMeetingProcessingStatus status)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            status = PostMeetingProcessingStatus.Completed;
+            return true;
+        }
+
+        return Enum.TryParse(value, ignoreCase: true, out status);
+    }
+
     private static IReadOnlyList<string> NormalizeJobs(IReadOnlyList<string>? jobs)
     {
         if (jobs is null || jobs.Count == 0)
@@ -2061,6 +2178,25 @@ public sealed record QaPostProcessingEventStatusResponse(
     string? ErrorCode,
     string? ErrorMessage,
     DateTime CreatedAtUtc);
+
+public sealed record QaStalePostProcessingTrackerStateRequest(
+    Guid OrganizationId,
+    string? StepType = "Stt",
+    string? OldHangfireJobId = "qa-old-stt-job",
+    string? Status = "Completed",
+    bool CompleteRun = true);
+
+public sealed record QaStalePostProcessingTrackerStateResponse(
+    Guid OrganizationId,
+    Guid MeetingId,
+    Guid RunId,
+    Guid PipelineGenerationId,
+    Guid StepId,
+    string OldHangfireJobId,
+    string StepType,
+    string StepStatus,
+    string RunStatus,
+    IReadOnlyList<Guid> FragmentIds);
 
 public sealed record QaRagFixtureArtifactsRequest(
     Guid OrganizationId,
