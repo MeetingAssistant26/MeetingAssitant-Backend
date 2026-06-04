@@ -73,45 +73,6 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
 
             try
             {
-                var existingCount = await _dbContext.ActionItems
-                    .IgnoreQueryFilters()
-                    .CountAsync(x => x.OrganizationId == organizationId && x.MeetingId == meetingId, cancellationToken);
-
-                if (existingCount > 0)
-                {
-                    if (_postMeetingProcessingTracker is not null)
-                    {
-                        var existingIds = await _dbContext.ActionItems
-                            .IgnoreQueryFilters()
-                            .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
-                            .Select(x => x.Id)
-                            .ToListAsync(cancellationToken);
-
-                        await _postMeetingProcessingTracker.CompleteStepAsync(
-                            organizationId,
-                            meetingId,
-                            PostMeetingProcessingStepType.ActionExtraction,
-                            message: "Action items already exist for meeting. Skipping extraction.",
-                            artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: existingIds),
-                            cancellationToken: cancellationToken);
-                    }
-
-                    await EnqueuePersonalizedSummariesAsync(
-                        organizationId,
-                        meetingId,
-                        "Personalized summary generation job enqueued after action extraction found existing items.",
-                        cancellationToken);
-
-                    await EnqueueKnowledgeReindexAsync(
-                        organizationId,
-                        meetingId,
-                        "Knowledge indexing job enqueued after action extraction found existing items.",
-                        cancellationToken);
-
-                    _logger.LogInformation("Action items already exist for meeting {MeetingId}. Skipping.", meetingId);
-                    return;
-                }
-
                 var transcript = await _dbContext.MeetingTranscripts
                     .AsNoTracking()
                     .IgnoreQueryFilters()
@@ -161,6 +122,45 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                         "Action item extraction skipped because meeting transcript is incomplete. MeetingId={MeetingId} CompletenessStatus={CompletenessStatus}",
                         meetingId,
                         transcript.CompletenessStatus);
+                    return;
+                }
+
+                var existingCount = await _dbContext.ActionItems
+                    .IgnoreQueryFilters()
+                    .CountAsync(x => x.OrganizationId == organizationId && x.MeetingId == meetingId, cancellationToken);
+
+                if (existingCount > 0)
+                {
+                    if (_postMeetingProcessingTracker is not null)
+                    {
+                        var existingIds = await _dbContext.ActionItems
+                            .IgnoreQueryFilters()
+                            .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
+                            .Select(x => x.Id)
+                            .ToListAsync(cancellationToken);
+
+                        await _postMeetingProcessingTracker.CompleteStepAsync(
+                            organizationId,
+                            meetingId,
+                            PostMeetingProcessingStepType.ActionExtraction,
+                            message: "Action items already exist for meeting. Skipping extraction.",
+                            artifact: new PostMeetingArtifactLink("action_item", ArtifactIds: existingIds),
+                            cancellationToken: cancellationToken);
+                    }
+
+                    await EnqueuePersonalizedSummariesAsync(
+                        organizationId,
+                        meetingId,
+                        "Personalized summary generation job enqueued after action extraction found existing items.",
+                        cancellationToken);
+
+                    await EnqueueKnowledgeReindexAsync(
+                        organizationId,
+                        meetingId,
+                        "Knowledge indexing job enqueued after action extraction found existing items.",
+                        cancellationToken);
+
+                    _logger.LogInformation("Action items already exist for meeting {MeetingId}. Skipping.", meetingId);
                     return;
                 }
 

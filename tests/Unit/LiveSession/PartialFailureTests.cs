@@ -1,5 +1,9 @@
 using System.Collections.Concurrent;
 using FluentAssertions;
+using MeetingAssistant.Features.ActionItems.Jobs;
+using MeetingAssistant.Features.ActionItems.Models.Entities;
+using MeetingAssistant.Features.ActionItems.Models.Enums;
+using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
@@ -9,7 +13,11 @@ using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Rag.Jobs;
 using MeetingAssistant.Features.Rag.Services;
 using MeetingAssistant.Infrastructure.AI;
+using MeetingAssistant.Infrastructure.AI.DTOs;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using tests.Integration.LiveSession;
 using Xunit;
 
@@ -126,6 +134,7 @@ namespace tests.Unit.LiveSession
             transcript.FullText.Should().Contain("alice spoke");
             transcript.FullText.Should().Contain("bob spoke");
             transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.Complete);
+            transcript.WarningsJson.Should().NotContain("Degraded transcript");
 
             var bobFragment = db.DbContext.ParticipantAudioFragments.Single(x => x.Id == bobFragmentId);
             bobFragment.Status.Should().Be(ParticipantAudioFragmentStatus.Available);
@@ -362,6 +371,124 @@ namespace tests.Unit.LiveSession
         }
 
         [Fact]
+        public async Task TerminalSttFailure_ShouldRemainIncompleteAcrossLaterTranscriptRuns_AndBlockDownstreamPublish()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+
+            var aliceId = db.SeedUser("Alice");
+            var bobId = db.SeedUser("Bob");
+            db.AddParticipant(meetingId, orgId, aliceId);
+            db.AddParticipant(meetingId, orgId, bobId);
+
+            var aliceKey = $"tracks/{meetingId}/{aliceId}.ogg";
+            var bobKey = $"tracks/{meetingId}/{bobId}.ogg";
+            db.AddAvailableAudioFragment(meetingId, orgId, aliceId, aliceKey, "TR_ALICE");
+            var bobFragmentId = db.AddAvailableAudioFragment(meetingId, orgId, bobId, bobKey, "TR_BOB");
+
+            var bobFragment = db.DbContext.ParticipantAudioFragments.Single(x => x.Id == bobFragmentId);
+            bobFragment.SttStatus = ParticipantAudioFragmentSttStatus.FailedTerminal;
+            bobFragment.SttAttemptCount = 5;
+            bobFragment.SttFailureCode = "stt_failed";
+            bobFragment.SttFailureMessage = "terminal STT failure from prior attempts";
+            await db.DbContext.SaveChangesAsync();
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [aliceKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(aliceId, 0, 1_000, "alice spoke", 0.95)])
+            });
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            stt.Calls.Should().OnlyContain(key => key == aliceKey);
+            stt.Calls.Should().HaveCount(2);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.CompletedWithWarnings);
+            transcript.ExpectedAudioFragmentCount.Should().Be(2);
+            transcript.TranscribedAudioFragmentCount.Should().Be(1);
+            transcript.TerminalFailedAudioFragmentCount.Should().Be(1);
+            transcript.MissingAudioFragmentIdsJson.Should().NotContain(bobFragmentId.ToString());
+
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
+                .Should()
+                .BeEmpty();
+        }
+
+        [Fact]
+        public async Task ExtractActionItemsJob_WithExistingItemsAndIncompleteTranscript_ShouldSkipWithoutEnqueueingDownstream()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+
+            db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+            {
+                MeetingId = meetingId,
+                OrganizationId = orgId,
+                FullText = "partial transcript only",
+                SegmentsJson = "[]",
+                SttModel = "whisper-large-v3",
+                GeneratedAtUtc = DateTime.UtcNow,
+                CompletenessStatus = MeetingTranscriptCompletenessStatus.CompletedWithWarnings,
+                ExpectedAudioFragmentCount = 2,
+                TranscribedAudioFragmentCount = 1,
+                RetryableFailedAudioFragmentCount = 1
+            });
+            db.DbContext.ActionItems.Add(new ActionItem
+            {
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                Title = "existing action item",
+                Status = ActionItemStatus.PendingReview,
+                ExtractedAtUtc = DateTime.UtcNow
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            var jobs = new FakeBackgroundJobClient();
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+            var job = new ExtractActionItemsJob(
+                db.DbContext,
+                new UnreachableLlmService(),
+                new PromptProvider(new TestHostEnvironment(AppContext.BaseDirectory)),
+                Options.Create(new OpenAiCompatibleOptions
+                {
+                    Llm = new OpenAiCompatibleOptions.ProviderConfig
+                    {
+                        BaseUrl = "http://llm.test/v1",
+                        ApiKey = "test-key",
+                        Model = "openai-compatible-local"
+                    }
+                }),
+                NullLogger<ExtractActionItemsJob>.Instance,
+                tracker,
+                jobs);
+
+            await job.RunAsync(meetingId, orgId, CancellationToken.None);
+
+            jobs.CreatedJobs.Should().BeEmpty();
+
+            var snapshot = await tracker.GetLatestByMeetingAsync(orgId, meetingId);
+            snapshot.Steps.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.ActionExtraction
+                && x.Status == PostMeetingProcessingStatus.Skipped);
+            snapshot.Events.Should().Contain(x =>
+                x.StepType == PostMeetingProcessingStepType.ActionExtraction
+                && x.ErrorCode == MeetingTranscriptCompletenessGuard.IncompleteErrorCode);
+        }
+
+        [Fact]
         public async Task TranscriptGeneration_ShouldNotRepublishTranscriptReady_WhenTranscriptContentIsUnchanged()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();
@@ -405,6 +532,23 @@ namespace tests.Unit.LiveSession
 
             public Task<float[][]> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken cancellationToken = default)
                 => Task.FromResult(texts.Select(_ => Array.Empty<float>()).ToArray());
+        }
+
+        private sealed class UnreachableLlmService : ILLMService
+        {
+            public Task<LLMResponse> CompleteAsync(LLMRequest request, CancellationToken cancellationToken)
+                => throw new InvalidOperationException("LLM should not run when transcript is incomplete.");
+
+            public Task<T> CompleteWithJsonAsync<T>(LLMRequest request, CancellationToken cancellationToken)
+                => throw new InvalidOperationException("LLM should not run when transcript is incomplete.");
+        }
+
+        private sealed class TestHostEnvironment(string contentRootPath) : IHostEnvironment
+        {
+            public string EnvironmentName { get; set; } = Environments.Development;
+            public string ApplicationName { get; set; } = "MeetingAssistant.Tests";
+            public string ContentRootPath { get; set; } = contentRootPath;
+            public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
         }
 
         private sealed class FailOnceThenSucceedSttService(

@@ -90,14 +90,17 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return;
             }
 
-            var fragments = await _dbContext.ParticipantAudioFragments
+            var allAvailableFragments = await _dbContext.ParticipantAudioFragments
                 .IgnoreQueryFilters()
                 .Where(x => x.MeetingId == meetingId
                             && x.OrganizationId == organizationId
                             && x.Status == ParticipantAudioFragmentStatus.Available
-                            && x.StorageObjectKey != null
-                            && x.SttStatus != ParticipantAudioFragmentSttStatus.FailedTerminal)
+                            && x.StorageObjectKey != null)
                 .ToListAsync(cancellationToken);
+
+            var fragments = allAvailableFragments
+                .Where(x => x.SttStatus != ParticipantAudioFragmentSttStatus.FailedTerminal)
+                .ToList();
 
             var meeting = await _dbContext.Meetings
                 .IgnoreQueryFilters()
@@ -154,7 +157,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return;
             }
 
-            var expectedAudioFragmentCount = fragments.Count;
+            var expectedAudioFragmentCount = allAvailableFragments.Count;
 
             var fragmentsWithTiming = fragments
                 .Select(fragment => new FragmentTranscriptionInput(
@@ -305,12 +308,13 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 : participantTraceSegments.Count;
 
             var transcribedFragmentCount = succeededFragmentIds.Distinct().Count();
-            var retryableFailedCount = fragments.Count(fragment =>
+            var retryableFailedCount = allAvailableFragments.Count(fragment =>
                 fragment.SttStatus == ParticipantAudioFragmentSttStatus.FailedRetryable);
-            var terminalFailedCount = fragments.Count(fragment =>
+            var terminalFailedCount = allAvailableFragments.Count(fragment =>
                 fragment.SttStatus == ParticipantAudioFragmentSttStatus.FailedTerminal);
             var isTranscriptComplete = expectedAudioFragmentCount == 0
                                        || (failedFragmentIds.Count == 0
+                                           && terminalFailedCount == 0
                                            && transcribedFragmentCount >= expectedAudioFragmentCount);
             var completenessStatus = isTranscriptComplete
                 ? MeetingTranscriptCompletenessStatus.Complete
@@ -320,7 +324,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 retryableFailedCount,
                 terminalFailedCount,
                 expectedAudioFragmentCount,
-                transcribedFragmentCount);
+                transcribedFragmentCount,
+                completenessStatus);
 
             if (_postMeetingProcessingTracker is not null)
             {
@@ -552,12 +557,16 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             int retryableFailedCount,
             int terminalFailedCount,
             int expectedAudioFragmentCount,
-            int transcribedFragmentCount)
+            int transcribedFragmentCount,
+            MeetingTranscriptCompletenessStatus completenessStatus)
         {
-            var warnings = new List<string>
+            var warnings = new List<string>();
+
+            if (completenessStatus != MeetingTranscriptCompletenessStatus.Complete)
             {
-                $"Degraded transcript: transcribed {transcribedFragmentCount} of {expectedAudioFragmentCount} expected audio fragment(s)."
-            };
+                warnings.Add(
+                    $"Degraded transcript: transcribed {transcribedFragmentCount} of {expectedAudioFragmentCount} expected audio fragment(s).");
+            }
 
             if (retryableFailedCount > 0)
             {
