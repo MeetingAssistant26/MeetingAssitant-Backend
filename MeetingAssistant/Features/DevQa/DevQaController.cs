@@ -1099,6 +1099,379 @@ public sealed class DevQaController(
             actionItemCount));
     }
 
+    [HttpPost("meetings/{meetingId:guid}/source-revision/fixture")]
+    [ProducesResponseType(typeof(QaSourceRevisionFixtureResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> SeedSourceRevisionFixture(
+        [FromRoute] Guid meetingId,
+        [FromBody] QaSourceRevisionFixtureRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (request is null)
+            return BadRequest(new { error = "Request body is required." });
+
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest(new { error = "OrganizationId is required." });
+
+        if (string.IsNullOrWhiteSpace(request.SourceLabel))
+            return BadRequest(new { error = "SourceLabel is required." });
+
+        if (string.IsNullOrWhiteSpace(request.TranscriptText))
+            return BadRequest(new { error = "TranscriptText is required." });
+
+        if (string.IsNullOrWhiteSpace(request.SummaryText))
+            return BadRequest(new { error = "SummaryText is required." });
+
+        var meeting = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .Include(x => x.Participants)
+            .FirstOrDefaultAsync(
+                x => x.Id == meetingId && x.OrganizationId == request.OrganizationId,
+                cancellationToken);
+        if (meeting is null)
+            return NotFound(new { error = "Meeting not found for organization." });
+
+        if (meeting.Status != MeetingStatus.Completed)
+        {
+            meeting.Status = MeetingStatus.Completed;
+            meeting.UpdatedAtUtc = DateTime.UtcNow;
+        }
+
+        var sourceLabel = request.SourceLabel.Trim();
+        var qaSourceTag = $"qa-source-{sourceLabel}";
+        var now = DateTime.UtcNow;
+
+        var transcript = await _dbContext.MeetingTranscripts
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                x => x.MeetingId == meetingId && x.OrganizationId == request.OrganizationId,
+                cancellationToken);
+
+        if (transcript is null)
+        {
+            transcript = new MeetingTranscript
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = request.OrganizationId,
+                MeetingId = meetingId
+            };
+            _dbContext.MeetingTranscripts.Add(transcript);
+        }
+
+        transcript.FullText = request.TranscriptText.Trim();
+        transcript.SegmentsJson = "[]";
+        transcript.SttModel = qaSourceTag;
+        transcript.GeneratedAtUtc = now;
+        transcript.CompletenessStatus = MeetingTranscriptCompletenessStatus.Complete;
+        transcript.ExpectedAudioFragmentCount = 0;
+        transcript.TranscribedAudioFragmentCount = 0;
+        transcript.RetryableFailedAudioFragmentCount = 0;
+        transcript.TerminalFailedAudioFragmentCount = 0;
+        transcript.MissingAudioFragmentIdsJson = "[]";
+        transcript.WarningsJson = "[]";
+        transcript.UpdatedAtUtc = now;
+
+        var summary = await _dbContext.MeetingSummaries
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                x => x.MeetingId == meetingId && x.OrganizationId == request.OrganizationId,
+                cancellationToken);
+
+        if (summary is null)
+        {
+            summary = new MeetingSummary
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = request.OrganizationId,
+                MeetingId = meetingId
+            };
+            _dbContext.MeetingSummaries.Add(summary);
+        }
+
+        summary.SummaryText = request.SummaryText.Trim();
+        summary.LlmModel = qaSourceTag;
+        summary.GeneratedAtUtc = now;
+        summary.UpdatedAtUtc = now;
+
+        var hostUserId = meeting.Participants
+            .Where(participant => participant.MeetingRole == MeetingRole.Host)
+            .Select(participant => participant.UserId)
+            .FirstOrDefault();
+        if (hostUserId == Guid.Empty)
+        {
+            hostUserId = meeting.Participants.Select(participant => participant.UserId).FirstOrDefault();
+        }
+
+        var actionItemIds = new List<Guid>();
+        if (request.ActionItems is { Count: > 0 })
+        {
+            foreach (var actionItemRequest in request.ActionItems)
+            {
+                if (string.IsNullOrWhiteSpace(actionItemRequest.Title))
+                    continue;
+
+                var actionItemId = Guid.NewGuid();
+                _dbContext.ActionItems.Add(new ActionItem
+                {
+                    Id = actionItemId,
+                    OrganizationId = request.OrganizationId,
+                    MeetingId = meetingId,
+                    Title = TruncateForStorage(actionItemRequest.Title, 500),
+                    Description = string.IsNullOrWhiteSpace(actionItemRequest.Description)
+                        ? null
+                        : TruncateForStorage(actionItemRequest.Description, 2000),
+                    AssignedToUserId = actionItemRequest.AssignedToUserId == Guid.Empty
+                        ? hostUserId == Guid.Empty ? null : hostUserId
+                        : actionItemRequest.AssignedToUserId,
+                    Status = ActionItemStatus.PendingReview,
+                    ExtractedAtUtc = now
+                });
+                actionItemIds.Add(actionItemId);
+            }
+        }
+
+        var personalizedSummaryIds = new List<Guid>();
+        if (request.PersonalizedSummaries is { Count: > 0 })
+        {
+            foreach (var personalizedRequest in request.PersonalizedSummaries)
+            {
+                if (personalizedRequest.UserId == Guid.Empty || string.IsNullOrWhiteSpace(personalizedRequest.SummaryText))
+                    continue;
+
+                var participant = meeting.Participants.FirstOrDefault(x => x.UserId == personalizedRequest.UserId);
+                if (participant is null)
+                    continue;
+
+                var targetDisplayName = await _dbContext.Users
+                    .IgnoreQueryFilters()
+                    .Where(user => user.Id == personalizedRequest.UserId)
+                    .Select(user => user.DisplayName ?? user.Email ?? user.UserName)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                var existing = await _dbContext.PersonalizedMeetingSummaries
+                    .IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(
+                        x => x.MeetingId == meetingId
+                             && x.OrganizationId == request.OrganizationId
+                             && x.UserId == personalizedRequest.UserId,
+                        cancellationToken);
+
+                var eligibilityReason = string.IsNullOrWhiteSpace(personalizedRequest.EligibilityReason)
+                    ? "qa_source_fixture"
+                    : personalizedRequest.EligibilityReason.Trim();
+                var contextJson = JsonSerializer.Serialize(
+                    new { sourceLabel, fixture = "qa-source-revision" },
+                    JsonOptions);
+
+                if (existing is null)
+                {
+                    existing = new PersonalizedMeetingSummary
+                    {
+                        Id = Guid.NewGuid(),
+                        OrganizationId = request.OrganizationId,
+                        MeetingId = meetingId,
+                        MeetingParticipantId = participant.Id,
+                        UserId = personalizedRequest.UserId
+                    };
+                    _dbContext.PersonalizedMeetingSummaries.Add(existing);
+                }
+
+                existing.MeetingParticipantId = participant.Id;
+                existing.Status = PersonalizedMeetingSummaryStatus.Generated;
+                existing.SummaryText = personalizedRequest.SummaryText.Trim();
+                existing.LlmModel = qaSourceTag;
+                existing.GeneratedAtUtc = now;
+                existing.TargetDisplayName = targetDisplayName;
+                existing.EligibilityReason = eligibilityReason;
+                existing.EligibilityContextJson = contextJson;
+                existing.PersonalizationContextJson = contextJson;
+                existing.UpdatedAtUtc = now;
+                personalizedSummaryIds.Add(existing.Id);
+            }
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        Guid? pipelineGenerationId = null;
+        Guid? postProcessingRunId = null;
+        if (request.MarkPostProcessingCompleted)
+        {
+            var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+            var hangfireJobId = $"{qaSourceTag}-seed";
+            pipelineGenerationId = Guid.NewGuid();
+            var run = await tracker.EnsureRunAsync(
+                request.OrganizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId: hangfireJobId,
+                cancellationToken: cancellationToken);
+            postProcessingRunId = run.Id;
+
+            await tracker.CompleteStepAsync(
+                request.OrganizationId,
+                meetingId,
+                PostMeetingProcessingStepType.SummaryGeneration,
+                pipelineGenerationId,
+                relatedHangfireJobId: hangfireJobId,
+                message: "QA source-revision fixture seeded summary generation.",
+                artifact: new PostMeetingArtifactLink("meeting_summary", summary.Id),
+                cancellationToken: cancellationToken);
+
+            await tracker.CompleteStepAsync(
+                request.OrganizationId,
+                meetingId,
+                PostMeetingProcessingStepType.ActionExtraction,
+                pipelineGenerationId,
+                relatedHangfireJobId: hangfireJobId,
+                message: "QA source-revision fixture seeded action extraction.",
+                artifact: actionItemIds.Count > 0
+                    ? new PostMeetingArtifactLink("action_item", ArtifactIds: actionItemIds)
+                    : null,
+                cancellationToken: cancellationToken);
+
+            await tracker.CompleteStepAsync(
+                request.OrganizationId,
+                meetingId,
+                PostMeetingProcessingStepType.PersonalizedSummaryGeneration,
+                pipelineGenerationId,
+                relatedHangfireJobId: hangfireJobId,
+                message: "QA source-revision fixture seeded personalized summary generation.",
+                artifact: personalizedSummaryIds.Count > 0
+                    ? new PostMeetingArtifactLink("personalized_meeting_summary", ArtifactIds: personalizedSummaryIds)
+                    : null,
+                cancellationToken: cancellationToken);
+
+            await tracker.CompleteStepAsync(
+                request.OrganizationId,
+                meetingId,
+                PostMeetingProcessingStepType.KnowledgeIndexing,
+                pipelineGenerationId,
+                relatedHangfireJobId: hangfireJobId,
+                message: "QA source-revision fixture seeded knowledge indexing.",
+                cancellationToken: cancellationToken);
+
+            await tracker.CompleteRunAsync(
+                request.OrganizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId: hangfireJobId,
+                message: "QA source-revision fixture completed post-processing run.",
+                cancellationToken: cancellationToken);
+        }
+
+        return Ok(new QaSourceRevisionFixtureResponse(
+            request.OrganizationId,
+            meetingId,
+            sourceLabel,
+            transcript.Id,
+            summary.Id,
+            actionItemIds,
+            personalizedSummaryIds,
+            pipelineGenerationId,
+            postProcessingRunId));
+    }
+
+    [HttpPost("meetings/{meetingId:guid}/source-revision/transcript")]
+    [ProducesResponseType(typeof(QaSourceRevisionTranscriptResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> ReplaceSourceRevisionTranscript(
+        [FromRoute] Guid meetingId,
+        [FromBody] QaSourceRevisionTranscriptRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (request is null)
+            return BadRequest(new { error = "Request body is required." });
+
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest(new { error = "OrganizationId is required." });
+
+        if (string.IsNullOrWhiteSpace(request.SourceLabel))
+            return BadRequest(new { error = "SourceLabel is required." });
+
+        if (string.IsNullOrWhiteSpace(request.TranscriptText))
+            return BadRequest(new { error = "TranscriptText is required." });
+
+        var meetingExists = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Id == meetingId && x.OrganizationId == request.OrganizationId, cancellationToken);
+        if (!meetingExists)
+            return NotFound(new { error = "Meeting not found for organization." });
+
+        var sourceLabel = request.SourceLabel.Trim();
+        var qaSourceTag = $"qa-source-{sourceLabel}";
+        var now = DateTime.UtcNow;
+
+        var transcript = await _dbContext.MeetingTranscripts
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(
+                x => x.MeetingId == meetingId && x.OrganizationId == request.OrganizationId,
+                cancellationToken);
+
+        var previousFullText = transcript?.FullText;
+        var previousFullTextSha256 = string.IsNullOrWhiteSpace(previousFullText)
+            ? null
+            : Sha256(previousFullText);
+
+        if (transcript is null)
+        {
+            transcript = new MeetingTranscript
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = request.OrganizationId,
+                MeetingId = meetingId
+            };
+            _dbContext.MeetingTranscripts.Add(transcript);
+        }
+
+        transcript.FullText = request.TranscriptText.Trim();
+        transcript.SegmentsJson = "[]";
+        transcript.SttModel = qaSourceTag;
+        transcript.GeneratedAtUtc = now;
+        transcript.CompletenessStatus = MeetingTranscriptCompletenessStatus.Complete;
+        transcript.ExpectedAudioFragmentCount = 0;
+        transcript.TranscribedAudioFragmentCount = 0;
+        transcript.RetryableFailedAudioFragmentCount = 0;
+        transcript.TerminalFailedAudioFragmentCount = 0;
+        transcript.MissingAudioFragmentIdsJson = "[]";
+        transcript.WarningsJson = "[]";
+        transcript.UpdatedAtUtc = now;
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        var currentFullTextSha256 = Sha256(transcript.FullText);
+        var transcriptChanged = !string.Equals(previousFullTextSha256, currentFullTextSha256, StringComparison.Ordinal);
+
+        Guid? pipelineGenerationId = null;
+        Guid? postProcessingRunId = null;
+        if (request.BeginPipelineGeneration)
+        {
+            pipelineGenerationId = Guid.NewGuid();
+            var tracker = _serviceProvider.GetRequiredService<IPostMeetingProcessingTracker>();
+            var run = await tracker.EnsureRunAsync(
+                request.OrganizationId,
+                meetingId,
+                pipelineGenerationId,
+                relatedHangfireJobId: $"{qaSourceTag}-transcript",
+                cancellationToken: cancellationToken);
+            postProcessingRunId = run.Id;
+        }
+
+        return Ok(new QaSourceRevisionTranscriptResponse(
+            request.OrganizationId,
+            meetingId,
+            sourceLabel,
+            transcript.Id,
+            previousFullTextSha256,
+            currentFullTextSha256,
+            transcriptChanged,
+            pipelineGenerationId,
+            postProcessingRunId));
+    }
+
     [HttpPost("meetings/{meetingId:guid}/rag/duplicate-current")]
     [ProducesResponseType(typeof(QaRagDuplicateCurrentResponse), StatusCodes.Status200OK)]
     public async Task<IActionResult> SeedRagDuplicateCurrent(
@@ -1338,34 +1711,70 @@ public sealed class DevQaController(
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.MeetingId == meetingId && x.OrganizationId == organizationId, cancellationToken);
 
-        var personalized = await _dbContext.PersonalizedMeetingSummaries
+        var personalizedRows = await _dbContext.PersonalizedMeetingSummaries
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
-            .OrderBy(x => x.User.DisplayName)
+            .OrderBy(x => x.UserId)
+            .Select(x => new
+            {
+                x.Id,
+                x.UserId,
+                DisplayName = x.User.DisplayName ?? x.User.Email ?? x.UserId.ToString(),
+                x.Status,
+                x.GeneratedAtUtc,
+                x.EligibilityReason,
+                x.SummaryText
+            })
+            .ToListAsync(cancellationToken);
+
+        var personalized = personalizedRows
             .Select(x => new QaPersonalizedSummaryStatusResponse(
                 x.Id,
                 x.UserId,
-                x.User.DisplayName ?? x.User.Email ?? x.UserId.ToString(),
+                x.DisplayName,
                 x.Status.ToString(),
                 x.GeneratedAtUtc,
                 x.EligibilityReason,
-                x.SummaryText == null ? 0 : x.SummaryText.Length))
-            .ToListAsync(cancellationToken);
+                x.SummaryText == null ? 0 : x.SummaryText.Length,
+                string.IsNullOrWhiteSpace(x.SummaryText) ? null : Sha256(x.SummaryText),
+                string.IsNullOrWhiteSpace(x.SummaryText) ? string.Empty : Preview(x.SummaryText)))
+            .ToList();
 
-        var actionItems = await _dbContext.ActionItems
+        var actionItemRows = await _dbContext.ActionItems
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
             .OrderBy(x => x.CreatedAtUtc)
-            .Select(x => new QaActionItemStatusResponse(
+            .Select(x => new
+            {
                 x.Id,
                 x.Title,
-                x.Status.ToString(),
+                x.Description,
+                x.Status,
                 x.AssignedToUserId,
                 x.DueDateUtc,
-                x.ExtractedAtUtc))
+                x.ExtractedAtUtc
+            })
             .ToListAsync(cancellationToken);
+
+        var actionItems = actionItemRows
+            .Select(x =>
+            {
+                var previewSource = string.IsNullOrWhiteSpace(x.Description)
+                    ? x.Title
+                    : $"{x.Title} {x.Description}";
+                return new QaActionItemStatusResponse(
+                    x.Id,
+                    x.Title,
+                    x.Status.ToString(),
+                    x.AssignedToUserId,
+                    x.DueDateUtc,
+                    x.ExtractedAtUtc,
+                    string.IsNullOrWhiteSpace(x.Description) ? null : Sha256(x.Description),
+                    Preview(previewSource));
+            })
+            .ToList();
 
         var knowledgeDocuments = await _dbContext.KnowledgeDocuments
             .IgnoreQueryFilters()
@@ -2251,7 +2660,9 @@ public sealed record QaPersonalizedSummaryStatusResponse(
     string Status,
     DateTime? GeneratedAtUtc,
     string? EligibilityReason,
-    int SummaryTextLength);
+    int SummaryTextLength,
+    string? SummarySha256 = null,
+    string Preview = "");
 
 public sealed record QaActionItemStatusResponse(
     Guid Id,
@@ -2259,7 +2670,56 @@ public sealed record QaActionItemStatusResponse(
     string Status,
     Guid? AssignedToUserId,
     DateTime? DueDateUtc,
-    DateTime ExtractedAtUtc);
+    DateTime ExtractedAtUtc,
+    string? DescriptionSha256 = null,
+    string Preview = "");
+
+public sealed record QaSourceRevisionActionItemRequest(
+    string Title,
+    string? Description = null,
+    Guid? AssignedToUserId = null);
+
+public sealed record QaSourceRevisionPersonalizedSummaryRequest(
+    Guid UserId,
+    string SummaryText,
+    string? EligibilityReason = null);
+
+public sealed record QaSourceRevisionFixtureRequest(
+    Guid OrganizationId,
+    string SourceLabel,
+    string TranscriptText,
+    string SummaryText,
+    IReadOnlyList<QaSourceRevisionActionItemRequest>? ActionItems = null,
+    IReadOnlyList<QaSourceRevisionPersonalizedSummaryRequest>? PersonalizedSummaries = null,
+    bool MarkPostProcessingCompleted = true);
+
+public sealed record QaSourceRevisionFixtureResponse(
+    Guid OrganizationId,
+    Guid MeetingId,
+    string SourceLabel,
+    Guid TranscriptId,
+    Guid SummaryId,
+    IReadOnlyList<Guid> ActionItemIds,
+    IReadOnlyList<Guid> PersonalizedSummaryIds,
+    Guid? PipelineGenerationId,
+    Guid? PostProcessingRunId);
+
+public sealed record QaSourceRevisionTranscriptRequest(
+    Guid OrganizationId,
+    string SourceLabel,
+    string TranscriptText,
+    bool BeginPipelineGeneration = true);
+
+public sealed record QaSourceRevisionTranscriptResponse(
+    Guid OrganizationId,
+    Guid MeetingId,
+    string SourceLabel,
+    Guid TranscriptId,
+    string? PreviousFullTextSha256,
+    string CurrentFullTextSha256,
+    bool TranscriptChanged,
+    Guid? PipelineGenerationId,
+    Guid? PostProcessingRunId);
 
 public sealed record QaKnowledgeDocumentStatusResponse(
     Guid Id,

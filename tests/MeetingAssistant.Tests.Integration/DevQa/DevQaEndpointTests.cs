@@ -540,6 +540,135 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
     }
 
     [Fact]
+    public async Task SourceRevisionFixture_ShouldSeedStaleArtifactsAndReplaceTranscriptOnly()
+    {
+        const string sourceATranscript =
+            "SOURCE_A_ALPHA_TRANSCRIPT meeting context for downstream source revision capture. SOURCE_A_ALPHA_ACTION SOURCE_A_ALPHA_PERSONALIZED";
+        const string sourceASummary =
+            "SOURCE_A_ALPHA_SUMMARY stale summary from source A for downstream source revision capture.";
+        const string sourceAAction =
+            "SOURCE_A_ALPHA_ACTION review stale source A launch plan";
+        const string sourceAPersonalizedAlice =
+            "SOURCE_A_ALPHA_PERSONALIZED Alice stale summary from source A.";
+        const string sourceAPersonalizedBob =
+            "SOURCE_A_ALPHA_PERSONALIZED Bob stale summary from source A.";
+        const string sourceBTranscript =
+            "SOURCE_B_BRAVO_TRANSCRIPT replacement transcript only. SOURCE_B_BRAVO_ACTION SOURCE_B_BRAVO_PERSONALIZED";
+
+        var scenario = await CreateScenarioAsync("qa-source-revision-capture");
+        var aliceUserId = scenario.Users["alice"].UserId;
+        var bobUserId = scenario.Users["bob"].UserId;
+
+        var fixtureResponse = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/source-revision/fixture",
+            new QaSourceRevisionFixtureRequest(
+                scenario.OrganizationId,
+                "alpha",
+                sourceATranscript,
+                sourceASummary,
+                [new QaSourceRevisionActionItemRequest(sourceAAction, "stale source A action detail")],
+                [
+                    new QaSourceRevisionPersonalizedSummaryRequest(aliceUserId, sourceAPersonalizedAlice),
+                    new QaSourceRevisionPersonalizedSummaryRequest(bobUserId, sourceAPersonalizedBob)
+                ],
+                MarkPostProcessingCompleted: true));
+
+        fixtureResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var fixture = await fixtureResponse.Content.ReadFromJsonAsync<QaSourceRevisionFixtureResponse>();
+        fixture.Should().NotBeNull();
+        fixture!.ActionItemIds.Should().ContainSingle();
+        fixture.PersonalizedSummaryIds.Should().HaveCount(2);
+        fixture.PipelineGenerationId.Should().NotBeNull();
+        fixture.PostProcessingRunId.Should().NotBeNull();
+
+        var statusAfterFixtureResponse = await Client.GetAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/processing-status?organizationId={scenario.OrganizationId}");
+        statusAfterFixtureResponse.EnsureSuccessStatusCode();
+        var statusAfterFixture =
+            await statusAfterFixtureResponse.Content.ReadFromJsonAsync<QaProcessingStatusResponse>();
+        statusAfterFixture.Should().NotBeNull();
+        statusAfterFixture!.Transcript.Should().NotBeNull();
+        statusAfterFixture.Transcript!.Preview.Should().Contain("SOURCE_A_ALPHA_TRANSCRIPT");
+        statusAfterFixture.Summary.Should().NotBeNull();
+        statusAfterFixture.Summary!.Preview.Should().Contain("SOURCE_A_ALPHA_SUMMARY");
+        statusAfterFixture.ActionItems.Should().ContainSingle();
+        statusAfterFixture.ActionItems[0].Preview.Should().Contain("SOURCE_A_ALPHA_ACTION");
+        statusAfterFixture.ActionItems[0].DescriptionSha256.Should().NotBeNullOrWhiteSpace();
+        statusAfterFixture.PersonalizedSummaries.Should().HaveCount(2);
+        statusAfterFixture.PersonalizedSummaries.Should().OnlyContain(summary =>
+            summary.Preview.Contains("SOURCE_A_ALPHA_PERSONALIZED")
+            && !string.IsNullOrWhiteSpace(summary.SummarySha256));
+        statusAfterFixture.PostProcessingSteps.Should().Contain(step =>
+            step.StepType == PostMeetingProcessingStepType.PersonalizedSummaryGeneration.ToString()
+            && step.Status == PostMeetingProcessingStatus.Completed.ToString());
+
+        var transcriptResponse = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/source-revision/transcript",
+            new QaSourceRevisionTranscriptRequest(
+                scenario.OrganizationId,
+                "bravo",
+                sourceBTranscript,
+                BeginPipelineGeneration: true));
+
+        transcriptResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        var transcriptReplacement =
+            await transcriptResponse.Content.ReadFromJsonAsync<QaSourceRevisionTranscriptResponse>();
+        transcriptReplacement.Should().NotBeNull();
+        transcriptReplacement!.TranscriptChanged.Should().BeTrue();
+        transcriptReplacement.CurrentFullTextSha256.Should().NotBe(transcriptReplacement.PreviousFullTextSha256);
+        transcriptReplacement.PipelineGenerationId.Should().NotBeNull();
+        transcriptReplacement.PipelineGenerationId!.Value.Should().NotBe(fixture.PipelineGenerationId!.Value);
+
+        var statusAfterTranscriptResponse = await Client.GetAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/processing-status?organizationId={scenario.OrganizationId}");
+        statusAfterTranscriptResponse.EnsureSuccessStatusCode();
+        var statusAfterTranscript =
+            await statusAfterTranscriptResponse.Content.ReadFromJsonAsync<QaProcessingStatusResponse>();
+        statusAfterTranscript.Should().NotBeNull();
+        statusAfterTranscript!.Transcript.Should().NotBeNull();
+        statusAfterTranscript.Transcript!.Preview.Should().Contain("SOURCE_B_BRAVO_TRANSCRIPT");
+        statusAfterTranscript.Transcript.FullTextSha256.Should().Be(transcriptReplacement.CurrentFullTextSha256);
+        statusAfterTranscript.Summary.Should().NotBeNull();
+        statusAfterTranscript.Summary!.Preview.Should().Contain("SOURCE_A_ALPHA_SUMMARY");
+        statusAfterTranscript.ActionItems.Should().ContainSingle();
+        statusAfterTranscript.ActionItems[0].Id.Should().Be(fixture.ActionItemIds[0]);
+        statusAfterTranscript.ActionItems[0].Preview.Should().Contain("SOURCE_A_ALPHA_ACTION");
+        statusAfterTranscript.ActionItems[0].Preview.Should().NotContain("SOURCE_B_BRAVO_ACTION");
+        statusAfterTranscript.PersonalizedSummaries.Should().OnlyContain(summary =>
+            summary.Preview.Contains("SOURCE_A_ALPHA_PERSONALIZED")
+            && !summary.Preview.Contains("SOURCE_B_BRAVO_PERSONALIZED"));
+    }
+
+    [Fact]
+    public async Task ProcessingStatus_ShouldExposeSourceRevisionCapturePreviews()
+    {
+        var scenario = await CreateScenarioAsync("qa-source-revision-preview-fields");
+        const string actionTitle = "SOURCE_A_ALPHA_ACTION review stale source A launch plan";
+
+        var fixtureResponse = await Client.PostAsJsonAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/source-revision/fixture",
+            new QaSourceRevisionFixtureRequest(
+                scenario.OrganizationId,
+                "alpha",
+                "SOURCE_A_ALPHA_TRANSCRIPT preview field capture.",
+                "SOURCE_A_ALPHA_SUMMARY preview field capture.",
+                [new QaSourceRevisionActionItemRequest(actionTitle, "stale source A action detail")],
+                MarkPostProcessingCompleted: false));
+
+        fixtureResponse.EnsureSuccessStatusCode();
+
+        var statusResponse = await Client.GetAsync(
+            $"/api/dev/qa/meetings/{scenario.MeetingId}/processing-status?organizationId={scenario.OrganizationId}");
+        statusResponse.EnsureSuccessStatusCode();
+        var status = await statusResponse.Content.ReadFromJsonAsync<QaProcessingStatusResponse>();
+        status.Should().NotBeNull();
+        status!.ActionItems.Should().ContainSingle();
+        status.ActionItems[0].Preview.Should().Contain(actionTitle);
+        status.ActionItems[0].DescriptionSha256.Should().NotBeNullOrWhiteSpace();
+        status.PersonalizedSummaries.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task ReminderStatus_ShouldExposeAgentReminderLifecycleAcrossLinkedSeries()
     {
         var m1Start = DateTime.UtcNow.AddHours(1);
