@@ -4,6 +4,7 @@ using System.Text.Json;
 using Hangfire;
 using MeetingAssistant.Features.ActionItems.Jobs;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
+using MeetingAssistant.Features.AgentApi.Services;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.Identity.Services;
 using MeetingAssistant.Features.LiveSession.Jobs;
@@ -31,6 +32,7 @@ public sealed class DevQaController(
     ITokenService tokenService,
     ILiveKitTokenIssuer liveKitTokenIssuer,
     IStorageService storageService,
+    IAgentAuthService agentAuthService,
     IBackgroundJobClient backgroundJobClient,
     IServiceProvider serviceProvider,
     IHostEnvironment environment,
@@ -52,6 +54,7 @@ public sealed class DevQaController(
     private readonly ITokenService _tokenService = tokenService;
     private readonly ILiveKitTokenIssuer _liveKitTokenIssuer = liveKitTokenIssuer;
     private readonly IStorageService _storageService = storageService;
+    private readonly IAgentAuthService _agentAuthService = agentAuthService;
     private readonly IBackgroundJobClient _backgroundJobClient = backgroundJobClient;
     private readonly IServiceProvider _serviceProvider = serviceProvider;
     private readonly IHostEnvironment _environment = environment;
@@ -282,6 +285,162 @@ public sealed class DevQaController(
             userResponses,
             joinTokens,
             tagsByName.Values.Select(tag => new QaScenarioTagResponse(tag.Id, tag.Name)).ToList()));
+    }
+
+    [HttpPost("organizations/{organizationId:guid}/meetings")]
+    [ProducesResponseType(typeof(QaAdditionalMeetingResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> CreateAdditionalMeeting(
+        [FromRoute] Guid organizationId,
+        [FromBody] QaCreateAdditionalMeetingRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (request is null)
+            return BadRequest(new { error = "Request body is required." });
+
+        if (request.SourceMeetingId == Guid.Empty)
+            return BadRequest(new { error = "SourceMeetingId is required." });
+
+        var organizationExists = await _dbContext.Organizations
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Id == organizationId, cancellationToken);
+        if (!organizationExists)
+            return NotFound(new { error = "Organization not found." });
+
+        var sourceMeeting = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(x => x.Participants)
+            .Include(x => x.Tags)
+                .ThenInclude(x => x.MeetingTag)
+            .FirstOrDefaultAsync(
+                x => x.Id == request.SourceMeetingId && x.OrganizationId == organizationId,
+                cancellationToken);
+
+        if (sourceMeeting is null)
+            return NotFound(new { error = "Source meeting not found for organization." });
+
+        var copyParticipants = request.CopyParticipants ?? true;
+        var copyTags = request.CopyTags ?? true;
+        if (copyParticipants && sourceMeeting.Participants.Count == 0)
+            return BadRequest(new { error = "Source meeting has no participants to copy." });
+
+        var now = DateTime.UtcNow;
+        var scheduledStartUtc = request.ScheduledStartUtc ?? now.AddMinutes(10);
+        var status = request.Status ?? MeetingStatus.InProgress;
+        var meeting = new Meeting
+        {
+            OrganizationId = organizationId,
+            Title = TruncateForStorage(
+                string.IsNullOrWhiteSpace(request.Title)
+                    ? $"QA Follow-up {sourceMeeting.Title}"
+                    : request.Title!,
+                MaxMeetingTitleLength),
+            Description = TruncateForStorage(
+                string.IsNullOrWhiteSpace(request.Description)
+                    ? $"Autonomous QA follow-up meeting for source meeting {sourceMeeting.Id}."
+                    : request.Description!,
+                MaxMeetingDescriptionLength),
+            ScheduledStartUtc = scheduledStartUtc,
+            ScheduledEndUtc = request.ScheduledEndUtc ?? scheduledStartUtc.AddHours(1),
+            Status = status,
+            AiAssistantEnabled = request.AiAssistantEnabled ?? sourceMeeting.AiAssistantEnabled,
+            RoomActivatedAtUtc = status == MeetingStatus.InProgress ? now : null
+        };
+
+        if (copyParticipants)
+        {
+            foreach (var participant in sourceMeeting.Participants)
+            {
+                meeting.Participants.Add(new MeetingParticipant
+                {
+                    OrganizationId = organizationId,
+                    UserId = participant.UserId,
+                    MeetingRole = participant.MeetingRole
+                });
+            }
+        }
+
+        if (copyTags)
+        {
+            foreach (var tag in sourceMeeting.Tags)
+            {
+                meeting.Tags.Add(new MeetingMeetingTag
+                {
+                    Meeting = meeting,
+                    MeetingTagId = tag.MeetingTagId
+                });
+            }
+        }
+
+        _dbContext.Meetings.Add(meeting);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return Ok(new QaAdditionalMeetingResponse(
+            organizationId,
+            sourceMeeting.Id,
+            meeting.Id,
+            meeting.Title,
+            $"mtg:{meeting.Id}",
+            meeting.Participants
+                .Select(participant => new QaAdditionalMeetingParticipantResponse(
+                    participant.Id,
+                    participant.UserId,
+                    participant.MeetingRole.ToString()))
+                .ToList(),
+            copyTags
+                ? sourceMeeting.Tags
+                    .Select(tag => new QaScenarioTagResponse(tag.MeetingTagId, tag.MeetingTag.Name))
+                    .ToList()
+                : []));
+    }
+
+    [HttpPost("meetings/{meetingId:guid}/agent-token")]
+    [ProducesResponseType(typeof(QaAgentTokenResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> MintAgentToken(
+        [FromRoute] Guid meetingId,
+        [FromBody] QaMintAgentTokenRequest? request,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (request is null)
+            return BadRequest(new { error = "Request body is required." });
+
+        if (request.OrganizationId == Guid.Empty)
+            return BadRequest(new { error = "OrganizationId is required." });
+
+        if (request.ExpiresInMinutes is < 1 or > 1440)
+            return BadRequest(new { error = "ExpiresInMinutes must be between 1 and 1440." });
+
+        var meetingExists = await _dbContext.Meetings
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.Id == meetingId && x.OrganizationId == request.OrganizationId, cancellationToken);
+        if (!meetingExists)
+            return NotFound(new { error = "Meeting not found for organization." });
+
+        var expiresInMinutes = request.ExpiresInMinutes ?? 60;
+        var lifetime = TimeSpan.FromMinutes(expiresInMinutes);
+        var result = await _agentAuthService.MintTokenAsync(request.OrganizationId, meetingId, lifetime, cancellationToken);
+        if (result.IsFailure)
+        {
+            return BadRequest(new
+            {
+                error = result.Error.Code,
+                message = result.Error.Description
+            });
+        }
+
+        return Ok(new QaAgentTokenResponse(
+            request.OrganizationId,
+            meetingId,
+            "Bearer",
+            result.Value,
+            DateTime.UtcNow.Add(lifetime),
+            expiresInMinutes));
     }
 
     [HttpPost("meetings/{meetingId:guid}/audio-fragments")]
@@ -1134,6 +1293,41 @@ public sealed record QaScenarioJoinTokenResponse(
     SessionPermissions Permissions);
 
 public sealed record QaScenarioTagResponse(Guid Id, string Name);
+
+public sealed record QaCreateAdditionalMeetingRequest(
+    Guid SourceMeetingId,
+    string? Title = null,
+    string? Description = null,
+    DateTime? ScheduledStartUtc = null,
+    DateTime? ScheduledEndUtc = null,
+    MeetingStatus? Status = null,
+    bool? AiAssistantEnabled = null,
+    bool? CopyParticipants = null,
+    bool? CopyTags = null);
+
+public sealed record QaAdditionalMeetingResponse(
+    Guid OrganizationId,
+    Guid SourceMeetingId,
+    Guid MeetingId,
+    string MeetingTitle,
+    string LiveKitRoomName,
+    IReadOnlyList<QaAdditionalMeetingParticipantResponse> Participants,
+    IReadOnlyList<QaScenarioTagResponse> Tags);
+
+public sealed record QaAdditionalMeetingParticipantResponse(
+    Guid MeetingParticipantId,
+    Guid UserId,
+    string MeetingRole);
+
+public sealed record QaMintAgentTokenRequest(Guid OrganizationId, int? ExpiresInMinutes = null);
+
+public sealed record QaAgentTokenResponse(
+    Guid OrganizationId,
+    Guid MeetingId,
+    string TokenType,
+    string AccessToken,
+    DateTime ExpiresAtUtc,
+    int ExpiresInMinutes);
 
 public sealed class QaAudioFragmentUploadRequest
 {
