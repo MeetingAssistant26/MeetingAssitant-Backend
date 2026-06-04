@@ -22,6 +22,9 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
         private static readonly Regex SilenceEndRegex = new(@"silence_end:\s*(?<seconds>\d+(\.\d+)?)", RegexOptions.Compiled);
         private static readonly Regex DurationRegex = new(@"Duration:\s*(?<hours>\d{2}):(?<minutes>\d{2}):(?<seconds>\d{2}(\.\d+)?)", RegexOptions.Compiled);
+        private static readonly Regex TranscriptTextFieldRegex = new(
+            @"""text""\s*:\s*""((?:[^""\\]|\\.)*)""",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private readonly OpenAiCompatibleOptions.ProviderConfig _stt = options.Value.Stt;
         private readonly StorageOptions _storage = storageOptions.Value;
@@ -284,10 +287,15 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         continue;
                     }
 
-                    var text = segmentElement.TryGetProperty("text", out var textElement)
+                    var rawText = segmentElement.TryGetProperty("text", out var textElement)
                         && textElement.ValueKind == JsonValueKind.String
                             ? textElement.GetString() ?? string.Empty
                             : string.Empty;
+                    var text = NormalizeNestedTranscriptText(rawText);
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        continue;
+                    }
 
                     double? avgLogProb = TryReadDouble(segmentElement, "avg_logprob", out var parsedAvgLogProb)
                         ? parsedAvgLogProb
@@ -315,7 +323,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     ? rootTextElement.GetString()?.Trim()
                     : null;
 
-            if (string.IsNullOrWhiteSpace(rootText))
+            var normalizedRootText = NormalizeNestedTranscriptText(rootText);
+            if (string.IsNullOrWhiteSpace(normalizedRootText))
             {
                 return segments;
             }
@@ -324,10 +333,135 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 participantUserId,
                 offsetMs,
                 offsetMs,
-                rootText,
+                normalizedRootText,
                 null));
 
             return segments;
+        }
+
+        private static bool LooksLikeStructuredTranscriptJson(string text)
+        {
+            var normalized = text.Trim();
+            if (normalized.Length == 0)
+            {
+                return false;
+            }
+
+            var lower = normalized.ToLowerInvariant();
+            if (lower.Contains("\"segments\"", StringComparison.Ordinal)
+                || lower.Contains("'segments'", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            return (normalized.StartsWith('{') || normalized.StartsWith('['))
+                && lower.Contains("\"text\"", StringComparison.Ordinal);
+        }
+
+        private static string StripTranscriptContentFences(string content)
+        {
+            var trimmed = content.Trim();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            {
+                var withoutOpening = Regex.Replace(
+                    trimmed,
+                    @"^```(?:json)?\s*",
+                    string.Empty,
+                    RegexOptions.IgnoreCase);
+                return Regex.Replace(
+                    withoutOpening,
+                    @"\s*```$",
+                    string.Empty,
+                    RegexOptions.IgnoreCase).Trim();
+            }
+
+            return trimmed;
+        }
+
+        private static string? NormalizeNestedTranscriptText(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return text;
+            }
+
+            var trimmed = text.Trim();
+            if (!LooksLikeStructuredTranscriptJson(trimmed))
+            {
+                return trimmed;
+            }
+
+            var cleaned = StripTranscriptContentFences(trimmed);
+            try
+            {
+                using var document = JsonDocument.Parse(cleaned);
+                var joined = JoinStructuredSegmentTexts(document.RootElement);
+                if (!string.IsNullOrWhiteSpace(joined))
+                {
+                    return joined;
+                }
+            }
+            catch (JsonException)
+            {
+                // Fall through to regex salvage.
+            }
+
+            var salvaged = SalvageTranscriptTextFields(cleaned);
+            return salvaged.Count > 0 ? string.Join(' ', salvaged) : string.Empty;
+        }
+
+        private static string? JoinStructuredSegmentTexts(JsonElement root)
+        {
+            if (!root.TryGetProperty("segments", out var segmentsElement)
+                || segmentsElement.ValueKind != JsonValueKind.Array)
+            {
+                if (root.TryGetProperty("text", out var rootTextElement)
+                    && rootTextElement.ValueKind == JsonValueKind.String)
+                {
+                    var rootText = rootTextElement.GetString()?.Trim();
+                    if (!string.IsNullOrWhiteSpace(rootText)
+                        && !LooksLikeStructuredTranscriptJson(rootText))
+                    {
+                        return rootText;
+                    }
+                }
+
+                return null;
+            }
+
+            var parts = new List<string>();
+            foreach (var segmentElement in segmentsElement.EnumerateArray())
+            {
+                if (segmentElement.TryGetProperty("text", out var textElement)
+                    && textElement.ValueKind == JsonValueKind.String)
+                {
+                    var segmentText = textElement.GetString()?.Trim();
+                    if (!string.IsNullOrWhiteSpace(segmentText))
+                    {
+                        parts.Add(segmentText);
+                    }
+                }
+            }
+
+            return parts.Count > 0 ? string.Join(' ', parts) : null;
+        }
+
+        private static List<string> SalvageTranscriptTextFields(string text)
+        {
+            var salvaged = new List<string>();
+            foreach (Match match in TranscriptTextFieldRegex.Matches(text))
+            {
+                var value = match.Groups[1].Value
+                    .Replace("\\\"", "\"", StringComparison.Ordinal)
+                    .Replace("\\\\", "\\", StringComparison.Ordinal)
+                    .Trim();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    salvaged.Add(value);
+                }
+            }
+
+            return salvaged;
         }
 
         private static string ResolveAudioContentType(string objectKeyOrFileName)

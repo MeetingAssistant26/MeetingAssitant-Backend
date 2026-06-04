@@ -82,6 +82,52 @@ namespace tests.Unit.LiveSession
             segments.Should().BeEmpty();
         }
 
+        [Fact]
+        public void ParseSegments_ShouldNormalizeNestedTranscriptJsonText_ToHumanProse()
+        {
+            var participantId = Guid.NewGuid();
+            var nestedJson = """
+                {
+                  "text": "{\"segments\":[{\"start\":0.2,\"end\":1.2,\"text\":\"intro\"},{\"start\":1.5,\"end\":2.0,\"text\":\"follow-up\"}]}"
+                }
+                """;
+
+            var segments = ParseSegments(participantId, nestedJson, 120_000);
+
+            segments.Should().ContainSingle();
+            segments[0].Text.Should().Be("intro follow-up");
+            segments[0].Text.Should().NotContain("{\"segments\"");
+        }
+
+        [Fact]
+        public void ParseSegments_ShouldSalvageMalformedNestedTranscriptJson_WithoutPreservingRawPayload()
+        {
+            var participantId = Guid.NewGuid();
+            var malformedNestedJson = """
+                {
+                  "text": "{\"segments\":[{\"t\":13.1,\"text\":\"Hello assistant\"},{\"t\":14.2,\"text\":\"follow up phrase\"}"
+                }
+                """;
+
+            var segments = ParseSegments(participantId, malformedNestedJson, 120_000);
+
+            segments.Should().ContainSingle();
+            segments[0].Text.Should().Be("Hello assistant follow up phrase");
+            segments[0].Text.Should().NotContain("{\"segments\"");
+        }
+
+        [Fact]
+        public void ParseSegments_ShouldPreservePlainTextFallback_WithoutAlteringContent()
+        {
+            var participantId = Guid.NewGuid();
+            var segments = ParseSegments(participantId, """{"text":"plain spoken transcript"}""", 90_000);
+
+            segments.Should().ContainSingle();
+            segments[0].Text.Should().Be("plain spoken transcript");
+            segments[0].StartMs.Should().Be(90_000);
+            segments[0].EndMs.Should().Be(90_000);
+        }
+
         [Theory]
         [InlineData("tracks/meeting/alice.wav", "audio/wav")]
         [InlineData("tracks/meeting/alice.mp3", "audio/mpeg")]
