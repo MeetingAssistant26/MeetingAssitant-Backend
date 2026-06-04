@@ -64,21 +64,10 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             var objectKey = FirstNonEmpty(
                 fragment.StorageObjectKey,
                 ExtractObjectKeyFromPath(backupPath),
-                $"tracks/mtg:{fragment.MeetingId}/user:{fragment.ParticipantUserId}/track-{fragment.TrackSid}.ogg");
+                BuildFallbackObjectKey(fragment));
 
             try
             {
-                if (_postMeetingProcessingTracker is not null)
-                {
-                    await _postMeetingProcessingTracker.StartStepAsync(
-                        fragment.OrganizationId,
-                        fragment.MeetingId,
-                        PostMeetingProcessingStepType.AudioIngest,
-                        message: "Uploading LiveKit egress backup audio to durable object storage.",
-                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
-                        cancellationToken: cancellationToken);
-                }
-
                 var upload = await _storageService.UploadFileAsync(backupPath!, objectKey!, cancellationToken);
 
                 fragment.StorageObjectKey = objectKey;
@@ -100,16 +89,25 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
                 TryDeleteBackupFile(backupPath!);
 
-                if (_postMeetingProcessingTracker is not null)
-                {
-                    await _postMeetingProcessingTracker.CompleteStepAsync(
-                        fragment.OrganizationId,
-                        fragment.MeetingId,
-                        PostMeetingProcessingStepType.AudioIngest,
-                        message: "Participant audio backup uploaded to durable object storage.",
-                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
-                        cancellationToken: cancellationToken);
-                }
+                await TryRecordTrackerAsync(
+                    async ct =>
+                    {
+                        await _postMeetingProcessingTracker!.StartStepAsync(
+                            fragment.OrganizationId,
+                            fragment.MeetingId,
+                            PostMeetingProcessingStepType.AudioIngest,
+                            message: "Uploading LiveKit egress backup audio to durable object storage.",
+                            artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                            cancellationToken: ct);
+                        await _postMeetingProcessingTracker.CompleteStepAsync(
+                            fragment.OrganizationId,
+                            fragment.MeetingId,
+                            PostMeetingProcessingStepType.AudioIngest,
+                            message: "Participant audio backup uploaded to durable object storage.",
+                            artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                            cancellationToken: ct);
+                    },
+                    cancellationToken);
 
                 _logger.LogInformation(
                     "Participant audio backup persisted. FragmentId={FragmentId} MeetingId={MeetingId} ObjectKey={ObjectKey} StorageLocation={StorageLocation}",
@@ -135,9 +133,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 fragment.FailureMessage = Truncate(ex.GetBaseException().Message, 2000);
                 await _dbContext.SaveChangesAsync(cancellationToken);
 
-                if (_postMeetingProcessingTracker is not null)
-                {
-                    await _postMeetingProcessingTracker.RecordEventAsync(
+                await TryRecordTrackerAsync(
+                    async ct => await _postMeetingProcessingTracker!.RecordEventAsync(
                         fragment.OrganizationId,
                         fragment.MeetingId,
                         PostMeetingProcessingEventType.Error,
@@ -147,8 +144,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
                         errorCode: fragment.FailureCode,
                         errorMessage: fragment.FailureMessage,
-                        cancellationToken: cancellationToken);
-                }
+                        cancellationToken: ct),
+                    cancellationToken);
 
                 _logger.LogError(
                     ex,
@@ -159,6 +156,27 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     fragment.StorageUploadAttemptCount);
 
                 throw;
+            }
+        }
+
+        private async Task TryRecordTrackerAsync(
+            Func<CancellationToken, Task> recordAsync,
+            CancellationToken cancellationToken)
+        {
+            if (_postMeetingProcessingTracker is null)
+            {
+                return;
+            }
+
+            try
+            {
+                await recordAsync(cancellationToken);
+            }
+            catch (Exception trackerEx)
+            {
+                _logger.LogWarning(
+                    trackerEx,
+                    "Post-meeting processing tracker update failed (best-effort).");
             }
         }
 
@@ -249,6 +267,18 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 segment => segment.Equals("tracks", StringComparison.OrdinalIgnoreCase));
 
             return tracksIndex >= 0 ? string.Join('/', segments.Skip(tracksIndex)) : null;
+        }
+
+        private static string BuildFallbackObjectKey(ParticipantAudioFragment fragment)
+        {
+            if (fragment.SpeakerRole == ParticipantAudioFragmentSpeakerRole.Assistant)
+            {
+                var identity = LiveKitParticipantIdentity.SanitizeIdentityForObjectKey(
+                    fragment.ParticipantIdentity ?? "assistant");
+                return $"tracks/mtg:{fragment.MeetingId}/{identity}/track-{fragment.TrackSid}.ogg";
+            }
+
+            return $"tracks/mtg:{fragment.MeetingId}/user:{fragment.ParticipantUserId}/track-{fragment.TrackSid}.ogg";
         }
 
         private static string? FirstNonEmpty(params string?[] values)

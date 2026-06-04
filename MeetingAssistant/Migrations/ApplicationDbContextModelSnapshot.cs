@@ -747,8 +747,21 @@ namespace MeetingAssistant.Migrations
                     b.Property<Guid?>("ParticipantAudioTrackId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("ParticipantUserId")
+                    b.Property<string>("ParticipantIdentity")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<Guid?>("ParticipantUserId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("SpeakerDisplayName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<int>("SpeakerRole")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
 
                     b.Property<long?>("SizeBytes")
                         .HasColumnType("bigint");
@@ -831,6 +844,9 @@ namespace MeetingAssistant.Migrations
 
                     b.HasIndex("MeetingId", "ParticipantUserId", "TrackPublishedAtUtc")
                         .HasDatabaseName("IX_ParticipantAudioFragments_Meeting_Participant_PublishedAt");
+
+                    b.HasIndex("MeetingId", "SpeakerRole", "TrackPublishedAtUtc")
+                        .HasDatabaseName("IX_ParticipantAudioFragments_Meeting_SpeakerRole_PublishedAt");
 
                     b.HasIndex("OrganizationId", "MeetingId", "ParticipantUserId")
                         .HasDatabaseName("IX_ParticipantAudioFragments_Org_Meeting_Participant");

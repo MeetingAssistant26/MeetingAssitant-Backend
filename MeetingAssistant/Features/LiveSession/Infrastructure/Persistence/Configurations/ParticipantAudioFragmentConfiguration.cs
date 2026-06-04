@@ -10,6 +10,19 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
         {
             builder.HasKey(x => x.Id);
 
+            builder.Property(x => x.SpeakerRole)
+                .HasConversion<int>()
+                .HasDefaultValue(ParticipantAudioFragmentSpeakerRole.Participant)
+                .IsRequired();
+
+            builder.Property(x => x.ParticipantIdentity)
+                .HasMaxLength(256)
+                .IsRequired(false);
+
+            builder.Property(x => x.SpeakerDisplayName)
+                .HasMaxLength(256)
+                .IsRequired(false);
+
             builder.Property(x => x.TrackSid)
                 .HasMaxLength(128)
                 .IsRequired();
@@ -73,6 +86,9 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
 
             builder.HasIndex(x => new { x.OrganizationId, x.MeetingId, x.ParticipantUserId })
                 .HasDatabaseName("IX_ParticipantAudioFragments_Org_Meeting_Participant");
+
+            builder.HasIndex(x => new { x.MeetingId, x.SpeakerRole, x.TrackPublishedAtUtc })
+                .HasDatabaseName("IX_ParticipantAudioFragments_Meeting_SpeakerRole_PublishedAt");
 
             builder.HasIndex(x => new { x.MeetingId, x.Status })
                 .HasDatabaseName("IX_ParticipantAudioFragments_MeetingId_Status");

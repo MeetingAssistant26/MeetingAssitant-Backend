@@ -5,6 +5,7 @@ using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -679,6 +680,59 @@ namespace tests.Integration.LiveSession
                     && x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing);
             pendingStep.Status.Should().Be(PostMeetingProcessingStatus.Pending);
             pendingStep.RelatedHangfireJobId.Should().Be("new-knowledge-job");
+        }
+
+        [Fact]
+        public async Task StartStepAsync_WhenDuplicateStepInsertRaces_ShouldRecoverWithoutThrowingOrDuplicatingRows()
+        {
+            PostMeetingProcessingStep? racedPendingStep = null;
+
+            await using var db = await LiveSessionTestDb.CreateAsync(interceptors:
+            [
+                new PostMeetingProcessingStepRaceSaveChangesInterceptor(async (context, pendingSteps, cancellationToken) =>
+                {
+                    if (context is not ApplicationDbContext dbContext)
+                    {
+                        return;
+                    }
+
+                    var pending = pendingSteps.FirstOrDefault(x => x.StepType == PostMeetingProcessingStepType.AudioIngest);
+                    if (pending is null || racedPendingStep is not null)
+                    {
+                        return;
+                    }
+
+                    racedPendingStep = new PostMeetingProcessingStep
+                    {
+                        OrganizationId = pending.OrganizationId,
+                        MeetingId = pending.MeetingId,
+                        RunId = pending.RunId,
+                        StepType = pending.StepType,
+                        Status = PostMeetingProcessingStatus.Pending
+                    };
+                    dbContext.PostMeetingProcessingSteps.Add(racedPendingStep);
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    dbContext.ChangeTracker.Clear();
+                })
+            ]);
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var tracker = new PostMeetingProcessingTracker(db.DbContext);
+
+            var step = await tracker.StartStepAsync(
+                orgId,
+                meetingId,
+                PostMeetingProcessingStepType.AudioIngest,
+                message: "Concurrent audio ingest start.");
+
+            step.Status.Should().Be(PostMeetingProcessingStatus.InProgress);
+            step.StepType.Should().Be(PostMeetingProcessingStepType.AudioIngest);
+
+            var steps = await db.DbContext.PostMeetingProcessingSteps
+                .IgnoreQueryFilters()
+                .Where(x => x.OrganizationId == orgId && x.MeetingId == meetingId && x.StepType == PostMeetingProcessingStepType.AudioIngest)
+                .ToListAsync();
+            steps.Should().ContainSingle();
         }
 
         private static PostMeetingProcessingStep CreateStep(

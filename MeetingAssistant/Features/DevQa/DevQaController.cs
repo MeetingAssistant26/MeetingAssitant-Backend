@@ -1706,7 +1706,9 @@ public sealed class DevQaController(
         fragments = fragments
             .Select(fragment => fragment with
             {
-                ParticipantDisplayName = ResolveDisplayName(participantByUserId, fragment.ParticipantUserId)
+                ParticipantDisplayName = fragment.ParticipantUserId.HasValue
+                    ? ResolveDisplayName(participantByUserId, fragment.ParticipantUserId.Value)
+                    : fragment.ParticipantDisplayName ?? "AI Assistant"
             })
             .ToList();
 
@@ -2643,7 +2645,7 @@ public sealed record QaAudioTrackStatusResponse(
 public sealed record QaAudioFragmentStatusResponse(
     Guid Id,
     Guid? ParticipantAudioTrackId,
-    Guid ParticipantUserId,
+    Guid? ParticipantUserId,
     string? ParticipantDisplayName,
     string TrackSid,
     string Status,

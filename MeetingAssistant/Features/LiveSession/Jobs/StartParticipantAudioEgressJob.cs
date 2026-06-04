@@ -45,6 +45,32 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
             if (claimed == 0)
             {
+                var snapshot = await _dbContext.ParticipantAudioFragments
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(x => x.Id == fragmentId)
+                    .Select(x => new
+                    {
+                        x.Status,
+                        x.EgressId,
+                        x.EgressStartLeaseExpiresAtUtc
+                    })
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (snapshot is not null
+                    && snapshot.Status == ParticipantAudioFragmentStatus.Pending
+                    && snapshot.EgressId == null
+                    && snapshot.EgressStartLeaseExpiresAtUtc > now)
+                {
+                    _logger.LogWarning(
+                        "Participant audio egress start blocked by active lease. FragmentId={FragmentId} LeaseExpiresAtUtc={LeaseExpiresAtUtc}",
+                        fragmentId,
+                        snapshot.EgressStartLeaseExpiresAtUtc);
+
+                    throw new InvalidOperationException(
+                        $"Participant audio fragment {fragmentId} egress start is already leased until {snapshot.EgressStartLeaseExpiresAtUtc:O}.");
+                }
+
                 _logger.LogInformation(
                     "Participant audio egress start skipped because fragment is already claimed or terminal. FragmentId={FragmentId}",
                     fragmentId);
@@ -56,21 +82,15 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .FirstAsync(x => x.Id == fragmentId, cancellationToken);
 
             var roomName = $"mtg:{fragment.MeetingId}";
-            var participantIdentity = $"user:{fragment.ParticipantUserId}";
+            var participantIdentity = !string.IsNullOrWhiteSpace(fragment.ParticipantIdentity)
+                ? fragment.ParticipantIdentity
+                : fragment.ParticipantUserId.HasValue
+                    ? LiveKitParticipantIdentity.BuildHumanParticipantIdentity(fragment.ParticipantUserId.Value)
+                    : throw new InvalidOperationException(
+                        $"Participant audio fragment {fragment.Id} has no resolvable participant identity.");
 
             try
             {
-                if (_postMeetingProcessingTracker is not null)
-                {
-                    await _postMeetingProcessingTracker.StartStepAsync(
-                        fragment.OrganizationId,
-                        fragment.MeetingId,
-                        PostMeetingProcessingStepType.AudioIngest,
-                        message: "Participant audio egress start attempt running.",
-                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
-                        cancellationToken: cancellationToken);
-                }
-
                 var result = await _egressService.StartTrackEgressAsync(
                     fragment.MeetingId,
                     roomName,
@@ -90,16 +110,25 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
 
-                if (_postMeetingProcessingTracker is not null)
-                {
-                    await _postMeetingProcessingTracker.MarkStepPendingAsync(
-                        fragment.OrganizationId,
-                        fragment.MeetingId,
-                        PostMeetingProcessingStepType.AudioIngest,
-                        message: "Participant audio egress started; waiting for egress completion/storage.",
-                        artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
-                        cancellationToken: cancellationToken);
-                }
+                await TryRecordTrackerAsync(
+                    async ct =>
+                    {
+                        await _postMeetingProcessingTracker!.StartStepAsync(
+                            fragment.OrganizationId,
+                            fragment.MeetingId,
+                            PostMeetingProcessingStepType.AudioIngest,
+                            message: "Participant audio egress start attempt running.",
+                            artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                            cancellationToken: ct);
+                        await _postMeetingProcessingTracker.MarkStepPendingAsync(
+                            fragment.OrganizationId,
+                            fragment.MeetingId,
+                            PostMeetingProcessingStepType.AudioIngest,
+                            message: "Participant audio egress started; waiting for egress completion/storage.",
+                            artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
+                            cancellationToken: ct);
+                    },
+                    cancellationToken);
 
                 _logger.LogInformation(
                     "Participant audio egress started. FragmentId={FragmentId} MeetingId={MeetingId} TrackSid={TrackSid} EgressId={EgressId} StorageObjectKey={StorageObjectKey}",
@@ -116,9 +145,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 fragment.FailureMessage = Truncate(ex.GetBaseException().Message, 2000);
                 await _dbContext.SaveChangesAsync(cancellationToken);
 
-                if (_postMeetingProcessingTracker is not null)
-                {
-                    await _postMeetingProcessingTracker.RecordEventAsync(
+                await TryRecordTrackerAsync(
+                    async ct => await _postMeetingProcessingTracker!.RecordEventAsync(
                         fragment.OrganizationId,
                         fragment.MeetingId,
                         PostMeetingProcessingEventType.Error,
@@ -128,8 +156,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         artifact: new PostMeetingArtifactLink("participant_audio_fragment", fragment.Id),
                         errorCode: fragment.FailureCode,
                         errorMessage: fragment.FailureMessage,
-                        cancellationToken: cancellationToken);
-                }
+                        cancellationToken: ct),
+                    cancellationToken);
 
                 _logger.LogError(
                     ex,
@@ -140,6 +168,27 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     fragment.EgressStartAttemptCount);
 
                 throw;
+            }
+        }
+
+        private async Task TryRecordTrackerAsync(
+            Func<CancellationToken, Task> recordAsync,
+            CancellationToken cancellationToken)
+        {
+            if (_postMeetingProcessingTracker is null)
+            {
+                return;
+            }
+
+            try
+            {
+                await recordAsync(cancellationToken);
+            }
+            catch (Exception trackerEx)
+            {
+                _logger.LogWarning(
+                    trackerEx,
+                    "Post-meeting processing tracker update failed (best-effort).");
             }
         }
 

@@ -164,10 +164,9 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 organizationId,
                 roomActivatedAtUtc,
                 cancellationToken);
-            var assistantSegments = traceSegments.AssistantSegments;
             var participantTraceSegments = traceSegments.ParticipantSegments;
 
-            if (fragments.Count == 0 && assistantSegments.Count == 0 && participantTraceSegments.Count == 0)
+            if (fragments.Count == 0 && participantTraceSegments.Count == 0)
             {
                 if (_postMeetingProcessingTracker is not null)
                 {
@@ -195,6 +194,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     fragment,
                     Timing: ResolveTrackTiming(
                         fragment.ParticipantUserId,
+                        fragment.ParticipantIdentity,
+                        fragment.SpeakerRole,
                         fragment.TrackSid,
                         fragment.StorageObjectKey!,
                         roomActivatedAtUtc,
@@ -204,12 +205,14 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         timingEvents)
                 ))
                 .OrderBy(x => x.Timing.RoomRelativeStartOffsetMs)
+                .ThenBy(x => x.Fragment.SpeakerRole)
                 .ThenBy(x => x.Fragment.ParticipantUserId)
                 .ThenBy(x => x.Fragment.TrackSid, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(x => x.Fragment.StorageObjectKey, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            var allSegments = new ConcurrentBag<NormalizedTranscriptSegment>();
+            var humanSegments = new ConcurrentBag<NormalizedTranscriptSegment>();
+            var assistantSegments = new ConcurrentBag<NormalizedTranscriptSegment>();
             var sttModels = new ConcurrentBag<string>();
             var failedFragments = new ConcurrentBag<FailedFragmentTranscription>();
             var succeededFragmentIds = new ConcurrentBag<Guid>();
@@ -233,11 +236,14 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
                         await _dbContext.SaveChangesAsync(ct);
 
-                        _qaSttFailureInjectionService?.TryInjectFailure(
-                            meetingId,
-                            organizationId,
-                            fragment.ParticipantUserId,
-                            fragment.StorageObjectKey!);
+                        if (fragment.ParticipantUserId.HasValue)
+                        {
+                            _qaSttFailureInjectionService?.TryInjectFailure(
+                                meetingId,
+                                organizationId,
+                                fragment.ParticipantUserId.Value,
+                                fragment.StorageObjectKey!);
+                        }
 
                         var result = await _sttService.TranscribeTrackAsync(
                             fragment.ParticipantUserId,
@@ -271,9 +277,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
                         sttModels.Add(result.Model);
                         succeededFragmentIds.Add(fragment.Id);
+                        var targetSegments = fragment.SpeakerRole == ParticipantAudioFragmentSpeakerRole.Assistant
+                            ? assistantSegments
+                            : humanSegments;
                         foreach (var segment in result.Segments)
                         {
-                            allSegments.Add(NormalizeSegment(
+                            targetSegments.Add(NormalizeSegment(
                                 segment,
                                 fragment.ParticipantAudioTrackId,
                                 fragment.Id,
@@ -304,7 +313,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .Distinct()
                 .ToList();
 
-            if (allSegments.IsEmpty && assistantSegments.Count == 0 && participantTraceSegments.Count == 0)
+            if (humanSegments.IsEmpty && assistantSegments.IsEmpty && participantTraceSegments.Count == 0)
             {
                 if (_postMeetingProcessingTracker is not null)
                 {
@@ -332,7 +341,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return;
             }
 
-            var orderedHumanSegments = allSegments
+            var orderedHumanSegments = humanSegments
+                .OrderBy(x => x.RoomRelativeStartMs)
+                .ThenBy(x => x.RoomRelativeEndMs)
+                .ToList();
+            var orderedAssistantSegments = assistantSegments
                 .OrderBy(x => x.RoomRelativeStartMs)
                 .ThenBy(x => x.RoomRelativeEndMs)
                 .ToList();
@@ -418,6 +431,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
 
             var participantIds = orderedHumanSegments
                 .Select(x => x.ParticipantUserId)
+                .Where(x => x.HasValue)
+                .Select(x => x!.Value)
                 .Distinct()
                 .ToList();
 
@@ -440,8 +455,12 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 ? orderedHumanSegments.Select(segment => CreateParticipantOutputSegment(segment, displayNames)).ToList()
                 : participantTraceSegments;
 
+            var assistantAudioSegments = orderedAssistantSegments
+                .Select(CreateAssistantOutputSegment)
+                .ToList();
+
             var orderedSegments = participantSegments
-                .Concat(assistantSegments)
+                .Concat(assistantAudioSegments)
                 .OrderBy(x => x.RoomRelativeStartMs)
                 .ThenBy(x => x.RoomRelativeEndMs)
                 .ThenBy(x => x.SortPriority)
@@ -784,17 +803,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .ThenBy(x => x.TraceEventId, StringComparer.Ordinal)
                 .ToList();
 
-            var assistantSegments = events
-                .Where(x => IsAssistantTranscriptTraceEvent(x.EventType))
-                .Where(x => !string.IsNullOrWhiteSpace(x.Text))
-                .GroupBy(x => new TraceTurnKey(x.SessionId, x.TurnId))
-                .SelectMany(x => CreateAssistantOutputSegments(x, roomActivatedAtUtc))
-                .OrderBy(x => x.RoomRelativeStartMs)
-                .ThenBy(x => x.RoomRelativeEndMs)
-                .ThenBy(x => x.TraceEventId, StringComparer.Ordinal)
-                .ToList();
-
-            return new AiTraceTranscriptSegments(participantSegments, assistantSegments);
+            return new AiTraceTranscriptSegments(participantSegments, Array.Empty<TranscriptOutputSegment>());
         }
 
         private static IReadOnlyList<TranscriptOutputSegment> CreateAssistantOutputSegments(
@@ -870,13 +879,38 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 combinedText)];
         }
 
+        private static TranscriptOutputSegment CreateAssistantOutputSegment(NormalizedTranscriptSegment segment)
+            => new(
+                AssistantSpeakerRole,
+                ParticipantUserId: null,
+                segment.ParticipantAudioTrackId,
+                segment.ParticipantAudioFragmentId,
+                segment.TrackRelativeStartMs,
+                segment.TrackRelativeEndMs,
+                segment.RoomRelativeStartMs,
+                segment.RoomRelativeEndMs,
+                segment.AbsoluteStartUtc,
+                segment.AbsoluteEndUtc,
+                segment.RoomRelativeStartMs,
+                segment.RoomRelativeEndMs,
+                segment.Text,
+                segment.AvgLogProb,
+                segment.TimestampOffsetSource,
+                AssistantDisplayName,
+                EgressAudioSource,
+                TraceEventId: null,
+                SessionId: null,
+                TurnId: null,
+                SortPriority: 1);
+
         private static TranscriptOutputSegment CreateParticipantOutputSegment(
             NormalizedTranscriptSegment segment,
             IReadOnlyDictionary<Guid, string> displayNames)
         {
-            var displayName = displayNames.TryGetValue(segment.ParticipantUserId, out var resolved)
+            var displayName = segment.ParticipantUserId.HasValue
+                && displayNames.TryGetValue(segment.ParticipantUserId.Value, out var resolved)
                 ? resolved
-                : segment.ParticipantUserId.ToString();
+                : segment.ParticipantUserId?.ToString() ?? "Participant";
 
             return new TranscriptOutputSegment(
                 ParticipantSpeakerRole,
@@ -981,7 +1015,9 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             };
 
         private static TrackTiming ResolveTrackTiming(
-            Guid participantUserId,
+            Guid? participantUserId,
+            string? participantIdentity,
+            ParticipantAudioFragmentSpeakerRole speakerRole,
             string trackSid,
             string storageObjectKey,
             DateTime? roomActivatedAtUtc,
@@ -1000,9 +1036,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return CreateTiming(roomActivatedAtUtc.Value, fragmentTrackPublishedAtUtc.Value, TimestampOffsetSources.FragmentTrackPublished);
             }
 
-            var participantEvents = timingEvents
-                .Where(x => x.ParticipantUserId == participantUserId)
-                .ToList();
+            var participantEvents = speakerRole == ParticipantAudioFragmentSpeakerRole.Assistant
+                ? timingEvents.ToList()
+                : timingEvents
+                    .Where(x => x.ParticipantUserId == participantUserId)
+                    .ToList();
 
             trackSid = string.IsNullOrWhiteSpace(trackSid) ? TryExtractTrackSid(storageObjectKey) ?? string.Empty : trackSid;
             TranscriptTimingEvent? trackPublished = null;
@@ -1116,7 +1154,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             DateTime OccurredAtUtc);
 
         private sealed record NormalizedTranscriptSegment(
-            Guid ParticipantUserId,
+            Guid? ParticipantUserId,
             Guid? ParticipantAudioTrackId,
             Guid ParticipantAudioFragmentId,
             long TrackRelativeStartMs,

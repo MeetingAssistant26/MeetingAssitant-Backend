@@ -8,7 +8,9 @@ using MeetingAssistant.Api.Infrastructure.Services;
 using MeetingAssistant.Features.Identity.Entites;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.Events;
+using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
+using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
@@ -144,7 +146,7 @@ namespace tests.Integration.LiveSession
         public ConcurrentBag<string> Calls { get; } = new();
 
         public Task<TrackTranscriptionResult> TranscribeTrackAsync(
-            Guid participantUserId,
+            Guid? participantUserId,
             string storageObjectKey,
             CancellationToken ct = default)
         {
@@ -191,6 +193,258 @@ namespace tests.Integration.LiveSession
         {
             PersonalizedCalls.Add((fullTranscript, participant, personalizationContext));
             return Task.FromResult(_personalizedResults.Count > 0 ? _personalizedResults.Dequeue() : _result);
+        }
+    }
+
+    internal sealed class PostMeetingProcessingStepRaceSaveChangesInterceptor(
+        Func<DbContext, IEnumerable<PostMeetingProcessingStep>, CancellationToken, Task> onFirstStepInsert)
+        : SaveChangesInterceptor
+    {
+        private int _firstStepSaveAttempted;
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context is null)
+            {
+                return await base.SavingChangesAsync(eventData, result, cancellationToken);
+            }
+
+            var pendingSteps = eventData.Context.ChangeTracker
+                .Entries<PostMeetingProcessingStep>()
+                .Where(x => x.State == EntityState.Added)
+                .Select(x => x.Entity)
+                .ToArray();
+
+            if (pendingSteps.Length == 0
+                || Interlocked.CompareExchange(ref _firstStepSaveAttempted, 1, 0) != 0)
+            {
+                return await base.SavingChangesAsync(eventData, result, cancellationToken);
+            }
+
+            await onFirstStepInsert(eventData.Context, pendingSteps, cancellationToken);
+            return await base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    internal sealed class FaultInjectingPostMeetingProcessingTracker(
+        IPostMeetingProcessingTracker inner,
+        params Func<string, bool>[] throwPredicates) : IPostMeetingProcessingTracker
+    {
+        private readonly IPostMeetingProcessingTracker _inner = inner;
+        private readonly Func<string, bool>[] _throwPredicates = throwPredicates;
+
+        public Task<PostMeetingProcessingRun> EnsureRunAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid? pipelineGenerationId = null,
+            string? relatedHangfireJobId = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(EnsureRunAsync), () =>
+                _inner.EnsureRunAsync(organizationId, meetingId, pipelineGenerationId, relatedHangfireJobId, cancellationToken));
+
+        public Task<PostMeetingProcessingStep> MarkStepPendingAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
+            string? message = null,
+            string? relatedHangfireJobId = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(MarkStepPendingAsync), () =>
+                _inner.MarkStepPendingAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    message,
+                    relatedHangfireJobId,
+                    artifact,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingStep> StartStepAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(StartStepAsync), () =>
+                _inner.StartStepAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingStep> CompleteStepAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(CompleteStepAsync), () =>
+                _inner.CompleteStepAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingStep> CompleteStepWithWarningsAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(CompleteStepWithWarningsAsync), () =>
+                _inner.CompleteStepWithWarningsAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingStep> FailStepAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            string errorCode,
+            string errorMessage,
+            Guid? pipelineGenerationId = null,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(FailStepAsync), () =>
+                _inner.FailStepAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    errorCode,
+                    errorMessage,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingStep> SkipStepAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId = null,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(SkipStepAsync), () =>
+                _inner.SkipStepAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingEvent> RecordEventAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingEventType eventType,
+            Guid? pipelineGenerationId = null,
+            PostMeetingProcessingStepType? stepType = null,
+            PostMeetingProcessingStatus? status = null,
+            string? message = null,
+            string? relatedHangfireJobId = null,
+            PostMeetingArtifactLink? artifact = null,
+            string? errorCode = null,
+            string? errorMessage = null,
+            string? metadataJson = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(RecordEventAsync), () =>
+                _inner.RecordEventAsync(
+                    organizationId,
+                    meetingId,
+                    eventType,
+                    pipelineGenerationId,
+                    stepType,
+                    status,
+                    message,
+                    relatedHangfireJobId,
+                    artifact,
+                    errorCode,
+                    errorMessage,
+                    metadataJson,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingRun> CompleteRunAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid? pipelineGenerationId = null,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(CompleteRunAsync), () =>
+                _inner.CompleteRunAsync(
+                    organizationId,
+                    meetingId,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingRun> CompleteRunWithWarningsAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid? pipelineGenerationId = null,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            CancellationToken cancellationToken = default)
+            => MaybeThrowAsync(nameof(CompleteRunWithWarningsAsync), () =>
+                _inner.CompleteRunWithWarningsAsync(
+                    organizationId,
+                    meetingId,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    cancellationToken));
+
+        public Task<PostMeetingProcessingSnapshot> GetLatestByMeetingAsync(
+            Guid organizationId,
+            Guid meetingId,
+            CancellationToken cancellationToken = default)
+            => _inner.GetLatestByMeetingAsync(organizationId, meetingId, cancellationToken);
+
+        private async Task<T> MaybeThrowAsync<T>(string methodName, Func<Task<T>> action)
+        {
+            if (_throwPredicates.Any(predicate => predicate(methodName)))
+            {
+                throw new InvalidOperationException($"Injected tracker failure for {methodName}.");
+            }
+
+            return await action();
         }
     }
 
@@ -368,8 +622,41 @@ namespace tests.Integration.LiveSession
             {
                 MeetingId = meetingId,
                 OrganizationId = organizationId,
+                SpeakerRole = ParticipantAudioFragmentSpeakerRole.Participant,
                 ParticipantUserId = participantUserId,
+                ParticipantIdentity = $"user:{participantUserId}",
                 ParticipantAudioTrackId = participantAudioTrackId,
+                TrackSid = trackSid,
+                StorageObjectKey = storageObjectKey,
+                StorageLocation = $"s3://recordings/{storageObjectKey}",
+                Status = ParticipantAudioFragmentStatus.Available,
+                TrackPublishedAtUtc = trackPublishedAtUtc,
+                StorageAvailableAtUtc = trackPublishedAtUtc?.AddSeconds(5),
+                SizeBytes = 1024
+            };
+
+            DbContext.ParticipantAudioFragments.Add(fragment);
+            DbContext.SaveChanges();
+            return fragment.Id;
+        }
+
+        public Guid AddAvailableAssistantAudioFragment(
+            Guid meetingId,
+            Guid organizationId,
+            string participantIdentity,
+            string storageObjectKey,
+            string trackSid,
+            DateTime? trackPublishedAtUtc = null)
+        {
+            var fragment = new ParticipantAudioFragment
+            {
+                MeetingId = meetingId,
+                OrganizationId = organizationId,
+                SpeakerRole = ParticipantAudioFragmentSpeakerRole.Assistant,
+                ParticipantUserId = null,
+                ParticipantIdentity = participantIdentity,
+                SpeakerDisplayName = "AI Assistant",
+                ParticipantAudioTrackId = null,
                 TrackSid = trackSid,
                 StorageObjectKey = storageObjectKey,
                 StorageLocation = $"s3://recordings/{storageObjectKey}",
@@ -460,13 +747,27 @@ namespace tests.Integration.LiveSession
             };
 
         public static WebhookEvent TrackPublished(Guid meetingId, string eventId, Guid userId, string trackSid)
+            => TrackPublishedWithIdentity(meetingId, eventId, $"user:{userId}", trackSid);
+
+        public static WebhookEvent TrackPublishedForAssistant(
+            Guid meetingId,
+            string eventId,
+            string participantIdentity,
+            string trackSid)
+            => TrackPublishedWithIdentity(meetingId, eventId, participantIdentity, trackSid);
+
+        private static WebhookEvent TrackPublishedWithIdentity(
+            Guid meetingId,
+            string eventId,
+            string participantIdentity,
+            string trackSid)
             => new()
             {
                 Event = "track_published",
                 Id = eventId,
                 CreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 Room = new Room { Name = $"mtg:{meetingId}" },
-                Participant = new ParticipantInfo { Identity = $"user:{userId}" },
+                Participant = new ParticipantInfo { Identity = participantIdentity },
                 Track = new TrackInfo
                 {
                     Sid = trackSid,

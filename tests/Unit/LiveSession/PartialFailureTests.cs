@@ -560,7 +560,7 @@ namespace tests.Unit.LiveSession
             private readonly ConcurrentDictionary<string, int> _attemptCounts = new(StringComparer.Ordinal);
 
             public Task<TrackTranscriptionResult> TranscribeTrackAsync(
-                Guid participantUserId,
+                Guid? participantUserId,
                 string storageObjectKey,
                 CancellationToken ct = default)
             {

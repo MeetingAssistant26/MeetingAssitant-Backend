@@ -1,3 +1,5 @@
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -5,6 +7,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace MeetingAssistant.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(ApplicationDbContext))]
+    [Migration("20260604150000_EnforceKnowledgeDocumentCurrentPublishedArtifact")]
     public partial class EnforceKnowledgeDocumentCurrentPublishedArtifact : Migration
     {
         /// <inheritdoc />

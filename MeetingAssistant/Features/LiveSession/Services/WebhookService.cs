@@ -175,22 +175,35 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                 ?? ExtractParticipantIdentityFromEgressPath(fileLocation)
                                 ?? egressIdentity;
 
-                            var resolvedParticipantUserId = existingFragment?.ParticipantUserId
-                                ?? await ResolveParticipantUserIdAsync(
-                                    meeting.Id,
-                                    fileIdentity,
-                                    cancellationToken);
+                            var isAssistant = existingFragment?.SpeakerRole == ParticipantAudioFragmentSpeakerRole.Assistant
+                                || LiveKitParticipantIdentity.IsAssistantIdentity(fileIdentity);
 
-                            if (resolvedParticipantUserId is null)
+                            Guid? resolvedParticipantUserId;
+                            Guid? trackId = null;
+
+                            if (isAssistant)
                             {
-                                _logger.LogWarning(
-                                    "Skipping egress file because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity} FileLocation={FileLocation} TrackSid={TrackSid} EgressId={EgressId}",
-                                    meeting.Id,
-                                    fileIdentity,
-                                    fileLocation,
-                                    trackSid,
-                                    egressDetails.EgressId);
-                                return;
+                                resolvedParticipantUserId = null;
+                            }
+                            else
+                            {
+                                resolvedParticipantUserId = existingFragment?.ParticipantUserId
+                                    ?? await ResolveParticipantUserIdAsync(
+                                        meeting.Id,
+                                        fileIdentity,
+                                        cancellationToken);
+
+                                if (resolvedParticipantUserId is null)
+                                {
+                                    _logger.LogWarning(
+                                        "Skipping egress file because participant identity was not resolvable. MeetingId={MeetingId} Identity={Identity} FileLocation={FileLocation} TrackSid={TrackSid} EgressId={EgressId}",
+                                        meeting.Id,
+                                        fileIdentity,
+                                        fileLocation,
+                                        trackSid,
+                                        egressDetails.EgressId);
+                                    return;
+                                }
                             }
 
                             var backupStoragePath = ResolveBackupStoragePath(
@@ -204,22 +217,33 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                 ? ParticipantAudioFragmentStatus.Pending
                                 : ParticipantAudioFragmentStatus.Failed;
 
-                            var aggregateStatus = status == ParticipantAudioFragmentStatus.Failed
-                                ? ParticipantAudioTrackStatus.Failed
-                                : ParticipantAudioTrackStatus.Pending;
+                            if (!isAssistant)
+                            {
+                                var aggregateStatus = status == ParticipantAudioFragmentStatus.Failed
+                                    ? ParticipantAudioTrackStatus.Failed
+                                    : ParticipantAudioTrackStatus.Pending;
+                                trackId = await UpsertParticipantAudioTrackAsync(
+                                    meeting.Id,
+                                    meeting.OrganizationId,
+                                    resolvedParticipantUserId!.Value,
+                                    aggregateStatus,
+                                    cancellationToken);
+                            }
 
-                            var trackId = await UpsertParticipantAudioTrackAsync(
-                                meeting.Id,
-                                meeting.OrganizationId,
-                                resolvedParticipantUserId.Value,
-                                aggregateStatus,
-                                cancellationToken);
+                            var participantIdentity = isAssistant
+                                ? fileIdentity
+                                : LiveKitParticipantIdentity.BuildHumanParticipantIdentity(resolvedParticipantUserId!.Value);
 
                             var fragment = await UpsertParticipantAudioFragmentAsync(
                                 meeting.Id,
                                 meeting.OrganizationId,
-                                resolvedParticipantUserId.Value,
+                                isAssistant
+                                    ? ParticipantAudioFragmentSpeakerRole.Assistant
+                                    : ParticipantAudioFragmentSpeakerRole.Participant,
+                                resolvedParticipantUserId,
                                 trackId,
+                                participantIdentity,
+                                isAssistant ? LiveKitParticipantIdentity.AssistantDisplayName : null,
                                 trackSid,
                                 egressDetails.EgressId,
                                 fileName,
@@ -240,9 +264,9 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                 cancellationToken);
                             discoveredFragmentIds.Add(fragment.Id);
 
-                            if (status == ParticipantAudioFragmentStatus.Failed)
+                            if (status == ParticipantAudioFragmentStatus.Failed && trackId.HasValue)
                             {
-                                await RefreshParticipantAudioTrackAggregateAsync(trackId, cancellationToken);
+                                await RefreshParticipantAudioTrackAggregateAsync(trackId.Value, cancellationToken);
                             }
 
                             if (status == ParticipantAudioFragmentStatus.Pending)
@@ -274,7 +298,39 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         var identity = webhookEvent.Participant?.Identity;
                         if (!string.IsNullOrWhiteSpace(trackSid) && !string.IsNullOrWhiteSpace(identity))
                         {
-                            var resolvedParticipantUserId = participantUserId;
+                            if (LiveKitParticipantIdentity.IsAssistantParticipant(identity, rawPayload))
+                            {
+                                var assistantFragment = await UpsertParticipantAudioFragmentAsync(
+                                    meeting.Id,
+                                    meeting.OrganizationId,
+                                    ParticipantAudioFragmentSpeakerRole.Assistant,
+                                    participantUserId: null,
+                                    participantAudioTrackId: null,
+                                    participantIdentity: identity,
+                                    speakerDisplayName: LiveKitParticipantIdentity.AssistantDisplayName,
+                                    trackSid,
+                                    egressId: null,
+                                    fileName: null,
+                                    storageLocation: null,
+                                    storageObjectKey: null,
+                                    backupStoragePath: null,
+                                    backupStorageAvailableAtUtc: null,
+                                    status: ParticipantAudioFragmentStatus.Pending,
+                                    sizeBytes: null,
+                                    existingFragment: null,
+                                    trackPublishedAtUtc: occurredAtUtc,
+                                    egressStartedAtUtc: null,
+                                    egressEndedAtUtc: null,
+                                    failureCode: null,
+                                    failureMessage: null,
+                                    cancellationToken);
+                                discoveredFragmentIds.Add(assistantFragment.Id);
+                                egressStartEnqueues.Add(assistantFragment.Id);
+                                break;
+                            }
+
+                            var resolvedParticipantUserId = participantUserId
+                                ?? await ResolveParticipantUserIdAsync(meeting.Id, identity, cancellationToken);
                             if (resolvedParticipantUserId is null)
                             {
                                 _logger.LogWarning(
@@ -295,8 +351,11 @@ namespace MeetingAssistant.Features.LiveSession.Services
                             var fragment = await UpsertParticipantAudioFragmentAsync(
                                 meeting.Id,
                                 meeting.OrganizationId,
-                                resolvedParticipantUserId.Value,
+                                ParticipantAudioFragmentSpeakerRole.Participant,
+                                resolvedParticipantUserId,
                                 trackId,
+                                LiveKitParticipantIdentity.BuildHumanParticipantIdentity(resolvedParticipantUserId.Value),
+                                speakerDisplayName: null,
                                 trackSid,
                                 egressId: null,
                                 fileName: null,
@@ -486,8 +545,11 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private async Task<ParticipantAudioFragment> UpsertParticipantAudioFragmentAsync(
             Guid meetingId,
             Guid organizationId,
-            Guid participantUserId,
-            Guid participantAudioTrackId,
+            ParticipantAudioFragmentSpeakerRole speakerRole,
+            Guid? participantUserId,
+            Guid? participantAudioTrackId,
+            string? participantIdentity,
+            string? speakerDisplayName,
             string? trackSid,
             string? egressId,
             string? fileName,
@@ -505,9 +567,13 @@ namespace MeetingAssistant.Features.LiveSession.Services
             string? failureMessage,
             CancellationToken cancellationToken)
         {
+            var identitySeed = participantIdentity
+                ?? (participantUserId.HasValue
+                    ? LiveKitParticipantIdentity.BuildHumanParticipantIdentity(participantUserId.Value)
+                    : "unknown");
             var effectiveTrackSid = trackSid
                 ?? ResolveEgressTrackSid(null, fileName, storageLocation, egressId)
-                ?? $"egress:{HashExternalEventSignature($"{meetingId}:{participantUserId}:{egressId}:{storageLocation}:{fileName}")}";
+                ?? $"egress:{HashExternalEventSignature($"{meetingId}:{identitySeed}:{egressId}:{storageLocation}:{fileName}")}";
 
             var fragment = existingFragment ?? await _dbContext.ParticipantAudioFragments
                 .IgnoreQueryFilters()
@@ -521,7 +587,10 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 {
                     MeetingId = meetingId,
                     OrganizationId = organizationId,
+                    SpeakerRole = speakerRole,
                     ParticipantUserId = participantUserId,
+                    ParticipantIdentity = participantIdentity,
+                    SpeakerDisplayName = speakerDisplayName,
                     ParticipantAudioTrackId = participantAudioTrackId,
                     TrackSid = effectiveTrackSid
                 };
@@ -530,8 +599,15 @@ namespace MeetingAssistant.Features.LiveSession.Services
             }
 
             fragment.OrganizationId = organizationId;
+            fragment.SpeakerRole = speakerRole;
             fragment.ParticipantUserId = participantUserId;
-            fragment.ParticipantAudioTrackId = participantAudioTrackId;
+            fragment.ParticipantIdentity = string.IsNullOrWhiteSpace(participantIdentity)
+                ? fragment.ParticipantIdentity
+                : participantIdentity;
+            fragment.SpeakerDisplayName = string.IsNullOrWhiteSpace(speakerDisplayName)
+                ? fragment.SpeakerDisplayName
+                : speakerDisplayName;
+            fragment.ParticipantAudioTrackId = participantAudioTrackId ?? fragment.ParticipantAudioTrackId;
             fragment.EgressId = string.IsNullOrWhiteSpace(egressId) ? fragment.EgressId : egressId;
             fragment.StorageLocation = string.IsNullOrWhiteSpace(storageLocation) ? fragment.StorageLocation : storageLocation;
             fragment.StorageObjectKey = string.IsNullOrWhiteSpace(storageObjectKey) ? fragment.StorageObjectKey : storageObjectKey;

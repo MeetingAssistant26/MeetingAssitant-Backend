@@ -2,6 +2,7 @@ using System.Text.Json;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
 {
@@ -9,17 +10,36 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
     {
         private const int MaxErrorMessageLength = 2000;
         private const int MaxMessageLength = 2000;
+        private const string UniqueViolationSqlState = "23505";
+        private const int SqliteConstraintViolationErrorCode = 19;
+        private const string StepRunStepTypeUniqueIndex = "UX_PostMeetingProcessingSteps_Run_StepType";
+        private const string RunOrgMeetingGenerationUniqueIndex = "UX_PostMeetingProcessingRuns_Org_Meeting_Generation";
 
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
         private readonly ApplicationDbContext _dbContext = dbContext;
 
-        public async Task<PostMeetingProcessingRun> EnsureRunAsync(
+        public Task<PostMeetingProcessingRun> EnsureRunAsync(
             Guid organizationId,
             Guid meetingId,
             Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => EnsureRunInternalAsync(
+                    organizationId,
+                    meetingId,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingRun> EnsureRunInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid? pipelineGenerationId,
+            string? relatedHangfireJobId,
+            CancellationToken cancellationToken)
         {
             var run = pipelineGenerationId.HasValue
                 ? await _dbContext.PostMeetingProcessingRuns
@@ -74,7 +94,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return run;
         }
 
-        public async Task<PostMeetingProcessingStep> MarkStepPendingAsync(
+        public Task<PostMeetingProcessingStep> MarkStepPendingAsync(
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
@@ -83,6 +103,27 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             string? relatedHangfireJobId = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => MarkStepPendingInternalAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    message,
+                    relatedHangfireJobId,
+                    artifact,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingStep> MarkStepPendingInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId,
+            string? message,
+            string? relatedHangfireJobId,
+            PostMeetingArtifactLink? artifact,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -112,7 +153,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return step;
         }
 
-        public async Task<PostMeetingProcessingStep> StartStepAsync(
+        public Task<PostMeetingProcessingStep> StartStepAsync(
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
@@ -121,6 +162,27 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => StartStepInternalAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingStep> StartStepInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId,
+            string? relatedHangfireJobId,
+            string? message,
+            PostMeetingArtifactLink? artifact,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -197,7 +259,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return step;
         }
 
-        public async Task<PostMeetingProcessingStep> CompleteStepAsync(
+        public Task<PostMeetingProcessingStep> CompleteStepAsync(
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
@@ -206,6 +268,27 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => CompleteStepInternalAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingStep> CompleteStepInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId,
+            string? relatedHangfireJobId,
+            string? message,
+            PostMeetingArtifactLink? artifact,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -251,7 +334,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return step;
         }
 
-        public async Task<PostMeetingProcessingStep> CompleteStepWithWarningsAsync(
+        public Task<PostMeetingProcessingStep> CompleteStepWithWarningsAsync(
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
@@ -260,6 +343,27 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => CompleteStepWithWarningsInternalAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingStep> CompleteStepWithWarningsInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId,
+            string? relatedHangfireJobId,
+            string? message,
+            PostMeetingArtifactLink? artifact,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -305,7 +409,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return step;
         }
 
-        public async Task<PostMeetingProcessingStep> FailStepAsync(
+        public Task<PostMeetingProcessingStep> FailStepAsync(
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
@@ -316,6 +420,31 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => FailStepInternalAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    errorCode,
+                    errorMessage,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingStep> FailStepInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            string errorCode,
+            string errorMessage,
+            Guid? pipelineGenerationId,
+            string? relatedHangfireJobId,
+            string? message,
+            PostMeetingArtifactLink? artifact,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -381,7 +510,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return step;
         }
 
-        public async Task<PostMeetingProcessingStep> SkipStepAsync(
+        public Task<PostMeetingProcessingStep> SkipStepAsync(
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingStepType stepType,
@@ -390,6 +519,27 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             string? message = null,
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => SkipStepInternalAsync(
+                    organizationId,
+                    meetingId,
+                    stepType,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    artifact,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingStep> SkipStepInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            Guid? pipelineGenerationId,
+            string? relatedHangfireJobId,
+            string? message,
+            PostMeetingArtifactLink? artifact,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -430,7 +580,7 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return step;
         }
 
-        public async Task<PostMeetingProcessingEvent> RecordEventAsync(
+        public Task<PostMeetingProcessingEvent> RecordEventAsync(
             Guid organizationId,
             Guid meetingId,
             PostMeetingProcessingEventType eventType,
@@ -444,6 +594,37 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             string? errorMessage = null,
             string? metadataJson = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => RecordEventInternalAsync(
+                    organizationId,
+                    meetingId,
+                    eventType,
+                    pipelineGenerationId,
+                    stepType,
+                    status,
+                    message,
+                    relatedHangfireJobId,
+                    artifact,
+                    errorCode,
+                    errorMessage,
+                    metadataJson,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingEvent> RecordEventInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingEventType eventType,
+            Guid? pipelineGenerationId,
+            PostMeetingProcessingStepType? stepType,
+            PostMeetingProcessingStatus? status,
+            string? message,
+            string? relatedHangfireJobId,
+            PostMeetingArtifactLink? artifact,
+            string? errorCode,
+            string? errorMessage,
+            string? metadataJson,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -474,13 +655,30 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return processingEvent;
         }
 
-        public async Task<PostMeetingProcessingRun> CompleteRunAsync(
+        public Task<PostMeetingProcessingRun> CompleteRunAsync(
             Guid organizationId,
             Guid meetingId,
             Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => CompleteRunInternalAsync(
+                    organizationId,
+                    meetingId,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingRun> CompleteRunInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid? pipelineGenerationId,
+            string? relatedHangfireJobId,
+            string? message,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -517,13 +715,30 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return run;
         }
 
-        public async Task<PostMeetingProcessingRun> CompleteRunWithWarningsAsync(
+        public Task<PostMeetingProcessingRun> CompleteRunWithWarningsAsync(
             Guid organizationId,
             Guid meetingId,
             Guid? pipelineGenerationId = null,
             string? relatedHangfireJobId = null,
             string? message = null,
             CancellationToken cancellationToken = default)
+            => ExecuteWithDuplicateRecoveryAsync(
+                ct => CompleteRunWithWarningsInternalAsync(
+                    organizationId,
+                    meetingId,
+                    pipelineGenerationId,
+                    relatedHangfireJobId,
+                    message,
+                    ct),
+                cancellationToken);
+
+        private async Task<PostMeetingProcessingRun> CompleteRunWithWarningsInternalAsync(
+            Guid organizationId,
+            Guid meetingId,
+            Guid? pipelineGenerationId,
+            string? relatedHangfireJobId,
+            string? message,
+            CancellationToken cancellationToken)
         {
             var run = await EnsureRunAsync(
                 organizationId,
@@ -772,6 +987,67 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             }
 
             return value.Length <= maxLength ? value : value[..maxLength];
+        }
+
+        private async Task<T> ExecuteWithDuplicateRecoveryAsync<T>(
+            Func<CancellationToken, Task<T>> operationAsync,
+            CancellationToken cancellationToken)
+        {
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    _dbContext.ChangeTracker.Clear();
+                }
+
+                try
+                {
+                    return await operationAsync(cancellationToken);
+                }
+                catch (DbUpdateException ex) when (attempt == 0 && IsPostMeetingProcessingUniqueViolation(ex))
+                {
+                }
+            }
+
+            throw new InvalidOperationException("Post-meeting processing tracker duplicate recovery failed.");
+        }
+
+        private static bool IsPostMeetingProcessingUniqueViolation(DbUpdateException exception)
+        {
+            if (exception.InnerException is PostgresException postgresException
+                && postgresException.SqlState == UniqueViolationSqlState
+                && IsPostMeetingProcessingConstraint(postgresException.ConstraintName))
+            {
+                return true;
+            }
+
+            return IsSqlitePostMeetingProcessingUniqueViolation(exception.InnerException);
+        }
+
+        private static bool IsPostMeetingProcessingConstraint(string? constraintName)
+        {
+            return string.Equals(constraintName, StepRunStepTypeUniqueIndex, StringComparison.Ordinal)
+                   || string.Equals(constraintName, RunOrgMeetingGenerationUniqueIndex, StringComparison.Ordinal);
+        }
+
+        private static bool IsSqlitePostMeetingProcessingUniqueViolation(Exception? exception)
+        {
+            if (exception?.GetType().FullName != "Microsoft.Data.Sqlite.SqliteException")
+            {
+                return false;
+            }
+
+            var errorCode = exception.GetType().GetProperty("SqliteErrorCode")?.GetValue(exception) as int?;
+            if (errorCode != SqliteConstraintViolationErrorCode)
+            {
+                return false;
+            }
+
+            var message = exception.Message;
+            return message.Contains(StepRunStepTypeUniqueIndex, StringComparison.OrdinalIgnoreCase)
+                   || message.Contains(RunOrgMeetingGenerationUniqueIndex, StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("PostMeetingProcessingSteps", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("PostMeetingProcessingRuns", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

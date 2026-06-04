@@ -1,4 +1,6 @@
 using System;
+using MeetingAssistant.Infrastructure.Persistence.DbContext;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -6,6 +8,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace MeetingAssistant.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(ApplicationDbContext))]
+    [Migration("20260604140000_SeparateSttStateFromAudioAvailability")]
     public partial class SeparateSttStateFromAudioAvailability : Migration
     {
         /// <inheritdoc />

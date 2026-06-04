@@ -11,7 +11,13 @@ namespace MeetingAssistant.Features.LiveSession.Models
         public Guid MeetingId { get; set; }
         public Meeting Meeting { get; set; } = default!;
 
-        public Guid ParticipantUserId { get; set; }
+        public Guid? ParticipantUserId { get; set; }
+
+        public ParticipantAudioFragmentSpeakerRole SpeakerRole { get; set; } = ParticipantAudioFragmentSpeakerRole.Participant;
+
+        public string? ParticipantIdentity { get; set; }
+
+        public string? SpeakerDisplayName { get; set; }
 
         public Guid? ParticipantAudioTrackId { get; set; }
         public ParticipantAudioTrack? ParticipantAudioTrack { get; set; }

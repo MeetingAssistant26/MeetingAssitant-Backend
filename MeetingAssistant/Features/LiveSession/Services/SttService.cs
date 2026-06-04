@@ -32,7 +32,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private readonly ILogger<SttService> _logger = logger;
 
         public async Task<TrackTranscriptionResult> TranscribeTrackAsync(
-            Guid participantUserId,
+            Guid? participantUserId,
             string storageObjectKey,
             CancellationToken ct = default)
         {
@@ -64,7 +64,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
         private async Task<IReadOnlyList<TranscriptSegment>> TranscribeSingleObjectAsync(
             IMinioClient minioClient,
-            Guid participantUserId,
+            Guid? participantUserId,
             string storageObjectKey,
             CancellationToken ct)
         {
@@ -82,7 +82,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
         private async Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkedAsync(
             IMinioClient minioClient,
-            Guid participantUserId,
+            Guid? participantUserId,
             string storageObjectKey,
             CancellationToken ct)
         {
@@ -234,7 +234,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         }
 
         private async Task<IReadOnlyList<TranscriptSegment>> SendTranscriptionRequestAsync(
-            Guid participantUserId,
+            Guid? participantUserId,
             MultipartFormDataContent multipartContent,
             long offsetMs,
             CancellationToken ct)
@@ -270,7 +270,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         }
 
         private static IReadOnlyList<TranscriptSegment> ParseSegments(
-            Guid participantUserId,
+            Guid? participantUserId,
             JsonElement responseRoot,
             long offsetMs)
         {

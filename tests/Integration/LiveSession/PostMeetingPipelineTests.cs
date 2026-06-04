@@ -203,40 +203,16 @@ namespace tests.Integration.LiveSession
                 aliceTrackSid,
                 trackPublishedAtUtc: roomStartedAtUtc.AddSeconds(3));
 
-            db.DbContext.AiAssistantTraceEvents.AddRange(
-                new AiAssistantTraceEvent
-                {
-                    OrganizationId = orgId,
-                    MeetingId = meetingId,
-                    SessionId = "agent-session-1",
-                    TurnId = "agent-turn-1",
-                    Sequence = 50,
-                    EventType = AiAssistantTraceEventTypes.AssistantSpeechCompleted,
-                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(8),
-                    State = "speaking",
-                    StepType = "tts",
-                    StepVoice = "alloy",
-                    DurationMs = 1_500,
-                    Text = "Hello Alice, I can help with that.",
-                    CreatedAtUtc = roomStartedAtUtc.AddSeconds(8)
-                },
-                new AiAssistantTraceEvent
-                {
-                    OrganizationId = orgId,
-                    MeetingId = meetingId,
-                    SessionId = "agent-session-1",
-                    TurnId = "agent-turn-1",
-                    Sequence = 50,
-                    EventType = AiAssistantTraceEventTypes.AssistantSpeechCompleted,
-                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(8),
-                    State = "speaking",
-                    StepType = "tts",
-                    StepVoice = "alloy",
-                    DurationMs = 1_500,
-                    Text = "Hello Alice, I can help with that.",
-                    CreatedAtUtc = roomStartedAtUtc.AddSeconds(9)
-                });
-            await db.DbContext.SaveChangesAsync();
+            const string assistantIdentity = "agent-AJ_test";
+            const string assistantTrackSid = "TR_ASSISTANT";
+            var assistantKey = $"tracks/mtg-{meetingId}/{assistantIdentity}/track-{assistantTrackSid}.ogg";
+            var assistantFragmentId = db.AddAvailableAssistantAudioFragment(
+                meetingId,
+                orgId,
+                assistantIdentity,
+                assistantKey,
+                assistantTrackSid,
+                trackPublishedAtUtc: roomStartedAtUtc.AddSeconds(8));
 
             var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
             {
@@ -245,6 +221,11 @@ namespace tests.Integration.LiveSession
                     [
                         new TranscriptSegment(aliceId, 2_000, 3_000, "Hello assistant", 0.95),
                         new TranscriptSegment(aliceId, 9_000, 10_000, "Thanks for helping", 0.93)
+                    ]),
+                [assistantKey] = new(
+                    "whisper-large-v3",
+                    [
+                        new TranscriptSegment(null, 0, 1_500, "Hello Alice, I can help with that.", 0.92)
                     ])
             });
 
@@ -274,14 +255,15 @@ namespace tests.Integration.LiveSession
             var assistantSegment = segments.Single(x => x.SpeakerRole == "assistant");
             assistantSegment.ParticipantUserId.Should().BeNull();
             assistantSegment.SpeakerDisplayName.Should().Be("AI Assistant");
-            assistantSegment.Source.Should().Be("ai_assistant_trace");
-            assistantSegment.TraceEventId.Should().NotBeNullOrWhiteSpace();
-            assistantSegment.SessionId.Should().Be("agent-session-1");
-            assistantSegment.TurnId.Should().Be("agent-turn-1");
+            assistantSegment.Source.Should().Be("egress_audio");
+            assistantSegment.ParticipantAudioFragmentId.Should().Be(assistantFragmentId);
+            assistantSegment.TraceEventId.Should().BeNull();
+            assistantSegment.SessionId.Should().BeNull();
+            assistantSegment.TurnId.Should().BeNull();
             assistantSegment.StartMs.Should().Be(8_000);
             assistantSegment.RoomRelativeStartMs.Should().Be(8_000);
             assistantSegment.AbsoluteStartUtc.Should().Be(roomStartedAtUtc.AddSeconds(8));
-            assistantSegment.TimestampOffsetSource.Should().Be(AiAssistantTraceEventTypes.AssistantSpeechCompleted);
+            assistantSegment.TimestampOffsetSource.Should().Be("fragment_track_published");
 
             var summarizer = new StubSummarizerService(new SummaryResult(
                 "Summary includes assistant response.",
@@ -309,21 +291,24 @@ namespace tests.Integration.LiveSession
 
             var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
             meeting.RoomActivatedAtUtc = roomStartedAtUtc;
-            db.DbContext.AiAssistantTraceEvents.Add(new AiAssistantTraceEvent
-            {
-                OrganizationId = orgId,
-                MeetingId = meetingId,
-                SessionId = "agent-session-only",
-                TurnId = "agent-turn-only",
-                Sequence = 50,
-                EventType = AiAssistantTraceEventTypes.AssistantSpeechCompleted,
-                OccurredAtUtc = roomStartedAtUtc.AddSeconds(6),
-                StepType = "tts",
-                Text = "I am ready to help when participants join."
-            });
-            await db.DbContext.SaveChangesAsync();
 
-            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>());
+            const string assistantIdentity = "agent-AJ_only";
+            const string assistantTrackSid = "TR_ASSISTANT_ONLY";
+            var assistantKey = $"tracks/mtg-{meetingId}/{assistantIdentity}/track-{assistantTrackSid}.ogg";
+            db.AddAvailableAssistantAudioFragment(
+                meetingId,
+                orgId,
+                assistantIdentity,
+                assistantKey,
+                assistantTrackSid,
+                trackPublishedAtUtc: roomStartedAtUtc.AddSeconds(6));
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [assistantKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(null, 0, 1_000, "I am ready to help when participants join.", 0.9)])
+            });
             var publisher = new CollectingPublisher();
             var transcriptJob = new GenerateMeetingTranscriptJob(
                 db.DbContext,
@@ -334,14 +319,16 @@ namespace tests.Integration.LiveSession
             await transcriptJob.RunAsync(meetingId, orgId);
             await transcriptJob.RunAsync(meetingId, orgId);
 
-            stt.Calls.Should().BeEmpty();
+            stt.Calls.Distinct().Should().ContainSingle().Which.Should().Be(assistantKey);
             var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
             transcript.FullText.Should().Be("[00:00:06 AI Assistant] I am ready to help when participants join.");
-            transcript.SttModel.Should().BeEmpty();
+            transcript.SttModel.Should().Be("whisper-large-v3");
 
             var segment = DeserializePersistedSegments(transcript.SegmentsJson).Should().ContainSingle().Subject;
             segment.SpeakerRole.Should().Be("assistant");
             segment.ParticipantUserId.Should().BeNull();
+            segment.Source.Should().Be("egress_audio");
+            segment.ParticipantAudioFragmentId.Should().NotBeNull();
             segment.RoomRelativeStartMs.Should().Be(6_000);
             segment.AbsoluteStartUtc.Should().Be(roomStartedAtUtc.AddSeconds(6));
 
@@ -447,20 +434,16 @@ namespace tests.Integration.LiveSession
             stt.Calls.Should().BeEmpty();
             var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
             transcript.FullText.Split(Environment.NewLine, StringSplitOptions.None).Should().Equal(
-                "[00:00:09 Alice] Please recover this transcript from traces.",
-                "[00:00:12 AI Assistant] Recovered from the LLM trace.");
+                "[00:00:09 Alice] Please recover this transcript from traces.");
             transcript.SttModel.Should().Be("ai-debug-trace");
 
             var segments = DeserializePersistedSegments(transcript.SegmentsJson);
-            segments.Should().HaveCount(2);
+            segments.Should().ContainSingle();
             var participantSegment = segments.Single(x => x.SpeakerRole == "participant");
             participantSegment.ParticipantUserId.Should().Be(aliceId);
             participantSegment.Source.Should().Be("ai_assistant_trace");
             participantSegment.TimestampOffsetSource.Should().Be(AiAssistantTraceEventTypes.SttCompleted);
-
-            var assistantSegment = segments.Single(x => x.SpeakerRole == "assistant");
-            assistantSegment.Source.Should().Be("ai_assistant_trace");
-            assistantSegment.TimestampOffsetSource.Should().Be(AiAssistantTraceEventTypes.LlmCompleted);
+            segments.Should().NotContain(x => x.SpeakerRole == "assistant");
 
             publisher.Notifications
                 .OfType<MeetingTranscriptReadyEvent>()

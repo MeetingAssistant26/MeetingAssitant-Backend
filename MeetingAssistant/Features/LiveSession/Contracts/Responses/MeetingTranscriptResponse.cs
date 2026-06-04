@@ -22,6 +22,7 @@ namespace MeetingAssistant.Features.LiveSession.Contracts.Responses
         double? AvgLogProb,
         int? Version = null,
         Guid? ParticipantAudioTrackId = null,
+        Guid? ParticipantAudioFragmentId = null,
         long? TrackRelativeStartMs = null,
         long? TrackRelativeEndMs = null,
         long? RoomRelativeStartMs = null,

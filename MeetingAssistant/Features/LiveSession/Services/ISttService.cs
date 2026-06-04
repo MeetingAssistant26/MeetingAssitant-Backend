@@ -3,7 +3,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
     public interface ISttService
     {
         Task<TrackTranscriptionResult> TranscribeTrackAsync(
-            Guid participantUserId,
+            Guid? participantUserId,
             string storageObjectKey,
             CancellationToken ct = default);
     }
@@ -13,7 +13,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         IReadOnlyList<TranscriptSegment> Segments);
 
     public record TranscriptSegment(
-        Guid ParticipantUserId,
+        Guid? ParticipantUserId,
         long StartMs,
         long EndMs,
         string Text,
