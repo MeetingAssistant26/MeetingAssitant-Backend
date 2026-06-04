@@ -594,7 +594,13 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
         statusAfterFixture.ActionItems.Should().ContainSingle();
         statusAfterFixture.ActionItems[0].Preview.Should().Contain("SOURCE_A_ALPHA_ACTION");
         statusAfterFixture.ActionItems[0].DescriptionSha256.Should().NotBeNullOrWhiteSpace();
+        statusAfterFixture.Transcript!.TranscriptHash.Should().NotBeNullOrWhiteSpace();
+        statusAfterFixture.Transcript.TranscriptRevision.Should().BeGreaterThan(0);
+        statusAfterFixture.Summary!.SourceTranscriptHash.Should().Be(statusAfterFixture.Transcript.TranscriptHash);
+        statusAfterFixture.ActionItems[0].SourceTranscriptHash.Should().Be(statusAfterFixture.Transcript.TranscriptHash);
         statusAfterFixture.PersonalizedSummaries.Should().HaveCount(2);
+        statusAfterFixture.PersonalizedSummaries.Should().OnlyContain(summary =>
+            summary.SourceTranscriptHash == statusAfterFixture.Transcript!.TranscriptHash);
         statusAfterFixture.PersonalizedSummaries.Should().OnlyContain(summary =>
             summary.Preview.Contains("SOURCE_A_ALPHA_PERSONALIZED")
             && !string.IsNullOrWhiteSpace(summary.SummarySha256));
@@ -628,6 +634,8 @@ public sealed class DevQaEndpointTests : IntegrationTestBase
         statusAfterTranscript!.Transcript.Should().NotBeNull();
         statusAfterTranscript.Transcript!.Preview.Should().Contain("SOURCE_B_BRAVO_TRANSCRIPT");
         statusAfterTranscript.Transcript.FullTextSha256.Should().Be(transcriptReplacement.CurrentFullTextSha256);
+        statusAfterTranscript.Transcript.TranscriptHash.Should().Be(transcriptReplacement.TranscriptHash);
+        statusAfterTranscript.Transcript.TranscriptRevision.Should().BeGreaterThan(1);
         statusAfterTranscript.Summary.Should().NotBeNull();
         statusAfterTranscript.Summary!.Preview.Should().Contain("SOURCE_A_ALPHA_SUMMARY");
         statusAfterTranscript.ActionItems.Should().ContainSingle();

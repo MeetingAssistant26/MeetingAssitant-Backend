@@ -123,6 +123,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return;
             }
 
+            var transcriptIdentity = TranscriptSourceIdentity.Resolve(transcript);
+
             SummaryResult summaryResult;
             try
             {
@@ -166,6 +168,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             summary.PromptTokens = summaryResult.PromptTokens;
             summary.CompletionTokens = summaryResult.CompletionTokens;
             summary.GeneratedAtUtc = DateTime.UtcNow;
+            TranscriptSourceIdentity.ApplySourceFields(summary, transcriptIdentity);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
 

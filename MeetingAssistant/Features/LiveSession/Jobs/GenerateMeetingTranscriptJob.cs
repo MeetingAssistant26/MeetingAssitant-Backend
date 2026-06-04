@@ -512,6 +512,18 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 transcript.TerminalFailedAudioFragmentCount = terminalFailedCount;
                 transcript.MissingAudioFragmentIdsJson = JsonSerializer.Serialize(failedFragmentIds);
                 transcript.WarningsJson = JsonSerializer.Serialize(transcriptWarnings);
+
+                if (transcriptChanged)
+                {
+                    if (string.IsNullOrEmpty(transcript.TranscriptHash))
+                    {
+                        TranscriptSourceIdentity.InitializeNew(transcript, fullText);
+                    }
+                    else
+                    {
+                        TranscriptSourceIdentity.ApplyContentRevision(transcript, fullText);
+                    }
+                }
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);

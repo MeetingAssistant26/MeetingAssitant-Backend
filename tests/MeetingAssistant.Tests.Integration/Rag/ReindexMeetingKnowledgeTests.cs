@@ -3,6 +3,7 @@ using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.LiveSession.Models;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
+using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
 using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
@@ -103,6 +104,14 @@ public sealed class ReindexMeetingKnowledgeTests(MeetingAssistantWebFactory fact
             .SingleAsync(x => x.MeetingId == meetingId);
         transcript.FullText = "[00:00:00 Alice] Transcript regenerated with a new launch risk.";
         transcript.GeneratedAtUtc = DateTime.UtcNow.AddMinutes(5);
+        TranscriptSourceIdentity.ApplyContentRevision(transcript, transcript.FullText);
+        await db.SaveChangesAsync();
+
+        var transcriptIdentity = TranscriptSourceIdentity.From(transcript);
+        var meetingSummary = await db.MeetingSummaries.IgnoreQueryFilters().SingleAsync(x => x.MeetingId == meetingId);
+        TranscriptSourceIdentity.ApplySourceFields(meetingSummary, transcriptIdentity);
+        var actionItem = await db.ActionItems.IgnoreQueryFilters().SingleAsync(x => x.MeetingId == meetingId);
+        TranscriptSourceIdentity.ApplySourceFields(actionItem, transcriptIdentity);
         await db.SaveChangesAsync();
 
         await job.RunAsync(meetingId, TestOrganizationId, CancellationToken.None);
@@ -264,6 +273,92 @@ public sealed class ReindexMeetingKnowledgeTests(MeetingAssistantWebFactory fact
         step.ErrorCode.Should().Be("knowledge_indexing_failed");
     }
 
+    [Fact]
+    public async Task Reindex_WhenArtifactContentSameButSourceHashChanges_ShouldRepublishCurrentDocument()
+    {
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var meetingId = await SeedMeetingArtifactsAsync(db);
+        var job = scope.ServiceProvider.GetRequiredService<ReindexMeetingKnowledgeJob>();
+
+        await job.RunAsync(meetingId, TestOrganizationId, CancellationToken.None);
+        var summaryBefore = await db.KnowledgeDocuments
+            .IgnoreQueryFilters()
+            .SingleAsync(
+                x => x.MeetingId == meetingId
+                     && x.ArtifactType == KnowledgeArtifactType.Summary
+                     && x.IsCurrent
+                     && x.Visibility == KnowledgeVisibility.Published);
+
+        var transcript = await db.MeetingTranscripts.IgnoreQueryFilters().SingleAsync(x => x.MeetingId == meetingId);
+        transcript.FullText += " revised.";
+        TranscriptSourceIdentity.ApplyContentRevision(transcript, transcript.FullText);
+        await db.SaveChangesAsync();
+
+        var meetingSummary = await db.MeetingSummaries.IgnoreQueryFilters().SingleAsync(x => x.MeetingId == meetingId);
+        TranscriptSourceIdentity.ApplySourceFields(meetingSummary, TranscriptSourceIdentity.From(transcript));
+        await db.SaveChangesAsync();
+
+        await job.RunAsync(meetingId, TestOrganizationId, CancellationToken.None);
+
+        var summaryAfter = await db.KnowledgeDocuments
+            .IgnoreQueryFilters()
+            .Where(
+                x => x.MeetingId == meetingId
+                     && x.ArtifactType == KnowledgeArtifactType.Summary
+                     && x.IsCurrent
+                     && x.Visibility == KnowledgeVisibility.Published)
+            .ToListAsync();
+
+        summaryAfter.Should().ContainSingle();
+        summaryAfter[0].Id.Should().NotBe(summaryBefore.Id);
+        summaryAfter[0].SourceTranscriptHash.Should().Be(transcript.TranscriptHash);
+    }
+
+    [Fact]
+    public async Task Reindex_ShouldArchiveDocsForSupersededActionItems()
+    {
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var meetingId = await SeedMeetingArtifactsAsync(db);
+        var job = scope.ServiceProvider.GetRequiredService<ReindexMeetingKnowledgeJob>();
+
+        await job.RunAsync(meetingId, TestOrganizationId, CancellationToken.None);
+
+        var actionItem = await db.ActionItems.IgnoreQueryFilters().SingleAsync(x => x.MeetingId == meetingId);
+        var actionDocBefore = await db.KnowledgeDocuments
+            .IgnoreQueryFilters()
+            .SingleAsync(
+                x => x.MeetingId == meetingId
+                     && x.ArtifactType == KnowledgeArtifactType.ActionItem
+                     && x.ArtifactId == actionItem.Id
+                     && x.IsCurrent
+                     && x.Visibility == KnowledgeVisibility.Published);
+
+        actionItem.SupersededAtUtc = DateTime.UtcNow;
+        actionItem.SupersededByTranscriptHash = actionItem.SourceTranscriptHash;
+        actionItem.SupersededReason = "source_transcript_replaced";
+        await db.SaveChangesAsync();
+
+        await job.RunAsync(meetingId, TestOrganizationId, CancellationToken.None);
+
+        (await db.KnowledgeDocuments
+                .IgnoreQueryFilters()
+                .CountAsync(
+                    x => x.Id == actionDocBefore.Id
+                         && x.IsCurrent
+                         && x.Visibility == KnowledgeVisibility.Published))
+            .Should().Be(0);
+
+        (await db.KnowledgeDocuments
+                .IgnoreQueryFilters()
+                .CountAsync(
+                    x => x.Id == actionDocBefore.Id
+                         && x.Visibility == KnowledgeVisibility.Archived
+                         && !x.IsCurrent))
+            .Should().Be(1);
+    }
+
     private async Task<Guid> SeedMeetingArtifactsAsync(ApplicationDbContext db)
     {
         var meeting = new Meeting
@@ -297,7 +392,7 @@ public sealed class ReindexMeetingKnowledgeTests(MeetingAssistantWebFactory fact
             Environment.NewLine,
             Enumerable.Range(1, 90).Select(i => $"[00:{i / 60:00}:{i % 60:00} Alice] Roadmap launch discussion point {i} with enough detail for chunking."));
 
-        db.MeetingTranscripts.Add(new MeetingTranscript
+        var transcript = new MeetingTranscript
         {
             Id = Guid.NewGuid(),
             OrganizationId = TestOrganizationId,
@@ -306,9 +401,12 @@ public sealed class ReindexMeetingKnowledgeTests(MeetingAssistantWebFactory fact
             SegmentsJson = "[]",
             SttModel = "whisper-test",
             GeneratedAtUtc = DateTime.UtcNow
-        });
+        };
+        TranscriptSourceIdentity.InitializeNew(transcript, transcriptText);
+        db.MeetingTranscripts.Add(transcript);
+        var transcriptIdentity = TranscriptSourceIdentity.From(transcript);
 
-        db.MeetingSummaries.Add(new MeetingSummary
+        var summary = new MeetingSummary
         {
             Id = Guid.NewGuid(),
             OrganizationId = TestOrganizationId,
@@ -316,9 +414,11 @@ public sealed class ReindexMeetingKnowledgeTests(MeetingAssistantWebFactory fact
             SummaryText = "The team reviewed roadmap launch milestones and risks.",
             LlmModel = "local-test",
             GeneratedAtUtc = DateTime.UtcNow
-        });
+        };
+        TranscriptSourceIdentity.ApplySourceFields(summary, transcriptIdentity);
+        db.MeetingSummaries.Add(summary);
 
-        db.ActionItems.Add(new ActionItem
+        var actionItem = new ActionItem
         {
             Id = Guid.NewGuid(),
             OrganizationId = TestOrganizationId,
@@ -329,7 +429,9 @@ public sealed class ReindexMeetingKnowledgeTests(MeetingAssistantWebFactory fact
             DueDateUtc = DateTime.UtcNow.AddDays(2),
             Status = ActionItemStatus.PendingReview,
             ExtractedAtUtc = DateTime.UtcNow
-        });
+        };
+        TranscriptSourceIdentity.ApplySourceFields(actionItem, transcriptIdentity);
+        db.ActionItems.Add(actionItem);
 
         await db.SaveChangesAsync();
         return meeting.Id;

@@ -66,7 +66,8 @@ namespace MeetingAssistant.Features.Rag.Services
             }
 
             var confirmedTags = await LoadConfirmedTagsAsync(organizationId, meetingId, cancellationToken);
-            var artifacts = await BuildArtifactsAsync(meeting, confirmedTags, cancellationToken);
+            var transcriptIdentity = TranscriptSourceIdentity.Resolve(transcript);
+            var artifacts = await BuildArtifactsAsync(meeting, transcriptIdentity, confirmedTags, cancellationToken);
 
             if (artifacts.Count == 0)
             {
@@ -82,11 +83,21 @@ namespace MeetingAssistant.Features.Rag.Services
                 organizationId,
                 meetingId,
                 artifacts,
+                transcriptIdentity,
                 confirmedTags,
                 cancellationToken);
 
             if (artifactsToPublish.Count == 0)
             {
+                var freshKeys = artifacts
+                    .Select(x => new ArtifactKey(x.ArtifactType, x.ArtifactId, x.ArtifactVersion))
+                    .ToArray();
+                await ArchiveOrphanedCurrentDocumentsAsync(
+                    organizationId,
+                    meetingId,
+                    freshKeys,
+                    cancellationToken);
+
                 var currentDocumentIds = await _dbContext.KnowledgeDocuments
                     .IgnoreQueryFilters()
                     .AsNoTracking()
@@ -107,7 +118,17 @@ namespace MeetingAssistant.Features.Rag.Services
 
             var generationId = Guid.NewGuid();
             var generatedAtUtc = DateTime.UtcNow;
-            var drafts = await CreateDraftDocumentsAsync(artifactsToPublish, confirmedTags, generationId, generatedAtUtc, cancellationToken);
+            var allFreshKeys = artifacts
+                .Select(x => new ArtifactKey(x.ArtifactType, x.ArtifactId, x.ArtifactVersion))
+                .Distinct()
+                .ToArray();
+            var drafts = await CreateDraftDocumentsAsync(
+                artifactsToPublish,
+                transcriptIdentity,
+                confirmedTags,
+                generationId,
+                generatedAtUtc,
+                cancellationToken);
 
             var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
             await executionStrategy.ExecuteAsync(async () =>
@@ -128,6 +149,12 @@ namespace MeetingAssistant.Features.Rag.Services
                         meetingId,
                         replacementKeys,
                         generationId,
+                        cancellationToken);
+
+                    await ArchiveOrphanedCurrentDocumentsAsync(
+                        organizationId,
+                        meetingId,
+                        allFreshKeys,
                         cancellationToken);
 
                     foreach (var document in drafts)
@@ -182,6 +209,7 @@ namespace MeetingAssistant.Features.Rag.Services
 
         private async Task<List<KnowledgeArtifactDraft>> BuildArtifactsAsync(
             MeetingSnapshot meeting,
+            TranscriptSourceIdentity.Identity transcriptIdentity,
             IReadOnlyList<TagSnapshot> confirmedTags,
             CancellationToken cancellationToken)
         {
@@ -210,6 +238,8 @@ namespace MeetingAssistant.Features.Rag.Services
                         transcriptId = transcript.Id,
                         transcript.GeneratedAtUtc,
                         transcript.SttModel,
+                        transcriptIdentity.TranscriptHash,
+                        transcriptIdentity.TranscriptRevision,
                         confirmedTags = confirmedTags.Select(TagMetadata).ToArray()
                     }));
             }
@@ -221,7 +251,13 @@ namespace MeetingAssistant.Features.Rag.Services
                 .OrderByDescending(x => x.GeneratedAtUtc)
                 .FirstOrDefaultAsync(cancellationToken);
 
-            if (summary is not null && !string.IsNullOrWhiteSpace(summary.SummaryText))
+            if (summary is not null
+                && !string.IsNullOrWhiteSpace(summary.SummaryText)
+                && TranscriptSourceIdentity.MatchesCurrentSource(
+                    summary.SourceTranscriptId,
+                    summary.SourceTranscriptHash,
+                    summary.SourceTranscriptRevision,
+                    transcriptIdentity))
             {
                 artifacts.Add(new KnowledgeArtifactDraft(
                     KnowledgeArtifactType.Summary,
@@ -237,6 +273,8 @@ namespace MeetingAssistant.Features.Rag.Services
                         summaryId = summary.Id,
                         summary.GeneratedAtUtc,
                         summary.LlmModel,
+                        summary.SourceTranscriptHash,
+                        summary.SourceTranscriptRevision,
                         confirmedTags = confirmedTags.Select(TagMetadata).ToArray()
                     }));
             }
@@ -244,10 +282,20 @@ namespace MeetingAssistant.Features.Rag.Services
             var actionItems = await _dbContext.ActionItems
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .Where(x => x.OrganizationId == meeting.OrganizationId && x.MeetingId == meeting.Id)
+                .Where(x => x.OrganizationId == meeting.OrganizationId
+                            && x.MeetingId == meeting.Id
+                            && x.SupersededAtUtc == null)
                 .OrderBy(x => x.CreatedAtUtc)
                 .ThenBy(x => x.Id)
                 .ToListAsync(cancellationToken);
+
+            actionItems = actionItems
+                .Where(x => TranscriptSourceIdentity.MatchesCurrentSource(
+                    x.SourceTranscriptId,
+                    x.SourceTranscriptHash,
+                    x.SourceTranscriptRevision,
+                    transcriptIdentity))
+                .ToList();
 
             foreach (var actionItem in actionItems)
             {
@@ -308,6 +356,7 @@ namespace MeetingAssistant.Features.Rag.Services
 
         private async Task<List<KnowledgeDocument>> CreateDraftDocumentsAsync(
             IReadOnlyList<KnowledgeArtifactDraft> artifacts,
+            TranscriptSourceIdentity.Identity transcriptIdentity,
             IReadOnlyList<TagSnapshot> confirmedTags,
             Guid generationId,
             DateTime generatedAtUtc,
@@ -326,7 +375,7 @@ namespace MeetingAssistant.Features.Rag.Services
                     ArtifactId = artifact.ArtifactId,
                     ArtifactVersion = artifact.ArtifactVersion,
                     Title = Truncate(artifact.Title, 300),
-                    ContentHash = HashArtifact(artifact, confirmedTags),
+                    ContentHash = HashArtifact(artifact, transcriptIdentity, confirmedTags),
                     IndexGenerationId = generationId,
                     Visibility = KnowledgeVisibility.Draft,
                     IsCurrent = false,
@@ -336,6 +385,7 @@ namespace MeetingAssistant.Features.Rag.Services
                     MetadataJson = JsonSerializer.Serialize(artifact.Metadata, JsonOptions),
                     GeneratedAtUtc = generatedAtUtc
                 };
+                TranscriptSourceIdentity.ApplySourceFields(document, transcriptIdentity);
 
                 var chunks = SplitIntoChunks(artifact.Content);
                 for (var i = 0; i < chunks.Count; i++)
@@ -369,6 +419,7 @@ namespace MeetingAssistant.Features.Rag.Services
                         }, JsonOptions),
                         GeneratedAtUtc = generatedAtUtc
                     };
+                    TranscriptSourceIdentity.ApplySourceFields(chunk, transcriptIdentity);
 
                     foreach (var tag in confirmedTags)
                     {
@@ -412,6 +463,7 @@ namespace MeetingAssistant.Features.Rag.Services
             Guid organizationId,
             Guid meetingId,
             IReadOnlyList<KnowledgeArtifactDraft> artifacts,
+            TranscriptSourceIdentity.Identity transcriptIdentity,
             IReadOnlyList<TagSnapshot> confirmedTags,
             CancellationToken cancellationToken)
         {
@@ -434,7 +486,7 @@ namespace MeetingAssistant.Features.Rag.Services
 
             var freshHashesByKey = artifacts.ToDictionary(
                 artifact => new ArtifactKey(artifact.ArtifactType, artifact.ArtifactId, artifact.ArtifactVersion),
-                artifact => HashArtifact(artifact, confirmedTags));
+                artifact => HashArtifact(artifact, transcriptIdentity, confirmedTags));
 
             var survivorByKey = await ResolveDuplicateCurrentDocumentsAsync(
                 organizationId,
@@ -703,13 +755,48 @@ namespace MeetingAssistant.Features.Rag.Services
             return Convert.ToHexString(bytes).ToLowerInvariant();
         }
 
-        private static string HashArtifact(KnowledgeArtifactDraft artifact, IReadOnlyList<TagSnapshot> confirmedTags)
+        private async Task ArchiveOrphanedCurrentDocumentsAsync(
+            Guid organizationId,
+            Guid meetingId,
+            IReadOnlyCollection<ArtifactKey> freshKeys,
+            CancellationToken cancellationToken)
+        {
+            var freshKeySet = freshKeys.ToHashSet();
+            var orphanedDocumentIds = await _dbContext.KnowledgeDocuments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.OrganizationId == organizationId
+                            && x.MeetingId == meetingId
+                            && x.IsCurrent
+                            && x.Visibility == KnowledgeVisibility.Published)
+                .Select(x => new
+                {
+                    x.Id,
+                    x.ArtifactType,
+                    x.ArtifactId,
+                    x.ArtifactVersion
+                })
+                .ToListAsync(cancellationToken);
+
+            var documentIdsToArchive = orphanedDocumentIds
+                .Where(x => !freshKeySet.Contains(new ArtifactKey(x.ArtifactType, x.ArtifactId, x.ArtifactVersion)))
+                .Select(x => x.Id)
+                .ToList();
+
+            await ArchiveCurrentDocumentsByIdAsync(organizationId, documentIdsToArchive, cancellationToken);
+        }
+
+        private static string HashArtifact(
+            KnowledgeArtifactDraft artifact,
+            TranscriptSourceIdentity.Identity transcriptIdentity,
+            IReadOnlyList<TagSnapshot> confirmedTags)
         {
             var tagFingerprint = string.Join(
                 '|',
                 confirmedTags.Select(tag => $"{tag.Id:N}:{tag.Name}:{tag.Color}"));
 
-            return HashText($"{artifact.ArtifactType}:{artifact.ArtifactId:N}:{artifact.ArtifactVersion}\n{artifact.Content}\nconfirmed-tags:{tagFingerprint}");
+            return HashText(
+                $"{artifact.ArtifactType}:{artifact.ArtifactId:N}:{artifact.ArtifactVersion}\n{artifact.Content}\nconfirmed-tags:{tagFingerprint}\nsource-transcript:{transcriptIdentity.TranscriptHash}:{transcriptIdentity.TranscriptRevision}");
         }
 
         private static int EstimateTokenCount(string text) => Math.Max(1, (int)Math.Ceiling(text.Length / 4d));

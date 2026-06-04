@@ -1,6 +1,7 @@
 using FluentAssertions;
 using MeetingAssistant.Features.ActionItems.Jobs;
 using MeetingAssistant.Features.ActionItems.Models;
+using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Jobs;
@@ -425,6 +426,246 @@ public sealed class ExtractActionItemsJobPromptTests
             $"{ActionItemReviewReasons.NeedsAssignee};{ActionItemReviewReasons.InvalidDueDate}");
         item.Description.Should().Contain("AI assignee: Layla");
         item.Description.Should().Contain("AI due date: not-a-date (could not parse to UTC)");
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenExistingActionItemsMatchTranscriptSource_ShouldSkipExtraction()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        const string fullText = "[00:00:01 Alice] Existing action item context.";
+        var transcript = new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = fullText,
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        };
+        TranscriptSourceIdentity.InitializeNew(transcript, fullText);
+        db.DbContext.MeetingTranscripts.Add(transcript);
+        var identity = TranscriptSourceIdentity.From(transcript);
+        var existing = new ActionItem
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            Title = "existing task",
+            Status = ActionItemStatus.PendingReview,
+            ExtractedAtUtc = DateTime.UtcNow
+        };
+        TranscriptSourceIdentity.ApplySourceFields(existing, identity);
+        db.DbContext.ActionItems.Add(existing);
+        await db.DbContext.SaveChangesAsync();
+
+        var llm = new FakeLlmService("[]");
+        var job = CreateJob(db, llm);
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        llm.LastRequest.Should().BeNull();
+        db.DbContext.ActionItems.Count(x => x.MeetingId == meetingId && x.SupersededAtUtc == null).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenExistingActionItemsAreFromOlderTranscriptSource_ShouldSupersedePendingAndExtractFreshItems()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        const string fullText = "[00:00:01 Alice] Updated transcript context.";
+        var transcript = new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = fullText,
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test",
+            TranscriptHash = TranscriptSourceIdentity.ComputeHash(fullText),
+            TranscriptRevision = 2
+        };
+        db.DbContext.MeetingTranscripts.Add(transcript);
+        var stale = new ActionItem
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            Title = "stale task",
+            Status = ActionItemStatus.PendingReview,
+            ExtractedAtUtc = DateTime.UtcNow,
+            SourceTranscriptHash = "old-hash",
+            SourceTranscriptRevision = 1
+        };
+        db.DbContext.ActionItems.Add(stale);
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(
+            db,
+            new FakeLlmService("""
+                [{"task":"fresh task","responsible_person":"Alice","deadline":null}]
+                """));
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var staleReloaded = await db.DbContext.ActionItems.SingleAsync(x => x.Id == stale.Id);
+        staleReloaded.SupersededAtUtc.Should().NotBeNull();
+        staleReloaded.SupersededReason.Should().Be("source_transcript_replaced");
+
+        var active = await db.DbContext.ActionItems
+            .Where(x => x.MeetingId == meetingId && x.SupersededAtUtc == null)
+            .ToListAsync();
+        active.Should().ContainSingle();
+        active[0].Title.Should().Be("fresh task");
+        active[0].SourceTranscriptHash.Should().Be(transcript.TranscriptHash);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenLlmReturnsEmptyListAfterTranscriptReplacement_ShouldSupersedePendingAndLeaveNoActiveItems()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        const string fullText = "[00:00:01 Alice] Updated transcript context.";
+        var transcript = new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = fullText,
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test",
+            TranscriptHash = TranscriptSourceIdentity.ComputeHash(fullText),
+            TranscriptRevision = 2
+        };
+        db.DbContext.MeetingTranscripts.Add(transcript);
+        var stale = new ActionItem
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            Title = "stale task",
+            Status = ActionItemStatus.PendingReview,
+            ExtractedAtUtc = DateTime.UtcNow,
+            SourceTranscriptHash = "old-hash",
+            SourceTranscriptRevision = 1
+        };
+        db.DbContext.ActionItems.Add(stale);
+        await db.DbContext.SaveChangesAsync();
+
+        var tracker = new PostMeetingProcessingTracker(db.DbContext);
+        var job = CreateJob(db, new FakeLlmService("[]"), tracker);
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var staleReloaded = await db.DbContext.ActionItems.SingleAsync(x => x.Id == stale.Id);
+        staleReloaded.SupersededAtUtc.Should().NotBeNull();
+        staleReloaded.SupersededReason.Should().Be("source_transcript_replaced");
+
+        (await db.DbContext.ActionItems
+            .Where(x => x.MeetingId == meetingId && x.SupersededAtUtc == null)
+            .ToListAsync()).Should().BeEmpty();
+
+        var snapshot = await tracker.GetLatestByMeetingAsync(organizationId, meetingId);
+        snapshot.Steps.Should().Contain(x =>
+            x.StepType == PostMeetingProcessingStepType.ActionExtraction
+            && x.Status == PostMeetingProcessingStatus.Completed
+            && x.ErrorCode == null);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenLlmFailsDuringSourceChange_ShouldNotSupersedeExistingItems()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        const string fullText = "[00:00:01 Alice] Updated transcript context.";
+        var transcript = new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = fullText,
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test",
+            TranscriptHash = TranscriptSourceIdentity.ComputeHash(fullText),
+            TranscriptRevision = 2
+        };
+        db.DbContext.MeetingTranscripts.Add(transcript);
+        var stale = new ActionItem
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            Title = "stale task",
+            Status = ActionItemStatus.PendingReview,
+            ExtractedAtUtc = DateTime.UtcNow,
+            SourceTranscriptHash = "old-hash"
+        };
+        db.DbContext.ActionItems.Add(stale);
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new ThrowingLlmService(new InvalidOperationException("llm failed")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            job.RunAsync(meetingId, organizationId, CancellationToken.None));
+
+        var reloaded = await db.DbContext.ActionItems.SingleAsync(x => x.Id == stale.Id);
+        reloaded.SupersededAtUtc.Should().BeNull();
+        db.DbContext.ActionItems.Count(x => x.MeetingId == meetingId).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunAsync_WhenReviewedOrSyncedItemsAreStale_ShouldPreserveThem()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        const string fullText = "[00:00:01 Alice] Updated transcript context.";
+        var transcript = new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = fullText,
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test",
+            TranscriptHash = TranscriptSourceIdentity.ComputeHash(fullText),
+            TranscriptRevision = 2
+        };
+        db.DbContext.MeetingTranscripts.Add(transcript);
+        var approved = new ActionItem
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            Title = "approved stale",
+            Status = ActionItemStatus.Approved,
+            ExtractedAtUtc = DateTime.UtcNow,
+            SourceTranscriptHash = "old-hash"
+        };
+        var synced = new ActionItem
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            Title = "synced stale",
+            Status = ActionItemStatus.Synced,
+            ExtractedAtUtc = DateTime.UtcNow,
+            SyncedAtUtc = DateTime.UtcNow,
+            ExternalTaskId = "ext-1",
+            SourceTranscriptHash = "old-hash"
+        };
+        db.DbContext.ActionItems.AddRange(approved, synced);
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new FakeLlmService("[]"));
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        (await db.DbContext.ActionItems.SingleAsync(x => x.Id == approved.Id)).SupersededAtUtc.Should().BeNull();
+        (await db.DbContext.ActionItems.SingleAsync(x => x.Id == synced.Id)).SupersededAtUtc.Should().BeNull();
     }
 
     private static ExtractActionItemsJob CreateJob(

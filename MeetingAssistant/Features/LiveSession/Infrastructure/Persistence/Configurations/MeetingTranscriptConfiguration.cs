@@ -39,6 +39,17 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
                 .HasDefaultValue("[]")
                 .IsRequired();
 
+            builder.Property(x => x.TranscriptHash)
+                .HasMaxLength(64)
+                .IsRequired();
+
+            builder.Property(x => x.TranscriptRevision)
+                .HasDefaultValue(1)
+                .IsRequired();
+
+            builder.HasIndex(x => new { x.OrganizationId, x.MeetingId, x.TranscriptHash })
+                .HasDatabaseName("IX_MeetingTranscripts_OrganizationId_MeetingId_TranscriptHash");
+
             builder.HasIndex(x => x.MeetingId)
                 .IsUnique()
                 .HasDatabaseName("IX_MeetingTranscripts_MeetingId");

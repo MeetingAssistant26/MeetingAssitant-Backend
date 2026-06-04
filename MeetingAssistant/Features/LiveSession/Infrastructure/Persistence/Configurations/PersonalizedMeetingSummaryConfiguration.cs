@@ -39,6 +39,9 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
             builder.Property(x => x.EligibilityContextJson)
                 .HasColumnType("jsonb");
 
+            builder.Property(x => x.SourceTranscriptHash)
+                .HasMaxLength(64);
+
             builder.HasIndex(x => new { x.MeetingId, x.UserId })
                 .IsUnique()
                 .HasDatabaseName("IX_PersonalizedMeetingSummaries_MeetingId_UserId");

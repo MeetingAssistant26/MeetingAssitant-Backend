@@ -20,6 +20,9 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
                 .HasColumnType("timestamp with time zone")
                 .IsRequired();
 
+            builder.Property(x => x.SourceTranscriptHash)
+                .HasMaxLength(64);
+
             builder.HasIndex(x => x.MeetingId)
                 .IsUnique()
                 .HasDatabaseName("IX_MeetingSummaries_MeetingId");

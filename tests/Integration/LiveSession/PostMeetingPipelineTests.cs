@@ -10,9 +10,12 @@ using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using static MeetingAssistant.Features.LiveSession.Services.TranscriptSourceIdentity;
 using MeetingAssistant.Features.Meetings.Jobs;
+using MeetingAssistant.Features.Meetings.Models;
 using MeetingAssistant.Features.Organizations.Models;
 using MeetingAssistant.Features.Rag.Jobs;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
@@ -1126,6 +1129,113 @@ namespace tests.Integration.LiveSession
             });
 
             return (evt, rawPayload);
+        }
+
+        [Fact]
+        public async Task GenerateMeetingSummaryJob_ShouldUpdateSourceFieldsWhenTranscriptChanges()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId, MeetingStatus.Completed);
+            const string initialText = "[00:00:01 Alice] Initial transcript.";
+            var transcript = new MeetingTranscript
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                FullText = initialText,
+                GeneratedAtUtc = DateTime.UtcNow,
+                SttModel = "test"
+            };
+            InitializeNew(transcript, initialText);
+            db.DbContext.MeetingTranscripts.Add(transcript);
+            var summary = new MeetingSummary
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                SummaryText = "Old summary",
+                LlmModel = "old",
+                GeneratedAtUtc = DateTime.UtcNow.AddMinutes(-5),
+                SourceTranscriptHash = transcript.TranscriptHash,
+                SourceTranscriptRevision = transcript.TranscriptRevision
+            };
+            db.DbContext.MeetingSummaries.Add(summary);
+            await db.DbContext.SaveChangesAsync();
+
+            transcript.FullText = "[00:00:01 Alice] Revised transcript.";
+            ApplyContentRevision(transcript, transcript.FullText);
+            await db.DbContext.SaveChangesAsync();
+
+            var summarizer = new StubSummarizerService(new SummaryResult("New summary", "gpt-test", 1, 1));
+            var job = new GenerateMeetingSummaryJob(
+                db.DbContext,
+                summarizer,
+                NullLogger<GenerateMeetingSummaryJob>.Instance);
+            await job.RunAsync(meetingId, orgId, CancellationToken.None);
+
+            var updated = await db.DbContext.MeetingSummaries.SingleAsync(x => x.MeetingId == meetingId);
+            updated.SummaryText.Should().Be("New summary");
+            updated.SourceTranscriptHash.Should().Be(transcript.TranscriptHash);
+            updated.SourceTranscriptRevision.Should().Be(transcript.TranscriptRevision);
+        }
+
+        [Fact]
+        public async Task GenerateMeetingSummaryJob_ShouldLeaveExistingSummaryWhenLlmFails()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId, MeetingStatus.Completed);
+            const string fullText = "[00:00:01 Alice] Transcript.";
+            var transcript = new MeetingTranscript
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                FullText = fullText,
+                GeneratedAtUtc = DateTime.UtcNow,
+                SttModel = "test"
+            };
+            InitializeNew(transcript, fullText);
+            db.DbContext.MeetingTranscripts.Add(transcript);
+            var summary = new MeetingSummary
+            {
+                Id = Guid.NewGuid(),
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                SummaryText = "Keep this summary",
+                LlmModel = "old",
+                GeneratedAtUtc = DateTime.UtcNow,
+                SourceTranscriptHash = "stale-hash",
+                SourceTranscriptRevision = 1
+            };
+            db.DbContext.MeetingSummaries.Add(summary);
+            await db.DbContext.SaveChangesAsync();
+
+            var job = new GenerateMeetingSummaryJob(
+                db.DbContext,
+                new ThrowingSummarizerService(),
+                NullLogger<GenerateMeetingSummaryJob>.Instance);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                job.RunAsync(meetingId, orgId, CancellationToken.None));
+
+            var unchanged = await db.DbContext.MeetingSummaries.SingleAsync(x => x.MeetingId == meetingId);
+            unchanged.SummaryText.Should().Be("Keep this summary");
+            unchanged.SourceTranscriptHash.Should().Be("stale-hash");
+        }
+
+        private sealed class ThrowingSummarizerService : ISummarizerService
+        {
+            public Task<SummaryResult> SummarizeAsync(string fullTranscript, CancellationToken ct = default)
+                => throw new InvalidOperationException("summary failed");
+
+            public Task<SummaryResult> SummarizePersonalizedAsync(
+                string fullTranscript,
+                string participant,
+                string? personalizationContext = null,
+                CancellationToken ct = default)
+                => throw new InvalidOperationException("summary failed");
         }
 
         private sealed record PersistedSegmentForTest(

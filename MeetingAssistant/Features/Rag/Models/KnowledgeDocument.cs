@@ -37,6 +37,14 @@ namespace MeetingAssistant.Features.Rag.Models
 
         public DateTime GeneratedAtUtc { get; set; }
 
+        public Guid? SourceTranscriptId { get; set; }
+
+        public string? SourceTranscriptHash { get; set; }
+
+        public int? SourceTranscriptRevision { get; set; }
+
+        public DateTime? SourceTranscriptGeneratedAtUtc { get; set; }
+
         public ICollection<KnowledgeChunk> Chunks { get; set; } = new List<KnowledgeChunk>();
     }
 }

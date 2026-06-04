@@ -20,5 +20,13 @@ namespace MeetingAssistant.Features.LiveSession.Models
         public int? CompletionTokens { get; set; }
 
         public DateTime GeneratedAtUtc { get; set; }
+
+        public Guid? SourceTranscriptId { get; set; }
+
+        public string? SourceTranscriptHash { get; set; }
+
+        public int? SourceTranscriptRevision { get; set; }
+
+        public DateTime? SourceTranscriptGeneratedAtUtc { get; set; }
     }
 }

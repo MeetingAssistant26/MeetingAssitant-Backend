@@ -39,6 +39,20 @@ namespace MeetingAssistant.Features.ActionItems.Models.Entities
 
         public DateTime? SyncedAtUtc { get; set; }
 
+        public Guid? SourceTranscriptId { get; set; }
+
+        public string? SourceTranscriptHash { get; set; }
+
+        public int? SourceTranscriptRevision { get; set; }
+
+        public DateTime? SourceTranscriptGeneratedAtUtc { get; set; }
+
+        public DateTime? SupersededAtUtc { get; set; }
+
+        public string? SupersededByTranscriptHash { get; set; }
+
+        public string? SupersededReason { get; set; }
+
         public byte[] RowVersion { get; set; } = Array.Empty<byte>();
     }
 }

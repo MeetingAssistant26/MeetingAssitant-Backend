@@ -191,11 +191,14 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .ToListAsync(cancellationToken);
             var membershipsByUserId = memberships.ToDictionary(x => x.UserId);
 
+            var transcriptIdentity = TranscriptSourceIdentity.Resolve(transcript);
+
             var actionItems = await _dbContext.ActionItems
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .Where(x => x.OrganizationId == organizationId
                             && x.MeetingId == meetingId
+                            && x.SupersededAtUtc == null
                             && ((x.AssignedToUserId.HasValue && userIds.Contains(x.AssignedToUserId.Value))
                                 || (x.AssignedToParticipantId.HasValue && participantIds.Contains(x.AssignedToParticipantId.Value))))
                 .Select(x => new AssignedActionItemContext(
@@ -330,6 +333,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     summary.PromptVersion = null;
                     summary.PersonalizationContextJson = null;
                 }
+
+                TranscriptSourceIdentity.ApplySourceFields(summary, transcriptIdentity);
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);

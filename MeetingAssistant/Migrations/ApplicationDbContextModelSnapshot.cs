@@ -65,6 +65,30 @@ namespace MeetingAssistant.Migrations
                     b.Property<Guid>("OrganizationId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("SourceTranscriptGeneratedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SourceTranscriptHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("SourceTranscriptId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("SourceTranscriptRevision")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("SupersededAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SupersededByTranscriptHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("SupersededReason")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
                     b.Property<byte[]>("RowVersion")
                         .IsConcurrencyToken()
                         .IsRequired()
@@ -100,6 +124,12 @@ namespace MeetingAssistant.Migrations
 
                     b.HasIndex("OrganizationId", "Status")
                         .HasDatabaseName("IX_ActionItems_OrganizationId_Status");
+
+                    b.HasIndex("OrganizationId", "MeetingId", "SourceTranscriptHash")
+                        .HasDatabaseName("IX_ActionItems_OrganizationId_MeetingId_SourceTranscriptHash");
+
+                    b.HasIndex("OrganizationId", "MeetingId", "SupersededAtUtc")
+                        .HasDatabaseName("IX_ActionItems_OrganizationId_MeetingId_SupersededAtUtc");
 
                     b.ToTable("ActionItems");
                 });
@@ -523,6 +553,19 @@ namespace MeetingAssistant.Migrations
                     b.Property<int?>("PromptTokens")
                         .HasColumnType("integer");
 
+                    b.Property<DateTime?>("SourceTranscriptGeneratedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SourceTranscriptHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("SourceTranscriptId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("SourceTranscriptRevision")
+                        .HasColumnType("integer");
+
                     b.Property<string>("SummaryText")
                         .IsRequired()
                         .HasColumnType("text");
@@ -562,6 +605,16 @@ namespace MeetingAssistant.Migrations
                     b.Property<string>("FullText")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<string>("TranscriptHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("TranscriptRevision")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
 
                     b.Property<DateTime>("GeneratedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -612,6 +665,9 @@ namespace MeetingAssistant.Migrations
 
                     b.HasIndex("OrganizationId")
                         .HasDatabaseName("IX_MeetingTranscripts_OrganizationId");
+
+                    b.HasIndex("OrganizationId", "MeetingId", "TranscriptHash")
+                        .HasDatabaseName("IX_MeetingTranscripts_OrganizationId_MeetingId_TranscriptHash");
 
                     b.ToTable("MeetingTranscripts");
                 });
@@ -879,6 +935,19 @@ namespace MeetingAssistant.Migrations
                         .HasColumnType("character varying(128)");
 
                     b.Property<int?>("PromptTokens")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("SourceTranscriptGeneratedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SourceTranscriptHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("SourceTranscriptId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("SourceTranscriptRevision")
                         .HasColumnType("integer");
 
                     b.Property<string>("PromptVersion")
@@ -1704,6 +1773,19 @@ namespace MeetingAssistant.Migrations
                     b.Property<Guid>("OrganizationId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("SourceTranscriptGeneratedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SourceTranscriptHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("SourceTranscriptId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("SourceTranscriptRevision")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Text")
                         .IsRequired()
                         .HasColumnType("text");
@@ -1733,6 +1815,9 @@ namespace MeetingAssistant.Migrations
 
                     b.HasIndex("OrganizationId", "MeetingId")
                         .HasDatabaseName("IX_KnowledgeChunks_Org_Meeting");
+
+                    b.HasIndex("OrganizationId", "MeetingId", "SourceTranscriptHash")
+                        .HasDatabaseName("IX_KnowledgeChunks_OrganizationId_MeetingId_SourceTranscriptHash");
 
                     b.HasIndex("OrganizationId", "ArtifactType", "ArtifactId", "ArtifactVersion")
                         .HasDatabaseName("IX_KnowledgeChunks_Org_Artifact");
@@ -1850,6 +1935,19 @@ namespace MeetingAssistant.Migrations
                     b.Property<Guid>("OrganizationId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTime?>("SourceTranscriptGeneratedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SourceTranscriptHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("SourceTranscriptId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int?>("SourceTranscriptRevision")
+                        .HasColumnType("integer");
+
                     b.Property<string>("Title")
                         .IsRequired()
                         .HasMaxLength(300)
@@ -1864,6 +1962,9 @@ namespace MeetingAssistant.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("MeetingId");
+
+                    b.HasIndex("OrganizationId", "MeetingId", "SourceTranscriptHash")
+                        .HasDatabaseName("IX_KnowledgeDocuments_OrganizationId_MeetingId_SourceTranscriptHash");
 
                     b.HasIndex("OrganizationId", "ContentHash")
                         .HasDatabaseName("IX_KnowledgeDocuments_Org_ContentHash");

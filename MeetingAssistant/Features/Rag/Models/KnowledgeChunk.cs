@@ -46,6 +46,14 @@ namespace MeetingAssistant.Features.Rag.Models
 
         public DateTime GeneratedAtUtc { get; set; }
 
+        public Guid? SourceTranscriptId { get; set; }
+
+        public string? SourceTranscriptHash { get; set; }
+
+        public int? SourceTranscriptRevision { get; set; }
+
+        public DateTime? SourceTranscriptGeneratedAtUtc { get; set; }
+
         /// <summary>
         /// PostgreSQL pgvector storage. The value is formatted as a pgvector literal
         /// (for example, "[0.1,0.2]") so this schema does not require a client-side

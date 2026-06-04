@@ -47,6 +47,12 @@ namespace MeetingAssistant.Features.Rag.Infrastructure.Persistence.Configuration
                 .HasColumnType("timestamp with time zone")
                 .IsRequired();
 
+            builder.Property(x => x.SourceTranscriptHash)
+                .HasMaxLength(64);
+
+            builder.HasIndex(x => new { x.OrganizationId, x.MeetingId, x.SourceTranscriptHash })
+                .HasDatabaseName("IX_KnowledgeChunks_OrganizationId_MeetingId_SourceTranscriptHash");
+
             builder.Property(x => x.EmbeddingVectorText)
                 .HasColumnName("Embedding")
                 .HasColumnType("vector")

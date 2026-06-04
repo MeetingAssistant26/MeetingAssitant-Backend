@@ -52,7 +52,9 @@ namespace MeetingAssistant.Features.ActionItems.Services
             var actionItems = await _dbContext.ActionItems
                 .AsNoTracking()
                 .Include(x => x.AssignedToUser)
-                .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
+                .Where(x => x.MeetingId == meetingId
+                            && x.OrganizationId == organizationId
+                            && x.SupersededAtUtc == null)
                 .OrderBy(x => x.CreatedAtUtc)
                 .ToListAsync(cancellationToken);
 
@@ -118,7 +120,7 @@ namespace MeetingAssistant.Features.ActionItems.Services
             var query = _dbContext.ActionItems
                 .AsNoTracking()
                 .Include(x => x.AssignedToUser)
-                .Where(x => x.OrganizationId == organizationId);
+                .Where(x => x.OrganizationId == organizationId && x.SupersededAtUtc == null);
 
             if (string.Equals(assigneeFilter, "me", StringComparison.OrdinalIgnoreCase))
                 query = query.Where(x => x.AssignedToUserId == userId);
@@ -473,7 +475,7 @@ namespace MeetingAssistant.Features.ActionItems.Services
                 return Result.Failure(new Error("Forbidden", "You do not have permission to re-extract action items.", 403));
 
             var existingCount = await _dbContext.ActionItems
-                .CountAsync(x => x.MeetingId == meetingId, cancellationToken);
+                .CountAsync(x => x.MeetingId == meetingId && x.SupersededAtUtc == null, cancellationToken);
 
             if (existingCount > 0)
                 return Result.Failure(new Error("Conflict", "Delete existing action items first before re-extracting.", 409));

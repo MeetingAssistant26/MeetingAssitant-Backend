@@ -41,5 +41,13 @@ namespace MeetingAssistant.Features.LiveSession.Models
         public string? EligibilityReason { get; set; }
 
         public string? EligibilityContextJson { get; set; }
+
+        public Guid? SourceTranscriptId { get; set; }
+
+        public string? SourceTranscriptHash { get; set; }
+
+        public int? SourceTranscriptRevision { get; set; }
+
+        public DateTime? SourceTranscriptGeneratedAtUtc { get; set; }
     }
 }

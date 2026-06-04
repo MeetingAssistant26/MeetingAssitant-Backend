@@ -48,6 +48,12 @@ namespace MeetingAssistant.Features.Rag.Infrastructure.Persistence.Configuration
                 .HasColumnType("timestamp with time zone")
                 .IsRequired();
 
+            builder.Property(x => x.SourceTranscriptHash)
+                .HasMaxLength(64);
+
+            builder.HasIndex(x => new { x.OrganizationId, x.MeetingId, x.SourceTranscriptHash })
+                .HasDatabaseName("IX_KnowledgeDocuments_OrganizationId_MeetingId_SourceTranscriptHash");
+
             builder.HasIndex(x => new { x.OrganizationId, x.Visibility, x.IsCurrent, x.MeetingId })
                 .HasDatabaseName("IX_KnowledgeDocuments_Org_Visibility_Current_Meeting");
 

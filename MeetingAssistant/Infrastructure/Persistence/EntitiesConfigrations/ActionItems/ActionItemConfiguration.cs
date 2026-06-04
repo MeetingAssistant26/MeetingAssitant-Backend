@@ -27,6 +27,21 @@ namespace MeetingAssistant.Infrastructure.Persistence.EntitiesConfigrations.Acti
             builder.Property(x => x.SyncMissingAssigneeReason)
                 .HasMaxLength(50);
 
+            builder.Property(x => x.SourceTranscriptHash)
+                .HasMaxLength(64);
+
+            builder.Property(x => x.SupersededByTranscriptHash)
+                .HasMaxLength(64);
+
+            builder.Property(x => x.SupersededReason)
+                .HasMaxLength(128);
+
+            builder.HasIndex(x => new { x.OrganizationId, x.MeetingId, x.SourceTranscriptHash })
+                .HasDatabaseName("IX_ActionItems_OrganizationId_MeetingId_SourceTranscriptHash");
+
+            builder.HasIndex(x => new { x.OrganizationId, x.MeetingId, x.SupersededAtUtc })
+                .HasDatabaseName("IX_ActionItems_OrganizationId_MeetingId_SupersededAtUtc");
+
             builder.Property(x => x.RowVersion)
                 .IsConcurrencyToken();
 

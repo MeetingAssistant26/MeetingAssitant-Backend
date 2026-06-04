@@ -1172,6 +1172,7 @@ public sealed class DevQaController(
         transcript.MissingAudioFragmentIdsJson = "[]";
         transcript.WarningsJson = "[]";
         transcript.UpdatedAtUtc = now;
+        TranscriptSourceIdentity.InitializeNew(transcript, transcript.FullText);
 
         var summary = await _dbContext.MeetingSummaries
             .IgnoreQueryFilters()
@@ -1194,6 +1195,8 @@ public sealed class DevQaController(
         summary.LlmModel = qaSourceTag;
         summary.GeneratedAtUtc = now;
         summary.UpdatedAtUtc = now;
+        var transcriptIdentity = TranscriptSourceIdentity.From(transcript);
+        TranscriptSourceIdentity.ApplySourceFields(summary, transcriptIdentity);
 
         var hostUserId = meeting.Participants
             .Where(participant => participant.MeetingRole == MeetingRole.Host)
@@ -1213,7 +1216,7 @@ public sealed class DevQaController(
                     continue;
 
                 var actionItemId = Guid.NewGuid();
-                _dbContext.ActionItems.Add(new ActionItem
+                var actionItem = new ActionItem
                 {
                     Id = actionItemId,
                     OrganizationId = request.OrganizationId,
@@ -1227,7 +1230,9 @@ public sealed class DevQaController(
                         : actionItemRequest.AssignedToUserId,
                     Status = ActionItemStatus.PendingReview,
                     ExtractedAtUtc = now
-                });
+                };
+                TranscriptSourceIdentity.ApplySourceFields(actionItem, transcriptIdentity);
+                _dbContext.ActionItems.Add(actionItem);
                 actionItemIds.Add(actionItemId);
             }
         }
@@ -1288,6 +1293,7 @@ public sealed class DevQaController(
                 existing.EligibilityContextJson = contextJson;
                 existing.PersonalizationContextJson = contextJson;
                 existing.UpdatedAtUtc = now;
+                TranscriptSourceIdentity.ApplySourceFields(existing, transcriptIdentity);
                 personalizedSummaryIds.Add(existing.Id);
             }
         }
@@ -1439,6 +1445,7 @@ public sealed class DevQaController(
         transcript.MissingAudioFragmentIdsJson = "[]";
         transcript.WarningsJson = "[]";
         transcript.UpdatedAtUtc = now;
+        TranscriptSourceIdentity.ApplyContentRevision(transcript, transcript.FullText);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -1467,6 +1474,8 @@ public sealed class DevQaController(
             transcript.Id,
             previousFullTextSha256,
             currentFullTextSha256,
+            transcript.TranscriptHash,
+            transcript.TranscriptRevision,
             transcriptChanged,
             pipelineGenerationId,
             postProcessingRunId));
@@ -1724,7 +1733,11 @@ public sealed class DevQaController(
                 x.Status,
                 x.GeneratedAtUtc,
                 x.EligibilityReason,
-                x.SummaryText
+                x.SummaryText,
+                x.SourceTranscriptId,
+                x.SourceTranscriptHash,
+                x.SourceTranscriptRevision,
+                x.SourceTranscriptGeneratedAtUtc
             })
             .ToListAsync(cancellationToken);
 
@@ -1738,13 +1751,19 @@ public sealed class DevQaController(
                 x.EligibilityReason,
                 x.SummaryText == null ? 0 : x.SummaryText.Length,
                 string.IsNullOrWhiteSpace(x.SummaryText) ? null : Sha256(x.SummaryText),
-                string.IsNullOrWhiteSpace(x.SummaryText) ? string.Empty : Preview(x.SummaryText)))
+                string.IsNullOrWhiteSpace(x.SummaryText) ? string.Empty : Preview(x.SummaryText),
+                x.SourceTranscriptId,
+                x.SourceTranscriptHash,
+                x.SourceTranscriptRevision,
+                x.SourceTranscriptGeneratedAtUtc))
             .ToList();
 
         var actionItemRows = await _dbContext.ActionItems
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.MeetingId == meetingId && x.OrganizationId == organizationId)
+            .Where(x => x.MeetingId == meetingId
+                        && x.OrganizationId == organizationId
+                        && x.SupersededAtUtc == null)
             .OrderBy(x => x.CreatedAtUtc)
             .Select(x => new
             {
@@ -1754,7 +1773,12 @@ public sealed class DevQaController(
                 x.Status,
                 x.AssignedToUserId,
                 x.DueDateUtc,
-                x.ExtractedAtUtc
+                x.ExtractedAtUtc,
+                x.SourceTranscriptId,
+                x.SourceTranscriptHash,
+                x.SourceTranscriptRevision,
+                x.SourceTranscriptGeneratedAtUtc,
+                x.SupersededAtUtc
             })
             .ToListAsync(cancellationToken);
 
@@ -1772,7 +1796,12 @@ public sealed class DevQaController(
                     x.DueDateUtc,
                     x.ExtractedAtUtc,
                     string.IsNullOrWhiteSpace(x.Description) ? null : Sha256(x.Description),
-                    Preview(previewSource));
+                    Preview(previewSource),
+                    x.SourceTranscriptId,
+                    x.SourceTranscriptHash,
+                    x.SourceTranscriptRevision,
+                    x.SourceTranscriptGeneratedAtUtc,
+                    x.SupersededAtUtc);
             })
             .ToList();
 
@@ -1792,7 +1821,11 @@ public sealed class DevQaController(
                 x.Visibility.ToString(),
                 x.ContentHash,
                 x.IndexGenerationId,
-                x.GeneratedAtUtc))
+                x.GeneratedAtUtc,
+                x.SourceTranscriptId,
+                x.SourceTranscriptHash,
+                x.SourceTranscriptRevision,
+                x.SourceTranscriptGeneratedAtUtc))
             .ToListAsync(cancellationToken);
 
         var postProcessingRuns = await _dbContext.PostMeetingProcessingRuns
@@ -1885,6 +1918,8 @@ public sealed class DevQaController(
                     transcript.FullText.Length,
                     CountSegments(transcript.SegmentsJson),
                     Sha256(transcript.FullText),
+                    transcript.TranscriptHash,
+                    transcript.TranscriptRevision,
                     Preview(transcript.FullText),
                     transcript.CompletenessStatus.ToString(),
                     transcript.CompletenessStatus != MeetingTranscriptCompletenessStatus.Complete,
@@ -1902,7 +1937,11 @@ public sealed class DevQaController(
                     summary.LlmModel,
                     summary.SummaryText.Length,
                     Sha256(summary.SummaryText),
-                    Preview(summary.SummaryText)),
+                    Preview(summary.SummaryText),
+                    summary.SourceTranscriptId,
+                    summary.SourceTranscriptHash,
+                    summary.SourceTranscriptRevision,
+                    summary.SourceTranscriptGeneratedAtUtc),
             personalized,
             actionItems,
             knowledgeDocuments,
@@ -2635,6 +2674,8 @@ public sealed record QaTranscriptStatusResponse(
     int TextLength,
     int SegmentCount,
     string FullTextSha256,
+    string TranscriptHash,
+    int TranscriptRevision,
     string Preview,
     string CompletenessStatus,
     bool IsDegraded,
@@ -2651,7 +2692,11 @@ public sealed record QaSummaryStatusResponse(
     string LlmModel,
     int TextLength,
     string SummarySha256,
-    string Preview);
+    string Preview,
+    Guid? SourceTranscriptId = null,
+    string? SourceTranscriptHash = null,
+    int? SourceTranscriptRevision = null,
+    DateTime? SourceTranscriptGeneratedAtUtc = null);
 
 public sealed record QaPersonalizedSummaryStatusResponse(
     Guid Id,
@@ -2662,7 +2707,11 @@ public sealed record QaPersonalizedSummaryStatusResponse(
     string? EligibilityReason,
     int SummaryTextLength,
     string? SummarySha256 = null,
-    string Preview = "");
+    string Preview = "",
+    Guid? SourceTranscriptId = null,
+    string? SourceTranscriptHash = null,
+    int? SourceTranscriptRevision = null,
+    DateTime? SourceTranscriptGeneratedAtUtc = null);
 
 public sealed record QaActionItemStatusResponse(
     Guid Id,
@@ -2672,7 +2721,12 @@ public sealed record QaActionItemStatusResponse(
     DateTime? DueDateUtc,
     DateTime ExtractedAtUtc,
     string? DescriptionSha256 = null,
-    string Preview = "");
+    string Preview = "",
+    Guid? SourceTranscriptId = null,
+    string? SourceTranscriptHash = null,
+    int? SourceTranscriptRevision = null,
+    DateTime? SourceTranscriptGeneratedAtUtc = null,
+    DateTime? SupersededAtUtc = null);
 
 public sealed record QaSourceRevisionActionItemRequest(
     string Title,
@@ -2717,6 +2771,8 @@ public sealed record QaSourceRevisionTranscriptResponse(
     Guid TranscriptId,
     string? PreviousFullTextSha256,
     string CurrentFullTextSha256,
+    string TranscriptHash,
+    int TranscriptRevision,
     bool TranscriptChanged,
     Guid? PipelineGenerationId,
     Guid? PostProcessingRunId);
@@ -2730,7 +2786,11 @@ public sealed record QaKnowledgeDocumentStatusResponse(
     string Visibility,
     string ContentHash,
     Guid IndexGenerationId,
-    DateTime GeneratedAtUtc);
+    DateTime GeneratedAtUtc,
+    Guid? SourceTranscriptId = null,
+    string? SourceTranscriptHash = null,
+    int? SourceTranscriptRevision = null,
+    DateTime? SourceTranscriptGeneratedAtUtc = null);
 
 public sealed record QaKnowledgeDuplicateResponse(
     string ArtifactType,

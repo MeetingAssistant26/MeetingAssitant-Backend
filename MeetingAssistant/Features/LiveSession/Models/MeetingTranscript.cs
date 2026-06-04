@@ -33,5 +33,9 @@ namespace MeetingAssistant.Features.LiveSession.Models
         public string MissingAudioFragmentIdsJson { get; set; } = "[]";
 
         public string WarningsJson { get; set; } = "[]";
+
+        public string TranscriptHash { get; set; } = string.Empty;
+
+        public int TranscriptRevision { get; set; } = 1;
     }
 }
