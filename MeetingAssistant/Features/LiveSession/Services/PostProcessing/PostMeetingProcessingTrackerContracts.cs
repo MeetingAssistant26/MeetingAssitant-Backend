@@ -48,6 +48,15 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             PostMeetingArtifactLink? artifact = null,
             CancellationToken cancellationToken = default);
 
+        Task<PostMeetingProcessingStep> CompleteStepWithWarningsAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default);
+
         Task<PostMeetingProcessingStep> FailStepAsync(
             Guid organizationId,
             Guid meetingId,
@@ -83,6 +92,13 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             CancellationToken cancellationToken = default);
 
         Task<PostMeetingProcessingRun> CompleteRunAsync(
+            Guid organizationId,
+            Guid meetingId,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            CancellationToken cancellationToken = default);
+
+        Task<PostMeetingProcessingRun> CompleteRunWithWarningsAsync(
             Guid organizationId,
             Guid meetingId,
             string? relatedHangfireJobId = null,

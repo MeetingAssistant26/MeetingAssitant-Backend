@@ -8,6 +8,7 @@ using MeetingAssistant.Features.LiveSession.Models.Events;
 using MeetingAssistant.Features.LiveSession.Models.PostProcessing;
 using MeetingAssistant.Features.LiveSession.Services;
 using MeetingAssistant.Features.LiveSession.Services.PostProcessing;
+using static MeetingAssistant.Features.LiveSession.Services.MeetingTranscriptCompletenessGuard;
 using MeetingAssistant.Infrastructure.Persistence.DbContext;
 using Microsoft.EntityFrameworkCore;
 
@@ -36,6 +37,9 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         private const string EgressAudioSource = "egress_audio";
         private const string AiAssistantTraceSource = "ai_assistant_trace";
         private const string AiDebugTraceSttModel = "ai-debug-trace";
+        private const int MaxSttAttemptsBeforeTerminal = 5;
+        private const string SttFailureCodeFailed = "stt_failed";
+        private const string SttFailureCodeNoSegments = "stt_no_segments";
 
         private static readonly Regex TrackSidFromObjectKeyRegex = new(
             @"(?:^|/)track-(?<sid>[^/.\\]+)",
@@ -91,18 +95,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .Where(x => x.MeetingId == meetingId
                             && x.OrganizationId == organizationId
                             && x.Status == ParticipantAudioFragmentStatus.Available
-                            && x.StorageObjectKey != null)
-                .Select(x => new
-                {
-                    x.Id,
-                    x.ParticipantUserId,
-                    x.ParticipantAudioTrackId,
-                    x.TrackSid,
-                    x.StorageObjectKey,
-                    x.TrackPublishedAtUtc,
-                    x.EgressStartedAtUtc,
-                    x.StorageAvailableAtUtc
-                })
+                            && x.StorageObjectKey != null
+                            && x.SttStatus != ParticipantAudioFragmentSttStatus.FailedTerminal)
                 .ToListAsync(cancellationToken);
 
             var meeting = await _dbContext.Meetings
@@ -160,13 +154,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return;
             }
 
+            var expectedAudioFragmentCount = fragments.Count;
+
             var fragmentsWithTiming = fragments
                 .Select(fragment => new FragmentTranscriptionInput(
-                    fragment.Id,
-                    fragment.ParticipantUserId,
-                    fragment.ParticipantAudioTrackId,
-                    fragment.TrackSid,
-                    fragment.StorageObjectKey!,
+                    fragment,
                     Timing: ResolveTrackTiming(
                         fragment.ParticipantUserId,
                         fragment.TrackSid,
@@ -178,14 +170,15 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                         timingEvents)
                 ))
                 .OrderBy(x => x.Timing.RoomRelativeStartOffsetMs)
-                .ThenBy(x => x.ParticipantUserId)
-                .ThenBy(x => x.TrackSid, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(x => x.StorageObjectKey, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.Fragment.ParticipantUserId)
+                .ThenBy(x => x.Fragment.TrackSid, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.Fragment.StorageObjectKey, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             var allSegments = new ConcurrentBag<NormalizedTranscriptSegment>();
             var sttModels = new ConcurrentBag<string>();
             var failedFragments = new ConcurrentBag<FailedFragmentTranscription>();
+            var succeededFragmentIds = new ConcurrentBag<Guid>();
 
             await Parallel.ForEachAsync(
                 fragmentsWithTiming,
@@ -199,59 +192,76 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 },
                 async (track, ct) =>
                 {
+                    var fragment = track.Fragment;
                     try
                     {
+                        MarkFragmentSttInProgress(fragment);
+
+                        await _dbContext.SaveChangesAsync(ct);
+
                         _qaSttFailureInjectionService?.TryInjectFailure(
                             meetingId,
                             organizationId,
-                            track.ParticipantUserId,
-                            track.StorageObjectKey!);
+                            fragment.ParticipantUserId,
+                            fragment.StorageObjectKey!);
 
                         var result = await _sttService.TranscribeTrackAsync(
-                            track.ParticipantUserId,
-                            track.StorageObjectKey!,
+                            fragment.ParticipantUserId,
+                            fragment.StorageObjectKey!,
                             ct);
 
                         if (result.Segments.Count == 0)
                         {
+                            MarkFragmentSttFailed(
+                                fragment,
+                                SttFailureCodeNoSegments,
+                                "STT returned no transcript segments.");
+                            await _dbContext.SaveChangesAsync(ct);
+
                             failedFragments.Add(new FailedFragmentTranscription(
-                                track.FragmentId,
-                                "STT returned no transcript segments."));
+                                fragment.Id,
+                                fragment.SttFailureMessage ?? "STT returned no transcript segments."));
 
                             _logger.LogWarning(
                                 "STT transcription returned no transcript segments for participant audio fragment. MeetingId={MeetingId} FragmentId={FragmentId} ParticipantUserId={ParticipantUserId} TrackSid={TrackSid}",
                                 meetingId,
-                                track.FragmentId,
-                                track.ParticipantUserId,
-                                track.TrackSid);
+                                fragment.Id,
+                                fragment.ParticipantUserId,
+                                fragment.TrackSid);
 
                             return;
                         }
 
+                        MarkFragmentSttSucceeded(fragment, result.Model, result.Segments.Count);
+                        await _dbContext.SaveChangesAsync(ct);
+
                         sttModels.Add(result.Model);
+                        succeededFragmentIds.Add(fragment.Id);
                         foreach (var segment in result.Segments)
                         {
                             allSegments.Add(NormalizeSegment(
                                 segment,
-                                track.ParticipantAudioTrackId,
-                                track.FragmentId,
+                                fragment.ParticipantAudioTrackId,
+                                fragment.Id,
                                 roomActivatedAtUtc,
                                 track.Timing));
                         }
                     }
                     catch (Exception ex)
                     {
-                        failedFragments.Add(new FailedFragmentTranscription(
-                            track.FragmentId,
-                            TruncateFailureMessage(ex.GetBaseException().Message)));
+                        var failureMessage = TruncateFailureMessage(ex.GetBaseException().Message);
+                        MarkFragmentSttFailed(fragment, SttFailureCodeFailed, failureMessage);
+                        await _dbContext.SaveChangesAsync(ct);
+
+                        failedFragments.Add(new FailedFragmentTranscription(fragment.Id, failureMessage));
 
                         _logger.LogWarning(
                             ex,
                             "STT transcription failed for participant audio fragment. MeetingId={MeetingId} FragmentId={FragmentId} ParticipantUserId={ParticipantUserId} TrackSid={TrackSid}",
                             meetingId,
-                            track.FragmentId,
-                            track.ParticipantUserId,
-                            track.TrackSid);
+                            fragment.Id,
+                            fragment.ParticipantUserId,
+                            fragment.TrackSid);
                     }
                 });
 
@@ -259,29 +269,6 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .Select(x => x.FragmentId)
                 .Distinct()
                 .ToList();
-
-            if (failedFragmentIds.Count > 0)
-            {
-                var failuresById = failedFragments
-                    .GroupBy(x => x.FragmentId)
-                    .ToDictionary(x => x.Key, x => x.Last().FailureMessage);
-
-                var failedRows = await _dbContext.ParticipantAudioFragments
-                    .IgnoreQueryFilters()
-                    .Where(x => failedFragmentIds.Contains(x.Id))
-                    .ToListAsync(cancellationToken);
-
-                var failedAtUtc = DateTime.UtcNow;
-                foreach (var fragment in failedRows)
-                {
-                    fragment.Status = ParticipantAudioFragmentStatus.Failed;
-                    fragment.FailedAtUtc = failedAtUtc;
-                    fragment.FailureCode = "stt_failed";
-                    fragment.FailureMessage = failuresById.TryGetValue(fragment.Id, out var message)
-                        ? message
-                        : "STT transcription failed.";
-                }
-            }
 
             if (allSegments.IsEmpty && assistantSegments.Count == 0 && participantTraceSegments.Count == 0)
             {
@@ -317,17 +304,63 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 ? orderedHumanSegments.Count
                 : participantTraceSegments.Count;
 
+            var transcribedFragmentCount = succeededFragmentIds.Distinct().Count();
+            var retryableFailedCount = fragments.Count(fragment =>
+                fragment.SttStatus == ParticipantAudioFragmentSttStatus.FailedRetryable);
+            var terminalFailedCount = fragments.Count(fragment =>
+                fragment.SttStatus == ParticipantAudioFragmentSttStatus.FailedTerminal);
+            var isTranscriptComplete = expectedAudioFragmentCount == 0
+                                       || (failedFragmentIds.Count == 0
+                                           && transcribedFragmentCount >= expectedAudioFragmentCount);
+            var completenessStatus = isTranscriptComplete
+                ? MeetingTranscriptCompletenessStatus.Complete
+                : MeetingTranscriptCompletenessStatus.CompletedWithWarnings;
+            var transcriptWarnings = BuildTranscriptWarnings(
+                failedFragmentIds,
+                retryableFailedCount,
+                terminalFailedCount,
+                expectedAudioFragmentCount,
+                transcribedFragmentCount);
+
             if (_postMeetingProcessingTracker is not null)
             {
-                await _postMeetingProcessingTracker.CompleteStepAsync(
-                    organizationId,
-                    meetingId,
-                    PostMeetingProcessingStepType.Stt,
-                    message: $"STT transcription completed for {participantSegmentCount} participant segment(s).",
-                    artifact: fragmentsWithTiming.Count > 0
-                        ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: fragmentsWithTiming.Select(x => x.FragmentId).ToList())
-                        : null,
-                    cancellationToken: cancellationToken);
+                if (isTranscriptComplete)
+                {
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.Stt,
+                        message: $"STT transcription completed for {participantSegmentCount} participant segment(s).",
+                        artifact: fragmentsWithTiming.Count > 0
+                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: fragmentsWithTiming.Select(x => x.Fragment.Id).ToList())
+                            : null,
+                        cancellationToken: cancellationToken);
+                }
+                else
+                {
+                    await _postMeetingProcessingTracker.CompleteStepWithWarningsAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.Stt,
+                        message: $"STT transcription completed with warnings for {participantSegmentCount} participant segment(s); {failedFragmentIds.Count} audio fragment(s) remain untranscribed.",
+                        artifact: failedFragmentIds.Count > 0
+                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds)
+                            : null,
+                        cancellationToken: cancellationToken);
+
+                    await _postMeetingProcessingTracker.RecordEventAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingEventType.Info,
+                        PostMeetingProcessingStepType.Stt,
+                        PostMeetingProcessingStatus.CompletedWithWarnings,
+                        message: "Transcript coverage is degraded because one or more audio fragments failed STT.",
+                        artifact: failedFragmentIds.Count > 0
+                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds)
+                            : null,
+                        metadataJson: JsonSerializer.Serialize(transcriptWarnings),
+                        cancellationToken: cancellationToken);
+                }
 
                 await _postMeetingProcessingTracker.StartStepAsync(
                     organizationId,
@@ -418,34 +451,130 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 _dbContext.MeetingTranscripts.Add(transcript);
             }
 
-            if (transcriptChanged)
+            var completenessChanged = transcript.CompletenessStatus != completenessStatus;
+            if (transcriptChanged || completenessChanged)
             {
                 transcript.FullText = fullText;
                 transcript.SegmentsJson = segmentsJson;
                 transcript.SttModel = sttModels.FirstOrDefault()
                                       ?? (participantTraceSegments.Count > 0 ? AiDebugTraceSttModel : string.Empty);
                 transcript.GeneratedAtUtc = DateTime.UtcNow;
+                transcript.CompletenessStatus = completenessStatus;
+                transcript.ExpectedAudioFragmentCount = expectedAudioFragmentCount;
+                transcript.TranscribedAudioFragmentCount = transcribedFragmentCount;
+                transcript.RetryableFailedAudioFragmentCount = retryableFailedCount;
+                transcript.TerminalFailedAudioFragmentCount = terminalFailedCount;
+                transcript.MissingAudioFragmentIdsJson = JsonSerializer.Serialize(failedFragmentIds);
+                transcript.WarningsJson = JsonSerializer.Serialize(transcriptWarnings);
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
 
             if (_postMeetingProcessingTracker is not null)
             {
-                await _postMeetingProcessingTracker.CompleteStepAsync(
-                    organizationId,
-                    meetingId,
-                    PostMeetingProcessingStepType.TranscriptPersistence,
-                    message: "Transcript persisted.",
-                    artifact: new PostMeetingArtifactLink("meeting_transcript", transcript.Id),
-                    cancellationToken: cancellationToken);
+                if (isTranscriptComplete)
+                {
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.TranscriptPersistence,
+                        message: "Transcript persisted.",
+                        artifact: new PostMeetingArtifactLink("meeting_transcript", transcript.Id),
+                        cancellationToken: cancellationToken);
+                }
+                else
+                {
+                    await _postMeetingProcessingTracker.CompleteStepWithWarningsAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.TranscriptPersistence,
+                        message: "Degraded transcript persisted.",
+                        artifact: new PostMeetingArtifactLink("meeting_transcript", transcript.Id),
+                        cancellationToken: cancellationToken);
+
+                    await _postMeetingProcessingTracker.CompleteRunWithWarningsAsync(
+                        organizationId,
+                        meetingId,
+                        message: "Post-meeting processing completed with degraded transcript coverage.",
+                        cancellationToken: cancellationToken);
+                }
             }
 
-            if (transcriptChanged)
+            if (transcriptChanged && isTranscriptComplete)
             {
                 await _publisher.Publish(
                     new MeetingTranscriptReadyEvent(meetingId, organizationId, DateTime.UtcNow),
                     cancellationToken);
             }
+        }
+
+        private static void MarkFragmentSttInProgress(ParticipantAudioFragment fragment)
+        {
+            var now = DateTime.UtcNow;
+            fragment.SttStatus = ParticipantAudioFragmentSttStatus.InProgress;
+            fragment.SttAttemptCount += 1;
+            fragment.LastSttAttemptAtUtc = now;
+            fragment.NextSttRetryAtUtc = null;
+        }
+
+        private static void MarkFragmentSttSucceeded(ParticipantAudioFragment fragment, string model, int segmentCount)
+        {
+            var now = DateTime.UtcNow;
+            fragment.SttStatus = ParticipantAudioFragmentSttStatus.Succeeded;
+            fragment.LastSttSucceededAtUtc = now;
+            fragment.SttModel = model;
+            fragment.SttSegmentCount = segmentCount;
+            fragment.SttFailureCode = null;
+            fragment.SttFailureMessage = null;
+            fragment.LastSttFailedAtUtc = null;
+            fragment.NextSttRetryAtUtc = null;
+        }
+
+        private static void MarkFragmentSttFailed(
+            ParticipantAudioFragment fragment,
+            string failureCode,
+            string failureMessage)
+        {
+            var now = DateTime.UtcNow;
+            var isTerminal = fragment.SttAttemptCount >= MaxSttAttemptsBeforeTerminal;
+            fragment.SttStatus = isTerminal
+                ? ParticipantAudioFragmentSttStatus.FailedTerminal
+                : ParticipantAudioFragmentSttStatus.FailedRetryable;
+            fragment.LastSttFailedAtUtc = now;
+            fragment.SttFailureCode = failureCode;
+            fragment.SttFailureMessage = TruncateFailureMessage(failureMessage);
+            fragment.SttSegmentCount = 0;
+            fragment.NextSttRetryAtUtc = null;
+        }
+
+        private static IReadOnlyList<string> BuildTranscriptWarnings(
+            IReadOnlyList<Guid> failedFragmentIds,
+            int retryableFailedCount,
+            int terminalFailedCount,
+            int expectedAudioFragmentCount,
+            int transcribedFragmentCount)
+        {
+            var warnings = new List<string>
+            {
+                $"Degraded transcript: transcribed {transcribedFragmentCount} of {expectedAudioFragmentCount} expected audio fragment(s)."
+            };
+
+            if (retryableFailedCount > 0)
+            {
+                warnings.Add($"{retryableFailedCount} audio fragment(s) have retryable STT failures.");
+            }
+
+            if (terminalFailedCount > 0)
+            {
+                warnings.Add($"{terminalFailedCount} audio fragment(s) have terminal STT failures.");
+            }
+
+            if (failedFragmentIds.Count > 0)
+            {
+                warnings.Add($"Missing audio fragment ids: {string.Join(", ", failedFragmentIds)}.");
+            }
+
+            return warnings;
         }
 
         private static string FormatTimestamp(long milliseconds)
@@ -901,11 +1030,7 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         }
 
         private sealed record FragmentTranscriptionInput(
-            Guid FragmentId,
-            Guid ParticipantUserId,
-            Guid? ParticipantAudioTrackId,
-            string TrackSid,
-            string StorageObjectKey,
+            ParticipantAudioFragment Fragment,
             TrackTiming Timing);
 
         private sealed record FailedFragmentTranscription(Guid FragmentId, string FailureMessage);

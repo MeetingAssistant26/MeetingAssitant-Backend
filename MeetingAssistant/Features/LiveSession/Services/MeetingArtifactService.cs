@@ -57,7 +57,13 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 transcript.FullText,
                 segments,
                 string.IsNullOrWhiteSpace(transcript.SttModel) ? null : transcript.SttModel,
-                transcript.GeneratedAtUtc));
+                transcript.GeneratedAtUtc,
+                transcript.CompletenessStatus.ToString(),
+                transcript.CompletenessStatus != MeetingTranscriptCompletenessStatus.Complete,
+                transcript.ExpectedAudioFragmentCount,
+                transcript.TranscribedAudioFragmentCount,
+                transcript.RetryableFailedAudioFragmentCount,
+                transcript.TerminalFailedAudioFragmentCount));
         }
 
         public async Task<Result<MeetingSummaryResponse>> GetSummaryAsync(

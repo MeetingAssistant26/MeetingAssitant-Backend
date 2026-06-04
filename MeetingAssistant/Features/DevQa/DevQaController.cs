@@ -964,6 +964,7 @@ public sealed class DevQaController(
                 null,
                 x.TrackSid,
                 x.Status.ToString(),
+                x.SttStatus.ToString(),
                 x.StorageObjectKey,
                 x.StorageLocation,
                 x.SizeBytes,
@@ -973,9 +974,15 @@ public sealed class DevQaController(
                 x.FailedAtUtc,
                 x.FailureCode,
                 x.FailureMessage,
-                x.Status == ParticipantAudioFragmentStatus.Failed
-                && x.FailureCode == "stt_failed"
-                && x.StorageObjectKey != null))
+                x.SttAttemptCount,
+                x.LastSttAttemptAtUtc,
+                x.LastSttSucceededAtUtc,
+                x.LastSttFailedAtUtc,
+                x.SttFailureCode,
+                x.SttFailureMessage,
+                x.SttModel,
+                x.SttSegmentCount,
+                x.SttStatus == ParticipantAudioFragmentSttStatus.FailedRetryable))
             .ToListAsync(cancellationToken);
 
         fragments = fragments
@@ -1133,7 +1140,15 @@ public sealed class DevQaController(
                     transcript.FullText.Length,
                     CountSegments(transcript.SegmentsJson),
                     Sha256(transcript.FullText),
-                    Preview(transcript.FullText)),
+                    Preview(transcript.FullText),
+                    transcript.CompletenessStatus.ToString(),
+                    transcript.CompletenessStatus != MeetingTranscriptCompletenessStatus.Complete,
+                    transcript.ExpectedAudioFragmentCount,
+                    transcript.TranscribedAudioFragmentCount,
+                    transcript.RetryableFailedAudioFragmentCount,
+                    transcript.TerminalFailedAudioFragmentCount,
+                    DeserializeStringList(transcript.MissingAudioFragmentIdsJson),
+                    DeserializeStringList(transcript.WarningsJson)),
             summary is null
                 ? null
                 : new QaSummaryStatusResponse(
@@ -1233,7 +1248,10 @@ public sealed class DevQaController(
     private static bool HasTerminalStep(QaProcessingStatusResponse status, string stepType)
     {
         return status.PostProcessingSteps.Any(step => step.StepType == stepType
-                                                      && step.Status is "Completed" or "Failed" or "Skipped");
+                                                      && step.Status is "Completed"
+                                                          or "CompletedWithWarnings"
+                                                          or "Failed"
+                                                          or "Skipped");
     }
 
     private static IReadOnlyList<string> NormalizeJobs(IReadOnlyList<string>? jobs)
@@ -1271,7 +1289,18 @@ public sealed class DevQaController(
         var failedFragments = fragments.Where(x => x.Status == "Failed").ToList();
         if (failedFragments.Count > 0)
         {
-            warnings.Add($"{failedFragments.Count} participant audio fragment(s) are failed; transcript may be partial.");
+            warnings.Add($"{failedFragments.Count} participant audio fragment(s) have terminal audio/storage failures.");
+        }
+
+        var retryableSttFragments = fragments.Where(x => x.RetryEligible).ToList();
+        if (retryableSttFragments.Count > 0)
+        {
+            warnings.Add($"{retryableSttFragments.Count} participant audio fragment(s) have retryable STT failures.");
+        }
+
+        if (transcript?.CompletenessStatus == MeetingTranscriptCompletenessStatus.CompletedWithWarnings)
+        {
+            warnings.AddRange(DeserializeStringList(transcript.WarningsJson));
         }
 
         if (fragments.Count > 0 && transcript is null && failedFragments.Count != fragments.Count)
@@ -1285,6 +1314,21 @@ public sealed class DevQaController(
         }
 
         return warnings;
+    }
+
+    private static IReadOnlyList<string> DeserializeStringList(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     private static string ResolveDisplayName(
@@ -1657,6 +1701,7 @@ public sealed record QaAudioFragmentStatusResponse(
     string? ParticipantDisplayName,
     string TrackSid,
     string Status,
+    string SttStatus,
     string? StorageObjectKey,
     string? StorageLocation,
     long? SizeBytes,
@@ -1666,6 +1711,14 @@ public sealed record QaAudioFragmentStatusResponse(
     DateTime? FailedAtUtc,
     string? FailureCode,
     string? FailureMessage,
+    int SttAttemptCount,
+    DateTime? LastSttAttemptAtUtc,
+    DateTime? LastSttSucceededAtUtc,
+    DateTime? LastSttFailedAtUtc,
+    string? SttFailureCode,
+    string? SttFailureMessage,
+    string? SttModel,
+    int SttSegmentCount,
     bool RetryEligible);
 
 public sealed record QaTranscriptStatusResponse(
@@ -1675,7 +1728,15 @@ public sealed record QaTranscriptStatusResponse(
     int TextLength,
     int SegmentCount,
     string FullTextSha256,
-    string Preview);
+    string Preview,
+    string CompletenessStatus,
+    bool IsDegraded,
+    int ExpectedAudioFragmentCount,
+    int TranscribedAudioFragmentCount,
+    int RetryableFailedAudioFragmentCount,
+    int TerminalFailedAudioFragmentCount,
+    IReadOnlyList<string> MissingAudioFragmentIds,
+    IReadOnlyList<string> Warnings);
 
 public sealed record QaSummaryStatusResponse(
     Guid Id,

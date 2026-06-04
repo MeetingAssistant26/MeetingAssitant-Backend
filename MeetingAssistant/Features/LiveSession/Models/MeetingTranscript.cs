@@ -18,5 +18,20 @@ namespace MeetingAssistant.Features.LiveSession.Models
         public string SttModel { get; set; } = string.Empty;
 
         public DateTime GeneratedAtUtc { get; set; }
+
+        public MeetingTranscriptCompletenessStatus CompletenessStatus { get; set; } =
+            MeetingTranscriptCompletenessStatus.Complete;
+
+        public int ExpectedAudioFragmentCount { get; set; }
+
+        public int TranscribedAudioFragmentCount { get; set; }
+
+        public int RetryableFailedAudioFragmentCount { get; set; }
+
+        public int TerminalFailedAudioFragmentCount { get; set; }
+
+        public string MissingAudioFragmentIdsJson { get; set; } = "[]";
+
+        public string WarningsJson { get; set; } = "[]";
     }
 }

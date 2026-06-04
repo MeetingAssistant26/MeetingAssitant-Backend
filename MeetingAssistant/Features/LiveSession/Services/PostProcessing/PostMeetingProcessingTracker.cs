@@ -223,6 +223,51 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
             return step;
         }
 
+        public async Task<PostMeetingProcessingStep> CompleteStepWithWarningsAsync(
+            Guid organizationId,
+            Guid meetingId,
+            PostMeetingProcessingStepType stepType,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            PostMeetingArtifactLink? artifact = null,
+            CancellationToken cancellationToken = default)
+        {
+            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+            var step = await GetOrCreateStepAsync(run, stepType, cancellationToken);
+
+            if (step.Status == PostMeetingProcessingStatus.CompletedWithWarnings
+                && SameJob(step.RelatedHangfireJobId, relatedHangfireJobId)
+                && ArtifactMatches(step, artifact))
+            {
+                return step;
+            }
+
+            var now = DateTime.UtcNow;
+            step.Status = PostMeetingProcessingStatus.CompletedWithWarnings;
+            step.StartedAtUtc ??= now;
+            step.CompletedAtUtc = now;
+            step.FailedAtUtc = null;
+            step.RelatedHangfireJobId = relatedHangfireJobId ?? step.RelatedHangfireJobId;
+            step.ErrorCode = null;
+            step.ErrorMessage = null;
+            ApplyArtifact(step, artifact);
+
+            run.Status = run.Status == PostMeetingProcessingStatus.Pending
+                ? PostMeetingProcessingStatus.InProgress
+                : run.Status;
+            run.StartedAtUtc ??= now;
+            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+
+            AddStepEvent(run, step, PostMeetingProcessingEventType.StepCompleted, message, relatedHangfireJobId, artifact);
+            if (artifact is { ArtifactId: not null } || artifact?.ArtifactIds?.Count > 0)
+            {
+                AddStepEvent(run, step, PostMeetingProcessingEventType.ArtifactLinked, "Step artifacts linked.", relatedHangfireJobId, artifact);
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return step;
+        }
+
         public async Task<PostMeetingProcessingStep> FailStepAsync(
             Guid organizationId,
             Guid meetingId,
@@ -391,6 +436,39 @@ namespace MeetingAssistant.Features.LiveSession.Services.PostProcessing
                 run,
                 PostMeetingProcessingEventType.RunStatusChanged,
                 message ?? "Post-meeting processing completed.",
+                relatedHangfireJobId);
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return run;
+        }
+
+        public async Task<PostMeetingProcessingRun> CompleteRunWithWarningsAsync(
+            Guid organizationId,
+            Guid meetingId,
+            string? relatedHangfireJobId = null,
+            string? message = null,
+            CancellationToken cancellationToken = default)
+        {
+            var run = await EnsureRunAsync(organizationId, meetingId, relatedHangfireJobId: relatedHangfireJobId, cancellationToken: cancellationToken);
+
+            if (run.Status == PostMeetingProcessingStatus.CompletedWithWarnings && SameJob(run.RelatedHangfireJobId, relatedHangfireJobId))
+            {
+                return run;
+            }
+
+            var now = DateTime.UtcNow;
+            run.Status = PostMeetingProcessingStatus.CompletedWithWarnings;
+            run.StartedAtUtc ??= now;
+            run.CompletedAtUtc = now;
+            run.FailedAtUtc = null;
+            run.RelatedHangfireJobId = relatedHangfireJobId ?? run.RelatedHangfireJobId;
+            run.ErrorCode = null;
+            run.ErrorMessage = null;
+
+            AddRunStatusEvent(
+                run,
+                PostMeetingProcessingEventType.RunStatusChanged,
+                message ?? "Post-meeting processing completed with warnings.",
                 relatedHangfireJobId);
 
             await _dbContext.SaveChangesAsync(cancellationToken);

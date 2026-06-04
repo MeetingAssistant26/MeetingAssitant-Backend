@@ -50,6 +50,27 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
                 .HasMaxLength(2000)
                 .IsRequired(false);
 
+            builder.Property(x => x.SttStatus)
+                .HasConversion<int>()
+                .HasDefaultValue(ParticipantAudioFragmentSttStatus.NotStarted)
+                .IsRequired();
+
+            builder.Property(x => x.SttAttemptCount)
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            builder.Property(x => x.SttFailureCode)
+                .HasMaxLength(128)
+                .IsRequired(false);
+
+            builder.Property(x => x.SttFailureMessage)
+                .HasMaxLength(2000)
+                .IsRequired(false);
+
+            builder.Property(x => x.SttModel)
+                .HasMaxLength(128)
+                .IsRequired(false);
+
             builder.HasIndex(x => new { x.OrganizationId, x.MeetingId, x.ParticipantUserId })
                 .HasDatabaseName("IX_ParticipantAudioFragments_Org_Meeting_Participant");
 

@@ -6,7 +6,13 @@ namespace MeetingAssistant.Features.LiveSession.Contracts.Responses
         string? FullText,
         IReadOnlyList<MeetingTranscriptSegmentResponse> Segments,
         string? SttModel,
-        DateTime? GeneratedAtUtc);
+        DateTime? GeneratedAtUtc,
+        string? CompletenessStatus = null,
+        bool IsDegraded = false,
+        int? ExpectedAudioFragmentCount = null,
+        int? TranscribedAudioFragmentCount = null,
+        int? RetryableFailedAudioFragmentCount = null,
+        int? TerminalFailedAudioFragmentCount = null);
 
     public sealed record MeetingTranscriptSegmentResponse(
         Guid? ParticipantUserId,

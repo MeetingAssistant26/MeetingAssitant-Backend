@@ -59,5 +59,25 @@ namespace MeetingAssistant.Features.LiveSession.Models
         public string? FailureCode { get; set; }
 
         public string? FailureMessage { get; set; }
+
+        public ParticipantAudioFragmentSttStatus SttStatus { get; set; } = ParticipantAudioFragmentSttStatus.NotStarted;
+
+        public int SttAttemptCount { get; set; }
+
+        public DateTime? LastSttAttemptAtUtc { get; set; }
+
+        public DateTime? LastSttSucceededAtUtc { get; set; }
+
+        public DateTime? LastSttFailedAtUtc { get; set; }
+
+        public DateTime? NextSttRetryAtUtc { get; set; }
+
+        public string? SttFailureCode { get; set; }
+
+        public string? SttFailureMessage { get; set; }
+
+        public string? SttModel { get; set; }
+
+        public int SttSegmentCount { get; set; }
     }
 }

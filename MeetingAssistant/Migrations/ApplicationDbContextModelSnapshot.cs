@@ -548,8 +548,16 @@ namespace MeetingAssistant.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<int>("CompletenessStatus")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("ExpectedAudioFragmentCount")
+                        .HasColumnType("integer");
 
                     b.Property<string>("FullText")
                         .IsRequired()
@@ -561,8 +569,17 @@ namespace MeetingAssistant.Migrations
                     b.Property<Guid>("MeetingId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("MissingAudioFragmentIdsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
+
                     b.Property<Guid>("OrganizationId")
                         .HasColumnType("uuid");
+
+                    b.Property<int>("RetryableFailedAudioFragmentCount")
+                        .HasColumnType("integer");
 
                     b.Property<string>("SegmentsJson")
                         .IsRequired()
@@ -572,8 +589,20 @@ namespace MeetingAssistant.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<int>("TerminalFailedAudioFragmentCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("TranscribedAudioFragmentCount")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("WarningsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("[]");
 
                     b.HasKey("Id");
 
@@ -641,8 +670,20 @@ namespace MeetingAssistant.Migrations
                     b.Property<DateTime?>("LastStorageUploadAttemptAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("LastSttAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastSttFailedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LastSttSucceededAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<Guid>("MeetingId")
                         .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("NextSttRetryAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("OrganizationId")
                         .HasColumnType("uuid");
@@ -658,6 +699,31 @@ namespace MeetingAssistant.Migrations
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");
+
+                    b.Property<int>("SttAttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
+                    b.Property<string>("SttFailureCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("SttFailureMessage")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<string>("SttModel")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<int>("SttSegmentCount")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("SttStatus")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
 
                     b.Property<DateTime?>("StorageAvailableAtUtc")
                         .HasColumnType("timestamp with time zone");

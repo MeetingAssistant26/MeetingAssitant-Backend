@@ -6,6 +6,7 @@ namespace MeetingAssistant.Features.LiveSession.Models.PostProcessing
         InProgress = 1,
         Completed = 2,
         Failed = 3,
-        Skipped = 4
+        Skipped = 4,
+        CompletedWithWarnings = 5
     }
 }

@@ -24,6 +24,21 @@ namespace MeetingAssistant.Features.LiveSession.Infrastructure.Persistence.Confi
                 .HasColumnType("timestamp with time zone")
                 .IsRequired();
 
+            builder.Property(x => x.CompletenessStatus)
+                .HasConversion<int>()
+                .HasDefaultValue(MeetingTranscriptCompletenessStatus.Complete)
+                .IsRequired();
+
+            builder.Property(x => x.MissingAudioFragmentIdsJson)
+                .HasColumnType("jsonb")
+                .HasDefaultValue("[]")
+                .IsRequired();
+
+            builder.Property(x => x.WarningsJson)
+                .HasColumnType("jsonb")
+                .HasDefaultValue("[]")
+                .IsRequired();
+
             builder.HasIndex(x => x.MeetingId)
                 .IsUnique()
                 .HasDatabaseName("IX_MeetingTranscripts_MeetingId");
