@@ -64,6 +64,18 @@ namespace MeetingAssistant.Features.Rag.Infrastructure.Persistence.Configuration
                 .IsUnique()
                 .HasDatabaseName("UX_KnowledgeDocuments_Org_Artifact_Generation");
 
+            builder.HasIndex(x => new
+                {
+                    x.OrganizationId,
+                    x.MeetingId,
+                    x.ArtifactType,
+                    x.ArtifactId,
+                    x.ArtifactVersion
+                })
+                .IsUnique()
+                .HasDatabaseName("UX_KnowledgeDocuments_CurrentPublishedArtifact")
+                .HasFilter("\"MeetingId\" IS NOT NULL AND \"Visibility\" = 1 AND \"IsCurrent\" = true");
+
             builder.HasOne(x => x.Meeting)
                 .WithMany()
                 .HasForeignKey(x => x.MeetingId)

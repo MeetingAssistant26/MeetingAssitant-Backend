@@ -422,27 +422,143 @@ namespace MeetingAssistant.Features.Rag.Services
                             && x.MeetingId == meetingId
                             && x.Visibility == KnowledgeVisibility.Published
                             && x.IsCurrent)
-                .Select(x => new
-                {
+                .Select(x => new CurrentDocumentSnapshot(
+                    x.Id,
                     x.ArtifactType,
                     x.ArtifactId,
                     x.ArtifactVersion,
-                    x.ContentHash
-                })
+                    x.ContentHash,
+                    x.GeneratedAtUtc,
+                    x.IndexGenerationId))
                 .ToListAsync(cancellationToken);
 
-            var existingHashes = existingCurrent.ToDictionary(
-                x => new ArtifactKey(x.ArtifactType, x.ArtifactId, x.ArtifactVersion),
-                x => x.ContentHash);
+            var freshHashesByKey = artifacts.ToDictionary(
+                artifact => new ArtifactKey(artifact.ArtifactType, artifact.ArtifactId, artifact.ArtifactVersion),
+                artifact => HashArtifact(artifact, confirmedTags));
+
+            var survivorByKey = await ResolveDuplicateCurrentDocumentsAsync(
+                organizationId,
+                existingCurrent,
+                freshHashesByKey,
+                cancellationToken);
 
             return artifacts
                 .Where(artifact =>
                 {
                     var key = new ArtifactKey(artifact.ArtifactType, artifact.ArtifactId, artifact.ArtifactVersion);
-                    return !existingHashes.TryGetValue(key, out var existingHash)
-                           || !string.Equals(existingHash, HashArtifact(artifact, confirmedTags), StringComparison.Ordinal);
+                    var freshHash = freshHashesByKey[key];
+                    return !survivorByKey.TryGetValue(key, out var survivor)
+                           || !string.Equals(survivor.ContentHash, freshHash, StringComparison.Ordinal);
                 })
                 .ToList();
+        }
+
+        private async Task<Dictionary<ArtifactKey, CurrentDocumentSnapshot>> ResolveDuplicateCurrentDocumentsAsync(
+            Guid organizationId,
+            IReadOnlyList<CurrentDocumentSnapshot> existingCurrent,
+            IReadOnlyDictionary<ArtifactKey, string> freshHashesByKey,
+            CancellationToken cancellationToken)
+        {
+            var survivorByKey = new Dictionary<ArtifactKey, CurrentDocumentSnapshot>();
+            var loserDocumentIds = new List<Guid>();
+
+            foreach (var group in existingCurrent.GroupBy(x => new ArtifactKey(x.ArtifactType, x.ArtifactId, x.ArtifactVersion)))
+            {
+                var documents = group.ToList();
+                freshHashesByKey.TryGetValue(group.Key, out var matchingFreshHash);
+                var survivor = SelectSurvivorDocument(documents, matchingFreshHash);
+                survivorByKey[group.Key] = survivor;
+
+                if (documents.Count <= 1)
+                {
+                    continue;
+                }
+
+                loserDocumentIds.AddRange(
+                    documents
+                        .Where(x => x.Id != survivor.Id)
+                        .Select(x => x.Id));
+
+                _logger.LogWarning(
+                    "Archived duplicate current knowledge documents before reindex. OrganizationId={OrganizationId} ArtifactType={ArtifactType} ArtifactId={ArtifactId} ArtifactVersion={ArtifactVersion} SurvivorDocumentId={SurvivorDocumentId} LoserDocumentIds={LoserDocumentIds}",
+                    organizationId,
+                    group.Key.ArtifactType,
+                    group.Key.ArtifactId,
+                    group.Key.ArtifactVersion,
+                    survivor.Id,
+                    string.Join(',', documents.Where(x => x.Id != survivor.Id).Select(x => x.Id)));
+            }
+
+            await ArchiveCurrentDocumentsByIdAsync(organizationId, loserDocumentIds, cancellationToken);
+
+            if (loserDocumentIds.Count > 0)
+            {
+                await EnsureCurrentPublishedArtifactIndexAsync(cancellationToken);
+            }
+
+            return survivorByKey;
+        }
+
+        private async Task EnsureCurrentPublishedArtifactIndexAsync(CancellationToken cancellationToken)
+        {
+            await _dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS "UX_KnowledgeDocuments_CurrentPublishedArtifact"
+                ON "KnowledgeDocuments" ("OrganizationId", "MeetingId", "ArtifactType", "ArtifactId", "ArtifactVersion")
+                WHERE "MeetingId" IS NOT NULL AND "Visibility" = 1 AND "IsCurrent" = true;
+                """,
+                cancellationToken);
+        }
+
+        private static CurrentDocumentSnapshot SelectSurvivorDocument(
+            IReadOnlyList<CurrentDocumentSnapshot> documents,
+            string? matchingFreshHash)
+        {
+            if (!string.IsNullOrEmpty(matchingFreshHash))
+            {
+                var hashMatch = documents.FirstOrDefault(
+                    document => string.Equals(document.ContentHash, matchingFreshHash, StringComparison.Ordinal));
+                if (hashMatch is not null)
+                {
+                    return hashMatch;
+                }
+            }
+
+            return documents
+                .OrderByDescending(document => document.GeneratedAtUtc)
+                .ThenBy(document => document.Id)
+                .First();
+        }
+
+        private async Task ArchiveCurrentDocumentsByIdAsync(
+            Guid organizationId,
+            IReadOnlyCollection<Guid> documentIds,
+            CancellationToken cancellationToken)
+        {
+            if (documentIds.Count == 0)
+            {
+                return;
+            }
+
+            var updatedAtUtc = DateTime.UtcNow;
+
+            await _dbContext.KnowledgeDocuments
+                .IgnoreQueryFilters()
+                .Where(x => x.OrganizationId == organizationId && documentIds.Contains(x.Id))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.IsCurrent, false)
+                    .SetProperty(x => x.Visibility, KnowledgeVisibility.Archived)
+                    .SetProperty(x => x.UpdatedAtUtc, updatedAtUtc),
+                    cancellationToken);
+
+            await _dbContext.KnowledgeChunks
+                .IgnoreQueryFilters()
+                .Where(x => x.OrganizationId == organizationId && documentIds.Contains(x.DocumentId))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.IsCurrent, false)
+                    .SetProperty(x => x.Visibility, KnowledgeVisibility.Archived)
+                    .SetProperty(x => x.UpdatedAtUtc, updatedAtUtc),
+                    cancellationToken);
         }
 
         private async Task ArchivePreviousCurrentDocumentsAsync(
@@ -623,6 +739,15 @@ namespace MeetingAssistant.Features.Rag.Services
             int ArtifactVersion = 1);
 
         private sealed record ArtifactKey(KnowledgeArtifactType ArtifactType, Guid ArtifactId, int ArtifactVersion);
+
+        private sealed record CurrentDocumentSnapshot(
+            Guid Id,
+            KnowledgeArtifactType ArtifactType,
+            Guid ArtifactId,
+            int ArtifactVersion,
+            string ContentHash,
+            DateTime GeneratedAtUtc,
+            Guid IndexGenerationId);
 
         private sealed record ChunkEmbeddingInput(KnowledgeChunk Chunk, string Text);
     }

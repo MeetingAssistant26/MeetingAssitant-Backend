@@ -1881,6 +1881,11 @@ namespace MeetingAssistant.Migrations
                         .IsUnique()
                         .HasDatabaseName("UX_KnowledgeDocuments_Org_Artifact_Generation");
 
+                    b.HasIndex("OrganizationId", "MeetingId", "ArtifactType", "ArtifactId", "ArtifactVersion")
+                        .IsUnique()
+                        .HasDatabaseName("UX_KnowledgeDocuments_CurrentPublishedArtifact")
+                        .HasFilter("\"MeetingId\" IS NOT NULL AND \"Visibility\" = 1 AND \"IsCurrent\" = true");
+
                     b.ToTable("KnowledgeDocuments");
                 });
 

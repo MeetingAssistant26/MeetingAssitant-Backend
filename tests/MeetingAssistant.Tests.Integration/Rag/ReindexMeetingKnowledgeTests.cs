@@ -131,6 +131,92 @@ public sealed class ReindexMeetingKnowledgeTests(MeetingAssistantWebFactory fact
     }
 
     [Fact]
+    public async Task Reindex_recovers_from_duplicate_current_documents_for_same_artifact_key()
+    {
+        await using var scope = Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var meetingId = await SeedMeetingArtifactsAsync(db);
+        var job = scope.ServiceProvider.GetRequiredService<ReindexMeetingKnowledgeJob>();
+
+        await job.RunAsync(meetingId, TestOrganizationId, CancellationToken.None);
+
+        var transcriptDocument = await db.KnowledgeDocuments
+            .IgnoreQueryFilters()
+            .SingleAsync(
+                x => x.MeetingId == meetingId
+                     && x.ArtifactType == KnowledgeArtifactType.Transcript
+                     && x.Visibility == KnowledgeVisibility.Published
+                     && x.IsCurrent);
+
+        await db.Database.ExecuteSqlRawAsync(
+            """
+            DROP INDEX IF EXISTS "UX_KnowledgeDocuments_CurrentPublishedArtifact";
+            """);
+
+        var duplicateGenerationId = Guid.NewGuid();
+        db.KnowledgeDocuments.Add(new KnowledgeDocument
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = transcriptDocument.OrganizationId,
+            MeetingId = transcriptDocument.MeetingId,
+            ArtifactType = transcriptDocument.ArtifactType,
+            ArtifactId = transcriptDocument.ArtifactId,
+            ArtifactVersion = transcriptDocument.ArtifactVersion,
+            Title = transcriptDocument.Title,
+            ContentHash = transcriptDocument.ContentHash,
+            IndexGenerationId = duplicateGenerationId,
+            Visibility = KnowledgeVisibility.Published,
+            IsCurrent = true,
+            EmbeddingProvider = transcriptDocument.EmbeddingProvider,
+            EmbeddingModel = transcriptDocument.EmbeddingModel,
+            EmbeddingDimension = transcriptDocument.EmbeddingDimension,
+            MetadataJson = transcriptDocument.MetadataJson,
+            GeneratedAtUtc = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        (await db.KnowledgeDocuments
+                .IgnoreQueryFilters()
+                .CountAsync(
+                    x => x.MeetingId == meetingId
+                         && x.ArtifactType == KnowledgeArtifactType.Transcript
+                         && x.Visibility == KnowledgeVisibility.Published
+                         && x.IsCurrent))
+            .Should().Be(2);
+
+        await job.RunAsync(meetingId, TestOrganizationId, CancellationToken.None);
+
+        var currentTranscripts = await db.KnowledgeDocuments
+            .IgnoreQueryFilters()
+            .Where(
+                x => x.MeetingId == meetingId
+                     && x.ArtifactType == KnowledgeArtifactType.Transcript
+                     && x.Visibility == KnowledgeVisibility.Published
+                     && x.IsCurrent)
+            .ToListAsync();
+
+        currentTranscripts.Should().ContainSingle();
+        currentTranscripts
+            .GroupBy(x => new { x.ArtifactType, x.ArtifactId, x.ArtifactVersion })
+            .Should()
+            .OnlyContain(group => group.Count() == 1);
+
+        var archivedDuplicateCount = await db.KnowledgeDocuments
+            .IgnoreQueryFilters()
+            .CountAsync(
+                x => x.MeetingId == meetingId
+                     && x.ArtifactType == KnowledgeArtifactType.Transcript
+                     && x.Visibility == KnowledgeVisibility.Archived
+                     && !x.IsCurrent);
+        archivedDuplicateCount.Should().BeGreaterThan(0);
+
+        var step = await db.PostMeetingProcessingSteps
+            .IgnoreQueryFilters()
+            .SingleAsync(x => x.MeetingId == meetingId && x.StepType == PostMeetingProcessingStepType.KnowledgeIndexing);
+        step.Status.Should().Be(PostMeetingProcessingStatus.Completed);
+    }
+
+    [Fact]
     public async Task Reindex_failure_does_not_publish_drafts_and_marks_knowledge_indexing_failed()
     {
         await using var scope = Factory.Services.CreateAsyncScope();

@@ -1053,6 +1053,8 @@ public sealed class DevQaController(
             });
         }
 
+        await DropKnowledgeDocumentCurrentPublishedArtifactIndexAsync(cancellationToken);
+
         var duplicateGenerationId = Guid.NewGuid();
         var duplicateDocumentId = Guid.NewGuid();
         var generatedAtUtc = DateTime.UtcNow;
@@ -1101,6 +1103,15 @@ public sealed class DevQaController(
             sourceDocument.ArtifactId,
             sourceDocument.ArtifactVersion,
             duplicateCurrentCount));
+    }
+
+    private async Task DropKnowledgeDocumentCurrentPublishedArtifactIndexAsync(CancellationToken cancellationToken)
+    {
+        await _dbContext.Database.ExecuteSqlRawAsync(
+            """
+            DROP INDEX IF EXISTS "UX_KnowledgeDocuments_CurrentPublishedArtifact";
+            """,
+            cancellationToken);
     }
 
     private bool IsQaHarnessEnabled()
