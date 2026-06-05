@@ -434,7 +434,7 @@ namespace tests.Integration.LiveSession
             stt.Calls.Should().BeEmpty();
             var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
             transcript.FullText.Split(Environment.NewLine, StringSplitOptions.None).Should().Equal(
-                "[00:00:09 Alice] Please recover this transcript from traces.");
+                "[00:00:04 Alice] Please recover this transcript from traces.");
             transcript.SttModel.Should().Be("ai-debug-trace");
 
             var segments = DeserializePersistedSegments(transcript.SegmentsJson);
@@ -442,7 +442,7 @@ namespace tests.Integration.LiveSession
             var participantSegment = segments.Single(x => x.SpeakerRole == "participant");
             participantSegment.ParticipantUserId.Should().Be(aliceId);
             participantSegment.Source.Should().Be("ai_assistant_trace");
-            participantSegment.TimestampOffsetSource.Should().Be(AiAssistantTraceEventTypes.SttCompleted);
+            participantSegment.TimestampOffsetSource.Should().Be("trace_turn_started");
             segments.Should().NotContain(x => x.SpeakerRole == "assistant");
 
             publisher.Notifications
@@ -1181,7 +1181,468 @@ namespace tests.Integration.LiveSession
 
             var segments = DeserializePersistedSegments(transcript.SegmentsJson);
             segments.Select(x => x.ParticipantAudioFragmentId).Should().Equal(fragments.Select(x => (Guid?)x.Id));
-            segments.Select(x => x.TimestampOffsetSource).Should().AllBeEquivalentTo("fragment_track_published");
+            segments.Select(x => x.TimestampOffsetSource).Should().AllBeEquivalentTo("fragment_egress_started");
+        }
+
+        [Fact]
+        public async Task TranscriptGeneration_ShouldAnchorParticipantEgressSegmentsToEgressStartWhenAvailable()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 04, 22, 38, 00, DateTimeKind.Utc);
+
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            var marwanId = db.SeedUser("Marwan");
+            db.AddParticipant(meetingId, orgId, marwanId);
+
+            const string trackSid = "TR_MARWAN";
+            var storageKey = $"tracks/mtg-{meetingId}/user:{marwanId}/track-{trackSid}.ogg";
+            var trackPublishedAtUtc = roomStartedAtUtc.AddSeconds(18);
+            var egressStartedAtUtc = roomStartedAtUtc.AddSeconds(35);
+
+            db.AddAvailableAudioFragment(
+                meetingId,
+                orgId,
+                marwanId,
+                storageKey,
+                trackSid,
+                trackPublishedAtUtc: trackPublishedAtUtc,
+                egressStartedAtUtc: egressStartedAtUtc);
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [storageKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(marwanId, 0, 2_000, "Okay.", 0.9)])
+            });
+
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                new CollectingPublisher(),
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.FullText.Should().Be("[00:00:35 Marwan] Okay.");
+
+            var segment = DeserializePersistedSegments(transcript.SegmentsJson).Single();
+            segment.TimestampOffsetSource.Should().Be("fragment_egress_started");
+            segment.RoomRelativeStartMs.Should().Be(35_000);
+            segment.RoomRelativeEndMs.Should().Be(37_000);
+            segment.AbsoluteStartUtc.Should().Be(egressStartedAtUtc);
+            segment.Source.Should().Be("egress_audio");
+        }
+
+        [Fact]
+        public async Task TranscriptGeneration_ShouldPreferTraceTextWhenParticipantEgressStartsLateForTurn()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 04, 22, 38, 00, DateTimeKind.Utc);
+
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            var marwanId = db.SeedUser("Marwan");
+            db.AddParticipant(meetingId, orgId, marwanId);
+
+            const string trackSid = "TR_MARWAN";
+            var storageKey = $"tracks/mtg-{meetingId}/user:{marwanId}/track-{trackSid}.ogg";
+            var trackPublishedAtUtc = roomStartedAtUtc.AddSeconds(18);
+            var egressStartedAtUtc = roomStartedAtUtc.AddSeconds(35);
+            const string traceText = "دلوقتي لو أنا بتكلم بالمصري هل أنت فاهم حاجة؟";
+
+            db.AddAvailableAudioFragment(
+                meetingId,
+                orgId,
+                marwanId,
+                storageKey,
+                trackSid,
+                trackPublishedAtUtc: trackPublishedAtUtc,
+                egressStartedAtUtc: egressStartedAtUtc);
+
+            var sttCompletedEventId = Guid.NewGuid();
+            db.DbContext.AiAssistantTraceEvents.AddRange(
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-delayed-egress",
+                    TurnId = "trace-turn-delayed-egress",
+                    Sequence = 1,
+                    EventType = AiAssistantTraceEventTypes.TurnStarted,
+                    ParticipantIdentity = $"user:{marwanId}",
+                    OccurredAtUtc = trackPublishedAtUtc,
+                    State = "listening",
+                    StepType = "turn"
+                },
+                new AiAssistantTraceEvent
+                {
+                    Id = sttCompletedEventId,
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-delayed-egress",
+                    TurnId = "trace-turn-delayed-egress",
+                    Sequence = 20,
+                    EventType = AiAssistantTraceEventTypes.SttCompleted,
+                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(25),
+                    StepType = "stt",
+                    StepProvider = "OpenAICompatible",
+                    Text = traceText,
+                    DurationMs = 4_000
+                });
+            await db.DbContext.SaveChangesAsync();
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [storageKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(marwanId, 0, 2_000, "Okay.", 0.9)])
+            });
+
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.FullText.Should().Be($"[00:00:18 Marwan] {traceText}");
+            transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.Complete);
+
+            var warnings = JsonSerializer.Deserialize<List<string>>(transcript.WarningsJson) ?? [];
+            warnings.Should().Contain(x => x.Contains("live AI traces", StringComparison.OrdinalIgnoreCase));
+
+            var segment = DeserializePersistedSegments(transcript.SegmentsJson).Single();
+            segment.Text.Should().Be(traceText);
+            segment.Source.Should().Be("ai_assistant_trace");
+            segment.TimestampOffsetSource.Should().Be("trace_turn_started");
+            segment.TraceEventId.Should().Be(sttCompletedEventId.ToString("D"));
+            segment.ParticipantAudioFragmentId.Should().BeNull();
+
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
+                .Should()
+                .ContainSingle();
+        }
+
+        [Fact]
+        public async Task TranscriptGeneration_ShouldNotSuppressValidLaterEgressForEarlierTraceFallback()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 05, 10, 00, 00, DateTimeKind.Utc);
+
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            var aliceId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, aliceId);
+
+            const string firstTrackSid = "TR_ALICE_TURN1";
+            const string secondTrackSid = "TR_ALICE_TURN2";
+            var firstStorageKey = $"tracks/mtg-{meetingId}/user:{aliceId}/track-{firstTrackSid}.ogg";
+            var secondStorageKey = $"tracks/mtg-{meetingId}/user:{aliceId}/track-{secondTrackSid}.ogg";
+            var turnStartedAtUtc = roomStartedAtUtc.AddSeconds(18);
+            var firstEgressStartedAtUtc = roomStartedAtUtc.AddSeconds(35);
+            var secondEgressStartedAtUtc = roomStartedAtUtc.AddSeconds(50);
+
+            db.AddAvailableAudioFragment(
+                meetingId,
+                orgId,
+                aliceId,
+                firstStorageKey,
+                firstTrackSid,
+                trackPublishedAtUtc: turnStartedAtUtc,
+                egressStartedAtUtc: firstEgressStartedAtUtc);
+            db.AddAvailableAudioFragment(
+                meetingId,
+                orgId,
+                aliceId,
+                secondStorageKey,
+                secondTrackSid,
+                trackPublishedAtUtc: roomStartedAtUtc.AddSeconds(48),
+                egressStartedAtUtc: secondEgressStartedAtUtc);
+
+            db.DbContext.AiAssistantTraceEvents.AddRange(
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-earlier-turn",
+                    TurnId = "trace-turn-earlier",
+                    Sequence = 1,
+                    EventType = AiAssistantTraceEventTypes.TurnStarted,
+                    ParticipantIdentity = $"user:{aliceId}",
+                    OccurredAtUtc = turnStartedAtUtc,
+                    State = "listening",
+                    StepType = "turn"
+                },
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-earlier-turn",
+                    TurnId = "trace-turn-earlier",
+                    Sequence = 20,
+                    EventType = AiAssistantTraceEventTypes.SttCompleted,
+                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(25),
+                    StepType = "stt",
+                    StepProvider = "OpenAICompatible",
+                    Text = "Earlier turn recovered from trace.",
+                    DurationMs = 4_000
+                });
+            await db.DbContext.SaveChangesAsync();
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [firstStorageKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(aliceId, 0, 2_000, "Delayed egress for turn one.", 0.9)]),
+                [secondStorageKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(aliceId, 0, 3_000, "Authoritative later turn egress.", 0.95)])
+            });
+
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.Complete);
+
+            var warnings = JsonSerializer.Deserialize<List<string>>(transcript.WarningsJson) ?? [];
+            warnings.Should().Contain(x => x.Contains("live AI traces", StringComparison.OrdinalIgnoreCase));
+
+            var segments = DeserializePersistedSegments(transcript.SegmentsJson);
+            segments.Should().HaveCount(2);
+            segments.Should().Contain(x =>
+                x.Source == "ai_assistant_trace"
+                && x.Text == "Earlier turn recovered from trace.");
+            segments.Should().Contain(x =>
+                x.Source == "egress_audio"
+                && x.Text == "Authoritative later turn egress."
+                && x.TimestampOffsetSource == "fragment_egress_started"
+                && x.RoomRelativeStartMs == 50_000);
+
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
+                .Should()
+                .ContainSingle();
+        }
+
+        [Fact]
+        public async Task TranscriptGeneration_ShouldNotSuppressLaterEgressSegmentFromSameDelayedFragment()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 05, 11, 00, 00, DateTimeKind.Utc);
+
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            var aliceId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, aliceId);
+
+            const string trackSid = "TR_ALICE_DELAYED_FRAGMENT";
+            var storageKey = $"tracks/mtg-{meetingId}/user:{aliceId}/track-{trackSid}.ogg";
+            var turnStartedAtUtc = roomStartedAtUtc.AddSeconds(18);
+            var egressStartedAtUtc = roomStartedAtUtc.AddSeconds(35);
+            const string traceText = "Earlier turn recovered from trace.";
+            const string earlyEgressText = "Bad early egress from fragment start.";
+            const string laterEgressText = "Authoritative later speech in same fragment.";
+
+            db.AddAvailableAudioFragment(
+                meetingId,
+                orgId,
+                aliceId,
+                storageKey,
+                trackSid,
+                trackPublishedAtUtc: turnStartedAtUtc,
+                egressStartedAtUtc: egressStartedAtUtc);
+
+            db.DbContext.AiAssistantTraceEvents.AddRange(
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-same-fragment",
+                    TurnId = "trace-turn-same-fragment",
+                    Sequence = 1,
+                    EventType = AiAssistantTraceEventTypes.TurnStarted,
+                    ParticipantIdentity = $"user:{aliceId}",
+                    OccurredAtUtc = turnStartedAtUtc,
+                    State = "listening",
+                    StepType = "turn"
+                },
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-same-fragment",
+                    TurnId = "trace-turn-same-fragment",
+                    Sequence = 20,
+                    EventType = AiAssistantTraceEventTypes.SttCompleted,
+                    OccurredAtUtc = roomStartedAtUtc.AddSeconds(25),
+                    StepType = "stt",
+                    StepProvider = "OpenAICompatible",
+                    Text = traceText,
+                    DurationMs = 4_000
+                });
+            await db.DbContext.SaveChangesAsync();
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [storageKey] = new(
+                    "whisper-large-v3",
+                    [
+                        new TranscriptSegment(aliceId, 0, 2_000, earlyEgressText, 0.9),
+                        new TranscriptSegment(aliceId, 20_000, 23_000, laterEgressText, 0.95)
+                    ])
+            });
+
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.Complete);
+            transcript.FullText.Should().Contain(traceText);
+            transcript.FullText.Should().Contain(laterEgressText);
+            transcript.FullText.Should().NotContain(earlyEgressText);
+
+            var warnings = JsonSerializer.Deserialize<List<string>>(transcript.WarningsJson) ?? [];
+            warnings.Should().Contain(x => x.Contains("live AI traces", StringComparison.OrdinalIgnoreCase));
+
+            var segments = DeserializePersistedSegments(transcript.SegmentsJson);
+            segments.Should().HaveCount(2);
+            segments.Should().Contain(x =>
+                x.Source == "ai_assistant_trace"
+                && x.Text == traceText
+                && x.RoomRelativeStartMs == 18_000);
+            segments.Should().Contain(x =>
+                x.Source == "egress_audio"
+                && x.Text == laterEgressText
+                && x.TimestampOffsetSource == "fragment_egress_started"
+                && x.RoomRelativeStartMs == 55_000
+                && x.RoomRelativeEndMs == 58_000);
+
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
+                .Should()
+                .ContainSingle();
+        }
+
+        [Fact]
+        public async Task TranscriptGeneration_ShouldKeepValidParticipantEgressWithoutDuplicatingTraceFallback()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 04, 12, 00, 00, DateTimeKind.Utc);
+
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            var aliceId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, aliceId);
+
+            const string trackSid = "TR_ALICE";
+            var storageKey = $"tracks/mtg-{meetingId}/user:{aliceId}/track-{trackSid}.ogg";
+            var turnStartedAtUtc = roomStartedAtUtc.AddSeconds(18);
+            var egressStartedAtUtc = roomStartedAtUtc.AddSeconds(17);
+
+            var fragmentId = db.AddAvailableAudioFragment(
+                meetingId,
+                orgId,
+                aliceId,
+                storageKey,
+                trackSid,
+                trackPublishedAtUtc: turnStartedAtUtc.AddSeconds(-1),
+                egressStartedAtUtc: egressStartedAtUtc);
+
+            db.DbContext.AiAssistantTraceEvents.AddRange(
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-valid-egress",
+                    TurnId = "trace-turn-valid-egress",
+                    Sequence = 1,
+                    EventType = AiAssistantTraceEventTypes.TurnStarted,
+                    ParticipantIdentity = $"user:{aliceId}",
+                    OccurredAtUtc = turnStartedAtUtc,
+                    State = "listening",
+                    StepType = "turn"
+                },
+                new AiAssistantTraceEvent
+                {
+                    OrganizationId = orgId,
+                    MeetingId = meetingId,
+                    SessionId = "trace-session-valid-egress",
+                    TurnId = "trace-turn-valid-egress",
+                    Sequence = 20,
+                    EventType = AiAssistantTraceEventTypes.SttCompleted,
+                    OccurredAtUtc = turnStartedAtUtc.AddSeconds(4),
+                    StepType = "stt",
+                    StepProvider = "OpenAICompatible",
+                    Text = "Trace text should not duplicate egress.",
+                    DurationMs = 3_000
+                });
+            await db.DbContext.SaveChangesAsync();
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [storageKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(aliceId, 1_000, 4_000, "Authoritative egress transcript.", 0.95)])
+            });
+
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            await transcriptJob.RunAsync(meetingId, orgId);
+
+            var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
+            transcript.FullText.Should().Be("[00:00:18 Alice] Authoritative egress transcript.");
+            transcript.CompletenessStatus.Should().Be(MeetingTranscriptCompletenessStatus.Complete);
+            transcript.WarningsJson.Should().Be("[]");
+
+            var segment = DeserializePersistedSegments(transcript.SegmentsJson).Single();
+            segment.Text.Should().Be("Authoritative egress transcript.");
+            segment.Source.Should().Be("egress_audio");
+            segment.ParticipantAudioFragmentId.Should().Be(fragmentId);
+            segment.TimestampOffsetSource.Should().Be("fragment_egress_started");
+
+            publisher.Notifications
+                .OfType<MeetingTranscriptReadyEvent>()
+                .Should()
+                .ContainSingle();
         }
 
         private static string SerializePersistedSegments(params PersistedSegmentForTest[] segments)

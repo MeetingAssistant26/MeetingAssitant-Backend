@@ -46,6 +46,10 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
         private const int MaxSttAttemptsBeforeTerminal = 5;
         private const string SttFailureCodeFailed = "stt_failed";
         private const string SttFailureCodeNoSegments = "stt_no_segments";
+        private const int DelayedEgressGraceMs = 750;
+        private const int DelayedEgressTurnAssociationWindowMs = 15_000;
+        private const string DelayedEgressTraceFallbackWarning =
+            "Participant transcript segment(s) recovered from live AI traces because participant egress started late relative to the user turn.";
 
         private static readonly Regex TrackSidFromObjectKeyRegex = new(
             @"(?:^|/)track-(?<sid>[^/.\\]+)",
@@ -349,88 +353,15 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 .OrderBy(x => x.RoomRelativeStartMs)
                 .ThenBy(x => x.RoomRelativeEndMs)
                 .ToList();
-            var participantSegmentCount = orderedHumanSegments.Count > 0
-                ? orderedHumanSegments.Count
-                : participantTraceSegments.Count;
-
             var transcribedFragmentCount = succeededFragmentIds.Distinct().Count();
             var retryableFailedCount = allAvailableFragments.Count(fragment =>
                 fragment.SttStatus == ParticipantAudioFragmentSttStatus.FailedRetryable);
             var terminalFailedCount = allAvailableFragments.Count(fragment =>
                 fragment.SttStatus == ParticipantAudioFragmentSttStatus.FailedTerminal);
-            var isTranscriptComplete = expectedAudioFragmentCount == 0
-                                       || (failedFragmentIds.Count == 0
-                                           && terminalFailedCount == 0
-                                           && transcribedFragmentCount >= expectedAudioFragmentCount);
-            var completenessStatus = isTranscriptComplete
-                ? MeetingTranscriptCompletenessStatus.Complete
-                : MeetingTranscriptCompletenessStatus.CompletedWithWarnings;
-            var transcriptWarnings = BuildTranscriptWarnings(
-                failedFragmentIds,
-                retryableFailedCount,
-                terminalFailedCount,
-                expectedAudioFragmentCount,
-                transcribedFragmentCount,
-                completenessStatus);
-
-            if (_postMeetingProcessingTracker is not null)
-            {
-                if (isTranscriptComplete)
-                {
-                    await _postMeetingProcessingTracker.CompleteStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.Stt,
-                        _pipelineGenerationId,
-                        _currentHangfireJobId,
-                        message: $"STT transcription completed for {participantSegmentCount} participant segment(s).",
-                        artifact: fragmentsWithTiming.Count > 0
-                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: fragmentsWithTiming.Select(x => x.Fragment.Id).ToList())
-                            : null,
-                        cancellationToken: cancellationToken);
-                }
-                else
-                {
-                    await _postMeetingProcessingTracker.CompleteStepWithWarningsAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.Stt,
-                        _pipelineGenerationId,
-                        _currentHangfireJobId,
-                        message: $"STT transcription completed with warnings for {participantSegmentCount} participant segment(s); {failedFragmentIds.Count} audio fragment(s) remain untranscribed.",
-                        artifact: failedFragmentIds.Count > 0
-                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds)
-                            : null,
-                        cancellationToken: cancellationToken);
-
-                    await _postMeetingProcessingTracker.RecordEventAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingEventType.Info,
-                        _pipelineGenerationId,
-                        PostMeetingProcessingStepType.Stt,
-                        PostMeetingProcessingStatus.CompletedWithWarnings,
-                        message: "Transcript coverage is degraded because one or more audio fragments failed STT.",
-                        relatedHangfireJobId: _currentHangfireJobId,
-                        artifact: failedFragmentIds.Count > 0
-                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds)
-                            : null,
-                        metadataJson: JsonSerializer.Serialize(transcriptWarnings),
-                        cancellationToken: cancellationToken);
-                }
-
-                await _postMeetingProcessingTracker.StartStepAsync(
-                        organizationId,
-                        meetingId,
-                        PostMeetingProcessingStepType.TranscriptPersistence,
-                        _pipelineGenerationId,
-                        _currentHangfireJobId,
-                        message: "Transcript persistence started.",
-                    cancellationToken: cancellationToken);
-            }
 
             var participantIds = orderedHumanSegments
                 .Select(x => x.ParticipantUserId)
+                .Concat(participantTraceSegments.Select(x => x.ParticipantUserId))
                 .Where(x => x.HasValue)
                 .Select(x => x!.Value)
                 .Distinct()
@@ -451,9 +382,108 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 x => x.UserId,
                 x => string.IsNullOrWhiteSpace(x.DisplayName) ? x.UserName ?? x.UserId.ToString() : x.DisplayName);
 
-            var participantSegments = orderedHumanSegments.Count > 0
-                ? orderedHumanSegments.Select(segment => CreateParticipantOutputSegment(segment, displayNames)).ToList()
-                : participantTraceSegments;
+            var participantMergeResult = MergeParticipantEgressWithTraceFallback(
+                orderedHumanSegments.Select(segment => CreateParticipantOutputSegment(segment, displayNames)).ToList(),
+                participantTraceSegments,
+                fragments.ToDictionary(x => x.Id, x => x.EgressStartedAtUtc));
+            var participantSegmentCount = participantMergeResult.Segments.Count;
+
+            var isTranscriptComplete = expectedAudioFragmentCount == 0
+                                       || (failedFragmentIds.Count == 0
+                                           && terminalFailedCount == 0
+                                           && transcribedFragmentCount >= expectedAudioFragmentCount);
+            var completenessStatus = isTranscriptComplete
+                ? MeetingTranscriptCompletenessStatus.Complete
+                : MeetingTranscriptCompletenessStatus.CompletedWithWarnings;
+            var transcriptWarnings = BuildTranscriptWarnings(
+                failedFragmentIds,
+                retryableFailedCount,
+                terminalFailedCount,
+                expectedAudioFragmentCount,
+                transcribedFragmentCount,
+                completenessStatus,
+                participantMergeResult.TraceFallbackWarnings);
+
+            if (_postMeetingProcessingTracker is not null)
+            {
+                if (isTranscriptComplete)
+                {
+                    var sttCompleteMessage = participantMergeResult.UsedTraceFallback
+                        ? $"STT transcription completed for {participantSegmentCount} participant segment(s); live AI trace fallback replaced delayed participant egress segment(s)."
+                        : $"STT transcription completed for {participantSegmentCount} participant segment(s).";
+                    await _postMeetingProcessingTracker.CompleteStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.Stt,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
+                        message: sttCompleteMessage,
+                        artifact: fragmentsWithTiming.Count > 0
+                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: fragmentsWithTiming.Select(x => x.Fragment.Id).ToList())
+                            : null,
+                        cancellationToken: cancellationToken);
+
+                    if (participantMergeResult.UsedTraceFallback)
+                    {
+                        await _postMeetingProcessingTracker.RecordEventAsync(
+                            organizationId,
+                            meetingId,
+                            PostMeetingProcessingEventType.Info,
+                            _pipelineGenerationId,
+                            PostMeetingProcessingStepType.Stt,
+                            PostMeetingProcessingStatus.Completed,
+                            message: DelayedEgressTraceFallbackWarning,
+                            relatedHangfireJobId: _currentHangfireJobId,
+                            metadataJson: JsonSerializer.Serialize(transcriptWarnings),
+                            cancellationToken: cancellationToken);
+                    }
+                }
+                else
+                {
+                    var sttWarningMessage =
+                        $"STT transcription completed with warnings for {participantSegmentCount} participant segment(s); {failedFragmentIds.Count} audio fragment(s) remain untranscribed.";
+                    await _postMeetingProcessingTracker.CompleteStepWithWarningsAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.Stt,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
+                        message: sttWarningMessage,
+                        artifact: failedFragmentIds.Count > 0
+                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds)
+                            : null,
+                        cancellationToken: cancellationToken);
+
+                    var sttEventMessage = participantMergeResult.UsedTraceFallback
+                        ? "Transcript coverage is degraded because delayed participant egress required live AI trace fallback."
+                        : "Transcript coverage is degraded because one or more audio fragments failed STT.";
+                    await _postMeetingProcessingTracker.RecordEventAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingEventType.Info,
+                        _pipelineGenerationId,
+                        PostMeetingProcessingStepType.Stt,
+                        PostMeetingProcessingStatus.CompletedWithWarnings,
+                        message: sttEventMessage,
+                        relatedHangfireJobId: _currentHangfireJobId,
+                        artifact: failedFragmentIds.Count > 0
+                            ? new PostMeetingArtifactLink("participant_audio_fragment", ArtifactIds: failedFragmentIds)
+                            : null,
+                        metadataJson: JsonSerializer.Serialize(transcriptWarnings),
+                        cancellationToken: cancellationToken);
+                }
+
+                await _postMeetingProcessingTracker.StartStepAsync(
+                        organizationId,
+                        meetingId,
+                        PostMeetingProcessingStepType.TranscriptPersistence,
+                        _pipelineGenerationId,
+                        _currentHangfireJobId,
+                        message: "Transcript persistence started.",
+                    cancellationToken: cancellationToken);
+            }
+
+            var participantSegments = participantMergeResult.Segments;
 
             var assistantAudioSegments = orderedAssistantSegments
                 .Select(CreateAssistantOutputSegment)
@@ -636,11 +666,15 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             int terminalFailedCount,
             int expectedAudioFragmentCount,
             int transcribedFragmentCount,
-            MeetingTranscriptCompletenessStatus completenessStatus)
+            MeetingTranscriptCompletenessStatus completenessStatus,
+            IReadOnlyList<string> traceFallbackWarnings)
         {
             var warnings = new List<string>();
 
-            if (completenessStatus != MeetingTranscriptCompletenessStatus.Complete)
+            if (transcribedFragmentCount < expectedAudioFragmentCount
+                || retryableFailedCount > 0
+                || terminalFailedCount > 0
+                || failedFragmentIds.Count > 0)
             {
                 warnings.Add(
                     $"Degraded transcript: transcribed {transcribedFragmentCount} of {expectedAudioFragmentCount} expected audio fragment(s).");
@@ -660,6 +694,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             {
                 warnings.Add($"Missing audio fragment ids: {string.Join(", ", failedFragmentIds)}.");
             }
+
+            warnings.AddRange(traceFallbackWarnings);
 
             return warnings;
         }
@@ -779,24 +815,55 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                     x => string.IsNullOrWhiteSpace(x.DisplayName) ? x.UserName ?? x.UserId.ToString() : x.DisplayName);
             }
 
+            var turnStartedEvents = events
+                .Where(x => EventTypeEquals(x.EventType, AiAssistantTraceEventTypes.TurnStarted))
+                .GroupBy(x => new TraceTurnKey(x.SessionId, x.TurnId))
+                .ToDictionary(
+                    x => x.Key,
+                    x => x.OrderBy(e => e.OccurredAtUtc)
+                        .ThenBy(e => e.Sequence)
+                        .ThenBy(e => e.CreatedAtUtc)
+                        .ThenBy(e => e.Id)
+                        .First());
+
             var participantSegments = events
                 .Where(x => EventTypeEquals(x.EventType, AiAssistantTraceEventTypes.SttCompleted))
                 .Where(x => !string.IsNullOrWhiteSpace(x.Text))
                 .Where(x => turnParticipants.ContainsKey(new TraceTurnKey(x.SessionId, x.TurnId)))
                 .Select(x =>
                 {
-                    var participantUserId = turnParticipants[new TraceTurnKey(x.SessionId, x.TurnId)];
+                    var turnKey = new TraceTurnKey(x.SessionId, x.TurnId);
+                    var participantUserId = turnParticipants[turnKey];
+                    turnStartedEvents.TryGetValue(turnKey, out var turnStartedEvent);
+                    var timingEvent = turnStartedEvent ?? x;
+                    var timestampOffsetSource = turnStartedEvent is not null
+                        ? TimestampOffsetSources.TraceTurnStarted
+                        : TimestampOffsetSources.SttCompleted;
+                    var timingStartUtc = EnsureUtc(timingEvent.OccurredAtUtc);
+                    var sttCompletedUtc = EnsureUtc(x.OccurredAtUtc);
+                    var speechDurationMs = x.AudioDurationMs.GetValueOrDefault() > 0
+                        ? x.AudioDurationMs!.Value
+                        : (int)Math.Max(0, (sttCompletedUtc - timingStartUtc).TotalMilliseconds);
+
                     return CreateTraceOutputSegment(
-                        x,
+                        timingEvent with
+                        {
+                            DurationMs = speechDurationMs > 0 ? speechDurationMs : null,
+                            AudioDurationMs = x.AudioDurationMs
+                        },
                         ParticipantSpeakerRole,
                         participantUserId,
                         participantDisplayNames.TryGetValue(participantUserId, out var displayName)
                             ? displayName
                             : participantUserId.ToString(),
-                        TimestampOffsetSources.SttCompleted,
+                        timestampOffsetSource,
                         SortPriority: 0,
                         roomActivatedAtUtc,
-                        x.Text.Trim());
+                        x.Text.Trim(),
+                        textProvenanceEventId: x.Id,
+                        sessionId: x.SessionId,
+                        turnId: x.TurnId,
+                        traceSttCompletedUtc: sttCompletedUtc);
                 })
                 .OrderBy(x => x.RoomRelativeStartMs)
                 .ThenBy(x => x.RoomRelativeEndMs)
@@ -901,7 +968,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 TraceEventId: null,
                 SessionId: null,
                 TurnId: null,
-                SortPriority: 1);
+                SortPriority: 1,
+                TraceSttCompletedUtc: null);
 
         private static TranscriptOutputSegment CreateParticipantOutputSegment(
             NormalizedTranscriptSegment segment,
@@ -933,7 +1001,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 TraceEventId: null,
                 SessionId: null,
                 TurnId: null,
-                SortPriority: 0);
+                SortPriority: 0,
+                TraceSttCompletedUtc: null);
         }
 
         private static TranscriptOutputSegment CreateTraceOutputSegment(
@@ -944,13 +1013,19 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             string timestampOffsetSource,
             int SortPriority,
             DateTime? roomActivatedAtUtc,
-            string text)
+            string text,
+            Guid? textProvenanceEventId = null,
+            string? sessionId = null,
+            string? turnId = null,
+            DateTime? traceSttCompletedUtc = null)
         {
             var occurredAtUtc = EnsureUtc(traceEvent.OccurredAtUtc);
             var roomRelativeStartMs = roomActivatedAtUtc.HasValue
                 ? Math.Max(0, (long)Math.Round((occurredAtUtc - roomActivatedAtUtc.Value).TotalMilliseconds))
                 : 0;
-            var durationMs = Math.Max(0, traceEvent.AudioDurationMs ?? traceEvent.DurationMs ?? 0);
+            var durationMs = traceEvent.AudioDurationMs.GetValueOrDefault() > 0
+                ? traceEvent.AudioDurationMs!.Value
+                : Math.Max(0, traceEvent.DurationMs ?? 0);
             var roomRelativeEndMs = roomRelativeStartMs + durationMs;
             var absoluteStartUtc = roomActivatedAtUtc.HasValue
                 ? roomActivatedAtUtc.Value.AddMilliseconds(roomRelativeStartMs)
@@ -977,10 +1052,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 TimestampOffsetSource: timestampOffsetSource,
                 SpeakerDisplayName: speakerDisplayName,
                 Source: AiAssistantTraceSource,
-                TraceEventId: traceEvent.Id.ToString("D"),
-                SessionId: traceEvent.SessionId,
-                TurnId: traceEvent.TurnId,
-                SortPriority);
+                TraceEventId: (textProvenanceEventId ?? traceEvent.Id).ToString("D"),
+                SessionId: sessionId ?? traceEvent.SessionId,
+                TurnId: turnId ?? traceEvent.TurnId,
+                SortPriority,
+                TraceSttCompletedUtc: traceSttCompletedUtc);
         }
 
         private static bool IsAssistantTranscriptTraceEvent(string eventType)
@@ -1031,6 +1107,11 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                 return new TrackTiming(0, null, TimestampOffsetSources.LegacyUnknown);
             }
 
+            if (fragmentEgressStartedAtUtc.HasValue)
+            {
+                return CreateTiming(roomActivatedAtUtc.Value, fragmentEgressStartedAtUtc.Value, TimestampOffsetSources.FragmentEgressStarted);
+            }
+
             if (fragmentTrackPublishedAtUtc.HasValue)
             {
                 return CreateTiming(roomActivatedAtUtc.Value, fragmentTrackPublishedAtUtc.Value, TimestampOffsetSources.FragmentTrackPublished);
@@ -1062,11 +1143,6 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             if (trackPublished is not null)
             {
                 return CreateTiming(roomActivatedAtUtc.Value, trackPublished.OccurredAtUtc, TimestampOffsetSources.TrackPublished);
-            }
-
-            if (fragmentEgressStartedAtUtc.HasValue)
-            {
-                return CreateTiming(roomActivatedAtUtc.Value, fragmentEgressStartedAtUtc.Value, TimestampOffsetSources.FragmentEgressStarted);
             }
 
             var participantJoined = participantEvents
@@ -1121,6 +1197,174 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
                    && timingEvent.PayloadJson.Contains(trackSid, StringComparison.OrdinalIgnoreCase);
         }
 
+        private static DateTime ResolveEgressSegmentStartUtc(
+            TranscriptOutputSegment egress,
+            DateTime fragmentEgressStartedUtc)
+            => egress.AbsoluteStartUtc ?? fragmentEgressStartedUtc;
+
+        private static bool ShouldSuppressEgressForTraceTurn(
+            TranscriptOutputSegment egress,
+            DateTime fragmentEgressStartedUtc,
+            TranscriptOutputSegment trace,
+            DateTime turnStartedUtc,
+            DateTime sttCompletedUtc,
+            DateTime? nextTurnStartedUtc,
+            long? nextTurnStartMs)
+        {
+            var egressSegmentStartUtc = ResolveEgressSegmentStartUtc(egress, fragmentEgressStartedUtc);
+
+            if (egressSegmentStartUtc <= turnStartedUtc.AddMilliseconds(DelayedEgressGraceMs))
+            {
+                return false;
+            }
+
+            if (nextTurnStartedUtc.HasValue && egressSegmentStartUtc >= nextTurnStartedUtc.Value)
+            {
+                return false;
+            }
+
+            var repairWindowEndUtc = sttCompletedUtc.AddMilliseconds(DelayedEgressGraceMs);
+
+            if (egressSegmentStartUtc <= repairWindowEndUtc)
+            {
+                return SegmentsOverlap(egress, trace)
+                       || (nextTurnStartMs is null || egress.RoomRelativeStartMs < nextTurnStartMs.Value);
+            }
+
+            if (SegmentsOverlap(egress, trace))
+            {
+                return true;
+            }
+
+            if (nextTurnStartMs.HasValue)
+            {
+                return egress.RoomRelativeStartMs >= trace.RoomRelativeStartMs
+                       && egress.RoomRelativeStartMs < nextTurnStartMs.Value;
+            }
+
+            return egress.RoomRelativeStartMs >= trace.RoomRelativeStartMs
+                   && egressSegmentStartUtc <= sttCompletedUtc.AddMilliseconds(DelayedEgressTurnAssociationWindowMs);
+        }
+
+        private static ParticipantSegmentMergeResult MergeParticipantEgressWithTraceFallback(
+            IReadOnlyList<TranscriptOutputSegment> egressSegments,
+            IReadOnlyList<TranscriptOutputSegment> traceSegments,
+            IReadOnlyDictionary<Guid, DateTime?> fragmentEgressStartedByFragmentId)
+        {
+            if (traceSegments.Count == 0)
+            {
+                return new ParticipantSegmentMergeResult(egressSegments, false, []);
+            }
+
+            if (egressSegments.Count == 0)
+            {
+                return new ParticipantSegmentMergeResult(traceSegments, false, []);
+            }
+
+            var suppressedEgressIndices = new HashSet<int>();
+            var insertedTraceKeys = new HashSet<TraceTurnKey>();
+            var traceTurnsByParticipant = traceSegments
+                .Where(x => x.ParticipantUserId.HasValue
+                            && !string.IsNullOrWhiteSpace(x.SessionId)
+                            && !string.IsNullOrWhiteSpace(x.TurnId))
+                .GroupBy(x => x.ParticipantUserId!.Value)
+                .ToDictionary(
+                    x => x.Key,
+                    x => x.OrderBy(t => t.RoomRelativeStartMs)
+                        .ThenBy(t => t.RoomRelativeEndMs)
+                        .ToList());
+
+            foreach (var trace in traceSegments)
+            {
+                if (!trace.ParticipantUserId.HasValue
+                    || string.IsNullOrWhiteSpace(trace.SessionId)
+                    || string.IsNullOrWhiteSpace(trace.TurnId)
+                    || !trace.AbsoluteStartUtc.HasValue)
+                {
+                    continue;
+                }
+
+                var turnKey = new TraceTurnKey(trace.SessionId, trace.TurnId);
+                var turnStartedUtc = trace.AbsoluteStartUtc.Value;
+                var sttCompletedUtc = trace.TraceSttCompletedUtc ?? trace.AbsoluteEndUtc ?? turnStartedUtc;
+                var nextTraceTurn = traceTurnsByParticipant.TryGetValue(trace.ParticipantUserId.Value, out var participantTurns)
+                    ? participantTurns.FirstOrDefault(t => t.RoomRelativeStartMs > trace.RoomRelativeStartMs)
+                    : null;
+                var nextTurnStartedUtc = nextTraceTurn?.AbsoluteStartUtc;
+                var nextTurnStartMs = nextTraceTurn?.RoomRelativeStartMs;
+
+                var suppressedForTurn = false;
+                for (var i = 0; i < egressSegments.Count; i++)
+                {
+                    if (suppressedEgressIndices.Contains(i))
+                    {
+                        continue;
+                    }
+
+                    var egress = egressSegments[i];
+                    if (egress.ParticipantUserId != trace.ParticipantUserId)
+                    {
+                        continue;
+                    }
+
+                    if (!egress.ParticipantAudioFragmentId.HasValue
+                        || !fragmentEgressStartedByFragmentId.TryGetValue(
+                            egress.ParticipantAudioFragmentId.Value,
+                            out var egressStartedUtc)
+                        || !egressStartedUtc.HasValue)
+                    {
+                        continue;
+                    }
+
+                    if (!ShouldSuppressEgressForTraceTurn(
+                            egress,
+                            egressStartedUtc.Value,
+                            trace,
+                            turnStartedUtc,
+                            sttCompletedUtc,
+                            nextTurnStartedUtc,
+                            nextTurnStartMs))
+                    {
+                        continue;
+                    }
+
+                    suppressedEgressIndices.Add(i);
+                    suppressedForTurn = true;
+                }
+
+                if (suppressedForTurn)
+                {
+                    insertedTraceKeys.Add(turnKey);
+                }
+            }
+
+            if (insertedTraceKeys.Count == 0)
+            {
+                return new ParticipantSegmentMergeResult(egressSegments, false, []);
+            }
+
+            var mergedSegments = egressSegments
+                .Where((_, index) => !suppressedEgressIndices.Contains(index))
+                .Concat(traceSegments.Where(trace =>
+                    !string.IsNullOrWhiteSpace(trace.SessionId)
+                    && !string.IsNullOrWhiteSpace(trace.TurnId)
+                    && insertedTraceKeys.Contains(new TraceTurnKey(trace.SessionId!, trace.TurnId!))))
+                .OrderBy(x => x.RoomRelativeStartMs)
+                .ThenBy(x => x.RoomRelativeEndMs)
+                .ThenBy(x => x.SortPriority)
+                .ThenBy(x => x.SpeakerDisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return new ParticipantSegmentMergeResult(
+                mergedSegments,
+                true,
+                [DelayedEgressTraceFallbackWarning]);
+        }
+
+        private static bool SegmentsOverlap(TranscriptOutputSegment left, TranscriptOutputSegment right)
+            => left.RoomRelativeStartMs < right.RoomRelativeEndMs
+               && right.RoomRelativeStartMs < left.RoomRelativeEndMs;
+
         private static class TimestampOffsetSources
         {
             public const string FragmentTrackPublished = "fragment_track_published";
@@ -1131,9 +1375,15 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             public const string AssistantSpeechCompleted = "assistant_speech_completed";
             public const string LlmCompleted = "llm_completed";
             public const string SttCompleted = "stt_completed";
+            public const string TraceTurnStarted = "trace_turn_started";
             public const string TtsCompleted = "tts_completed";
             public const string LegacyUnknown = "legacy_unknown";
         }
+
+        private sealed record ParticipantSegmentMergeResult(
+            IReadOnlyList<TranscriptOutputSegment> Segments,
+            bool UsedTraceFallback,
+            IReadOnlyList<string> TraceFallbackWarnings);
 
         private sealed record FragmentTranscriptionInput(
             ParticipantAudioFragment Fragment,
@@ -1211,7 +1461,8 @@ namespace MeetingAssistant.Features.LiveSession.Jobs
             string? TraceEventId,
             string? SessionId,
             string? TurnId,
-            int SortPriority);
+            int SortPriority,
+            DateTime? TraceSttCompletedUtc);
 
         private sealed record PersistedTranscriptSegment(
             int Version,

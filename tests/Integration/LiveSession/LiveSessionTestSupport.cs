@@ -616,7 +616,8 @@ namespace tests.Integration.LiveSession
             string storageObjectKey,
             string trackSid,
             DateTime? trackPublishedAtUtc = null,
-            Guid? participantAudioTrackId = null)
+            Guid? participantAudioTrackId = null,
+            DateTime? egressStartedAtUtc = null)
         {
             var fragment = new ParticipantAudioFragment
             {
@@ -631,6 +632,7 @@ namespace tests.Integration.LiveSession
                 StorageLocation = $"s3://recordings/{storageObjectKey}",
                 Status = ParticipantAudioFragmentStatus.Available,
                 TrackPublishedAtUtc = trackPublishedAtUtc,
+                EgressStartedAtUtc = egressStartedAtUtc,
                 StorageAvailableAtUtc = trackPublishedAtUtc?.AddSeconds(5),
                 SizeBytes = 1024
             };
