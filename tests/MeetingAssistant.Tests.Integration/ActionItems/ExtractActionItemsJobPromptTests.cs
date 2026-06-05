@@ -54,8 +54,15 @@ public sealed class ExtractActionItemsJobPromptTests
         llm.LastRequest!.Model.Should().Be("openai-compatible-local");
         var message = llm.LastRequest!.Messages.Should().ContainSingle().Subject;
         message.Content.Should().Contain("You are an AI meeting assistant specialized in extracting action items from meeting transcripts.");
+        message.Content.Should().Contain("Meeting reference date (UTC):");
+        message.Content.Should().Contain("Timezone for deadline normalization: UTC");
+        message.Content.Should().Contain("Meeting participants:");
+        message.Content.Should().Contain("Organization members:");
+        message.Content.Should().Contain($"display_name=Alice");
         message.Content.Should().Contain($"Transcript:{Environment.NewLine}[00:00:01 Alice] I will review the dataset by 2026-06-10T15:30:00+02:00.");
         message.Content.Should().NotContain("{transcript}");
+        message.Content.Should().NotContain("{meeting_context}");
+        message.Content.Should().NotContain("{people_context}");
         llm.LastRequest.ResponseFormat.Should().BeNull();
 
         var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
@@ -666,6 +673,264 @@ public sealed class ExtractActionItemsJobPromptTests
 
         (await db.DbContext.ActionItems.SingleAsync(x => x.Id == approved.Id)).SupersededAtUtc.Should().BeNull();
         (await db.DbContext.ActionItems.SingleAsync(x => x.Id == synced.Id)).SupersededAtUtc.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RunAsync_RejectsRandomSuggestedUserIdWhenConfidenceIsHigh()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] Layla will prepare the deployment plan.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var randomUserId = Guid.NewGuid();
+        var job = CreateJob(db, new FakeLlmService($$"""
+            [{"task":"prepare the deployment plan","responsible_person":"Layla","assigned_user_id":"{{randomUserId}}","assignee_confidence":0.95,"deadline":null}]
+            """));
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
+        item.AssignedToUserId.Should().BeNull();
+        item.AiSuggestedAssignedToUserId.Should().Be(randomUserId);
+        item.SyncMissingAssigneeReason.Should().Be(ActionItemReviewReasons.NeedsAssignee);
+    }
+
+    [Fact]
+    public async Task RunAsync_LowAssigneeConfidenceDoesNotAutoAcceptSuggestedUserId()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.UserOrgMemberships.Add(new MeetingAssistant.Features.Organizations.Models.UserOrgMembership
+        {
+            OrganizationId = organizationId,
+            UserId = aliceId,
+            OrgRole = MeetingAssistant.Features.Organizations.Models.OrganizationRole.Member,
+            IsEnabled = true
+        });
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] Alice will prepare the deployment plan.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new FakeLlmService($$"""
+            [{"task":"prepare the deployment plan","responsible_person":"Alice","assigned_user_id":"{{aliceId}}","assignee_confidence":0.40,"deadline":null}]
+            """));
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
+        item.AssignedToUserId.Should().Be(aliceId);
+        item.AiSuggestedAssignedToUserId.Should().Be(aliceId);
+        item.AiAssigneeConfidence.Should().Be(0.40m);
+        item.SyncMissingAssigneeReason.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RunAsync_LowDeadlineConfidenceMarksInvalidDueDateWithoutLegacyFallback()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] Alice will prepare the deployment plan by 2026-06-10T15:30:00+02:00.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new FakeLlmService("""
+            [{"task":"prepare the deployment plan","responsible_person":"Alice","deadline":"2026-06-10T15:30:00+02:00","deadline_date":"2026-06-10","deadline_confidence":0.40,"assignee_confidence":0.95,"assigned_user_id":null}]
+            """));
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
+        item.DueDateUtc.Should().BeNull();
+        item.AiDeadlineConfidence.Should().Be(0.40m);
+        item.SyncMissingAssigneeReason.Should().Be(ActionItemReviewReasons.InvalidDueDate);
+    }
+
+    [Theory]
+    [InlineData(1.5)]
+    [InlineData(-0.1)]
+    public async Task RunAsync_InvalidAssigneeConfidenceIsStoredAsNullAndDoesNotAutoAccept(decimal invalidConfidence)
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.UserOrgMemberships.Add(new MeetingAssistant.Features.Organizations.Models.UserOrgMembership
+        {
+            OrganizationId = organizationId,
+            UserId = aliceId,
+            OrgRole = MeetingAssistant.Features.Organizations.Models.OrganizationRole.Member,
+            IsEnabled = true
+        });
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] Someone will prepare the deployment plan.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new FakeLlmService($$"""
+            [{"task":"prepare the deployment plan","responsible_person":null,"assigned_user_id":"{{aliceId}}","assignee_confidence":{{invalidConfidence}},"deadline":null}]
+            """));
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
+        item.AssignedToUserId.Should().BeNull();
+        item.AiSuggestedAssignedToUserId.Should().Be(aliceId);
+        item.AiAssigneeConfidence.Should().BeNull();
+        item.SyncMissingAssigneeReason.Should().Be(ActionItemReviewReasons.NeedsAssignee);
+    }
+
+    [Theory]
+    [InlineData(2.0)]
+    [InlineData(-0.5)]
+    public async Task RunAsync_InvalidDeadlineConfidenceIsStoredAsNullAndDoesNotAutoAccept(decimal invalidConfidence)
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] Alice will prepare the deployment plan.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new FakeLlmService($$"""
+            [{"task":"prepare the deployment plan","responsible_person":"Alice","deadline":"2026-06-10T15:30:00+02:00","deadline_date":"2026-06-10","deadline_utc":"2026-06-10T00:00:00Z","deadline_confidence":{{invalidConfidence}},"assignee_confidence":0.95,"assigned_user_id":"{{aliceId}}"}]
+            """));
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
+        item.AssignedToUserId.Should().Be(aliceId);
+        item.DueDateUtc.Should().BeNull();
+        item.AiDeadlineConfidence.Should().BeNull();
+        item.AiSuggestedDueDateUtc.Should().Be(new DateTime(2026, 6, 10, 0, 0, 0, DateTimeKind.Utc));
+        item.SyncMissingAssigneeReason.Should().Be(ActionItemReviewReasons.InvalidDueDate);
+    }
+
+    [Fact]
+    public async Task RunAsync_LongAuditTextAndReasonsAreTruncatedWithoutPersistenceFailure()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] Alice will prepare the deployment plan.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var longAssignee = new string('A', 250);
+        var longDeadline = new string('D', 250);
+        var longAssigneeReason = new string('R', 600);
+        var longDeadlineReason = new string('E', 600);
+        var expectedAssignee = longAssignee[..200];
+        var expectedDeadline = longDeadline[..200];
+        var expectedAssigneeReason = longAssigneeReason[..500];
+        var expectedDeadlineReason = longDeadlineReason[..500];
+
+        var job = CreateJob(db, new FakeLlmService($$"""
+            [{"task":"prepare the deployment plan","responsible_person":"{{longAssignee}}","deadline":"{{longDeadline}}","assignee_reason":"{{longAssigneeReason}}","deadline_reason":"{{longDeadlineReason}}","assignee_confidence":0.95,"deadline_confidence":0.95,"assigned_user_id":"{{aliceId}}","deadline_date":"2026-06-10","deadline_utc":"2026-06-10T00:00:00Z"}]
+            """));
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
+        item.AiRawAssigneeText.Should().Be(expectedAssignee);
+        item.AiRawDeadlineText.Should().Be(expectedDeadline);
+        item.AiAssigneeResolutionReason.Should().Be(expectedAssigneeReason);
+        item.AiDeadlineResolutionReason.Should().Be(expectedDeadlineReason);
+        item.AiRawAssigneeText.Should().HaveLength(200);
+        item.AiRawDeadlineText.Should().HaveLength(200);
+        item.AiAssigneeResolutionReason.Should().HaveLength(500);
+        item.AiDeadlineResolutionReason.Should().HaveLength(500);
+        item.Description.Should().Contain($"AI assignee: {expectedAssignee}");
+        item.Description.Should().Contain($"AI due date: {expectedDeadline}");
+        item.Description.Should().Contain($"AI assignee reason: {expectedAssigneeReason}");
+        item.Description.Should().Contain($"AI deadline reason: {expectedDeadlineReason}");
+    }
+
+    [Fact]
+    public async Task RunAsync_BackwardCompatibleLegacySchemaStillMapsAssigneeAndDueDate()
+    {
+        await using var db = await LiveSessionTestDb.CreateAsync();
+        var organizationId = db.SeedOrganization();
+        var aliceId = db.SeedUser("Alice");
+        var meetingId = db.SeedMeeting(organizationId, MeetingStatus.Completed);
+        db.AddParticipant(meetingId, organizationId, aliceId, MeetingRole.Participant);
+        db.DbContext.MeetingTranscripts.Add(new MeetingTranscript
+        {
+            Id = Guid.NewGuid(),
+            OrganizationId = organizationId,
+            MeetingId = meetingId,
+            FullText = "[00:00:01 Alice] Alice will review the dataset by 2026-06-10T15:30:00+02:00.",
+            GeneratedAtUtc = DateTime.UtcNow,
+            SttModel = "test"
+        });
+        await db.DbContext.SaveChangesAsync();
+
+        var job = CreateJob(db, new FakeLlmService("""
+            [{"task":"review the dataset","assignee":"Alice","due_date":"2026-06-10T15:30:00+02:00"}]
+            """));
+
+        await job.RunAsync(meetingId, organizationId, CancellationToken.None);
+
+        var item = db.DbContext.ActionItems.Should().ContainSingle().Subject;
+        item.AssignedToUserId.Should().Be(aliceId);
+        item.DueDateUtc.Should().Be(new DateTime(2026, 6, 10, 13, 30, 0, DateTimeKind.Utc));
+        item.SyncMissingAssigneeReason.Should().BeNull();
     }
 
     private static ExtractActionItemsJob CreateJob(

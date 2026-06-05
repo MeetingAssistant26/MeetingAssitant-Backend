@@ -36,6 +36,24 @@ namespace MeetingAssistant.Infrastructure.Persistence.EntitiesConfigrations.Acti
             builder.Property(x => x.SupersededReason)
                 .HasMaxLength(128);
 
+            builder.Property(x => x.AiRawAssigneeText)
+                .HasMaxLength(200);
+
+            builder.Property(x => x.AiRawDeadlineText)
+                .HasMaxLength(200);
+
+            builder.Property(x => x.AiAssigneeResolutionReason)
+                .HasMaxLength(500);
+
+            builder.Property(x => x.AiDeadlineResolutionReason)
+                .HasMaxLength(500);
+
+            builder.Property(x => x.AiAssigneeConfidence)
+                .HasColumnType("decimal(5,4)");
+
+            builder.Property(x => x.AiDeadlineConfidence)
+                .HasColumnType("decimal(5,4)");
+
             builder.HasIndex(x => new { x.OrganizationId, x.MeetingId, x.SourceTranscriptHash })
                 .HasDatabaseName("IX_ActionItems_OrganizationId_MeetingId_SourceTranscriptHash");
 

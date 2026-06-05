@@ -32,13 +32,20 @@ public sealed class PromptProviderTests
         var provider = new PromptProvider(new TestHostEnvironment(AppContext.BaseDirectory));
         const string transcript = "SPEAKER_01: I will review the dataset today.";
 
-        var prompt = provider.GetTaskExtractionPrompt(transcript);
+        const string meetingContext = "- Meeting reference date (UTC): 2026-06-01";
+        const string peopleContext = "- user_id=11111111-1111-1111-1111-111111111111; display_name=Alice";
+
+        var prompt = provider.GetTaskExtractionPrompt(transcript, meetingContext, peopleContext);
 
         prompt.Should().Contain("Your ONLY job is to return a valid JSON array of tasks.");
-        prompt.Should().Contain("\"responsible_person\": \"Full Name or null\"");
-        prompt.Should().Contain("\"deadline\": \"explicit time mentioned or null\"");
+        prompt.Should().Contain("\"assigned_user_id\"");
+        prompt.Should().Contain("\"deadline_date\"");
+        prompt.Should().Contain(meetingContext);
+        prompt.Should().Contain(peopleContext);
         prompt.Should().Contain($"Transcript:{Environment.NewLine}{transcript}");
         prompt.Should().NotContain("{transcript}");
+        prompt.Should().NotContain("{meeting_context}");
+        prompt.Should().NotContain("{people_context}");
     }
 
     [Fact]

@@ -10,7 +10,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         string PersonalizedSummarizerPromptVersion { get; }
 
         string GetSummarizerPrompt(string transcript);
-        string GetTaskExtractionPrompt(string transcript);
+        string GetTaskExtractionPrompt(string transcript, string meetingContext, string peopleContext);
         string GetPersonalizedSummarizerPrompt(
             string participant,
             string transcript,
@@ -38,7 +38,10 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 "Prompts");
 
             _summarizerPrompt = ReadPrompt(promptDirectory, "MeetingSummarizer.md", ["{transcript}"]);
-            _taskExtractionPrompt = ReadPrompt(promptDirectory, "TaskExtraction.md", ["{transcript}"]);
+            _taskExtractionPrompt = ReadPrompt(
+                promptDirectory,
+                "TaskExtraction.md",
+                ["{meeting_context}", "{people_context}", "{transcript}"]);
             _personalizedSummarizerPrompt = ReadPrompt(
                 promptDirectory,
                 "PersonalizedMeetingSummarizer.md",
@@ -57,7 +60,17 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
         public string GetSummarizerPrompt(string transcript) => FillTranscriptPlaceholder(_summarizerPrompt, transcript);
 
-        public string GetTaskExtractionPrompt(string transcript) => FillTranscriptPlaceholder(_taskExtractionPrompt, transcript);
+        public string GetTaskExtractionPrompt(string transcript, string meetingContext, string peopleContext)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(transcript);
+            ArgumentException.ThrowIfNullOrWhiteSpace(meetingContext);
+            ArgumentException.ThrowIfNullOrWhiteSpace(peopleContext);
+
+            return _taskExtractionPrompt
+                .Replace("{meeting_context}", meetingContext.Trim(), StringComparison.Ordinal)
+                .Replace("{people_context}", peopleContext.Trim(), StringComparison.Ordinal)
+                .Replace("{transcript}", transcript, StringComparison.Ordinal);
+        }
 
         public string GetPersonalizedSummarizerPrompt(
             string participant,

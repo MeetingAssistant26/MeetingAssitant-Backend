@@ -35,6 +35,37 @@ namespace MeetingAssistant.Migrations
                     b.Property<Guid?>("AssignedToUserId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AiAssigneeResolutionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<decimal?>("AiAssigneeConfidence")
+                        .HasColumnType("numeric(5,4)");
+
+                    b.Property<string>("AiDeadlineResolutionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<decimal?>("AiDeadlineConfidence")
+                        .HasColumnType("numeric(5,4)");
+
+                    b.Property<string>("AiRawAssigneeText")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("AiRawDeadlineText")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<Guid?>("AiSuggestedAssignedToParticipantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("AiSuggestedAssignedToUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("AiSuggestedDueDateUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 

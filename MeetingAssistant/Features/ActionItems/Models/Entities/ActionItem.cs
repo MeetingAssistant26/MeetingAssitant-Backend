@@ -53,6 +53,24 @@ namespace MeetingAssistant.Features.ActionItems.Models.Entities
 
         public string? SupersededReason { get; set; }
 
+        public string? AiRawAssigneeText { get; set; }
+
+        public string? AiRawDeadlineText { get; set; }
+
+        public string? AiAssigneeResolutionReason { get; set; }
+
+        public string? AiDeadlineResolutionReason { get; set; }
+
+        public decimal? AiAssigneeConfidence { get; set; }
+
+        public decimal? AiDeadlineConfidence { get; set; }
+
+        public Guid? AiSuggestedAssignedToUserId { get; set; }
+
+        public Guid? AiSuggestedAssignedToParticipantId { get; set; }
+
+        public DateTime? AiSuggestedDueDateUtc { get; set; }
+
         public byte[] RowVersion { get; set; } = Array.Empty<byte>();
     }
 }
