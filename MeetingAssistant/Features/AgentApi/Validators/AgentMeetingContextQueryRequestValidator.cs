@@ -10,6 +10,15 @@ namespace MeetingAssistant.Features.AgentApi.Validators
         public const int MaxTopK = 10;
         public const int MaxPreferredTagIds = 20;
         public const int MaxSourceTypes = 8;
+        public const int MaxConversationTurns = 8;
+        public const int MaxConversationTurnTextLength = 2_000;
+        public const int MaxConversationTotalTextLength = 8_000;
+
+        private static readonly HashSet<string> AllowedConversationRoles = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "user",
+            "assistant"
+        };
 
         public AgentMeetingContextQueryRequestValidator()
         {
@@ -43,6 +52,33 @@ namespace MeetingAssistant.Features.AgentApi.Validators
                 .NotEmpty().WithMessage("SourceTypes cannot contain an empty value.")
                 .Must(type => Enum.TryParse<KnowledgeArtifactType>(type, ignoreCase: true, out _))
                 .WithMessage("SourceTypes must contain valid knowledge source types.");
+
+            RuleFor(x => x.ConversationTurns)
+                .Must(turns => turns is null || turns.Count <= MaxConversationTurns)
+                .WithMessage($"ConversationTurns cannot contain more than {MaxConversationTurns} turns.");
+
+            RuleFor(x => x.ConversationTurns)
+                .Must(turns => turns is null || turns.Sum(turn => turn?.Text?.Length ?? 0) <= MaxConversationTotalTextLength)
+                .WithMessage($"Conversation turns cannot exceed {MaxConversationTotalTextLength} total characters.");
+
+            RuleForEach(x => x.ConversationTurns)
+                .NotNull()
+                .WithMessage("ConversationTurns cannot contain null values.");
+
+            RuleForEach(x => x.ConversationTurns).ChildRules(turn =>
+            {
+                turn.RuleFor(x => x.Role)
+                    .Cascade(CascadeMode.Stop)
+                    .NotEmpty().WithMessage("Conversation turn role is required.")
+                    .Must(role => !string.IsNullOrWhiteSpace(role) && AllowedConversationRoles.Contains(role))
+                    .WithMessage("Conversation turn role must be 'user' or 'assistant'.");
+
+                turn.RuleFor(x => x.Text)
+                    .Cascade(CascadeMode.Stop)
+                    .NotEmpty().WithMessage("Conversation turn text is required.")
+                    .MaximumLength(MaxConversationTurnTextLength)
+                    .WithMessage($"Conversation turn text cannot exceed {MaxConversationTurnTextLength} characters.");
+            });
         }
     }
 }

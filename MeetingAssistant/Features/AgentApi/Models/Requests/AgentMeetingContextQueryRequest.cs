@@ -5,5 +5,6 @@ namespace MeetingAssistant.Features.AgentApi.Models.Requests
         string? Transcript = null,
         int? TopK = null,
         IReadOnlyCollection<Guid>? PreferredTagIds = null,
-        IReadOnlyCollection<string>? SourceTypes = null);
+        IReadOnlyCollection<string>? SourceTypes = null,
+        IReadOnlyCollection<AgentConversationTurnRequest>? ConversationTurns = null);
 }

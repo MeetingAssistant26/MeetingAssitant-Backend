@@ -211,7 +211,7 @@ namespace MeetingAssistant.Features.AgentApi.Services
             var results = await _knowledgeRetrievalService.RetrieveAsync(
                 new KnowledgeRetrievalRequest(
                     organizationId,
-                    BuildQueryText(request.Question, request.Transcript),
+                    BuildQueryText(request.Question, request.Transcript, request.ConversationTurns),
                     retrievalTopK,
                     meetingId,
                     NormalizePreferredTagIds(request.PreferredTagIds)),
@@ -277,20 +277,82 @@ namespace MeetingAssistant.Features.AgentApi.Services
                 .ToHashSet();
         }
 
-        private static string BuildQueryText(string question, string? transcript)
+        private static readonly HashSet<string> AllowedConversationRoles = new(StringComparer.OrdinalIgnoreCase)
         {
-            if (string.IsNullOrWhiteSpace(transcript))
+            "user",
+            "assistant"
+        };
+
+        private static string BuildQueryText(
+            string question,
+            string? transcript,
+            IReadOnlyCollection<AgentConversationTurnRequest>? conversationTurns)
+        {
+            var trimmedQuestion = question.Trim();
+            var hasTranscript = !string.IsNullOrWhiteSpace(transcript);
+            var normalizedTurns = NormalizeConversationTurns(conversationTurns, trimmedQuestion);
+            var hasConversation = normalizedTurns.Count > 0;
+
+            if (!hasTranscript && !hasConversation)
             {
-                return question.Trim();
+                return trimmedQuestion;
             }
 
             var builder = new StringBuilder();
             builder.AppendLine("Question:");
-            builder.AppendLine(question.Trim());
+            builder.AppendLine(trimmedQuestion);
             builder.AppendLine();
-            builder.AppendLine("Current transcript/context:");
-            builder.Append(transcript.Trim());
+
+            if (hasConversation)
+            {
+                builder.AppendLine("Recent conversation:");
+                foreach (var turn in normalizedTurns)
+                {
+                    var label = string.Equals(turn.Role, "user", StringComparison.OrdinalIgnoreCase)
+                        ? "User"
+                        : "Assistant";
+                    builder.AppendLine($"{label}: {turn.Text}");
+                }
+
+                builder.AppendLine();
+            }
+
+            if (hasTranscript)
+            {
+                builder.AppendLine("Current transcript/context:");
+                builder.Append(transcript!.Trim());
+            }
+
             return builder.ToString();
+        }
+
+        private static List<AgentConversationTurnRequest> NormalizeConversationTurns(
+            IReadOnlyCollection<AgentConversationTurnRequest>? conversationTurns,
+            string trimmedQuestion)
+        {
+            if (conversationTurns is null || conversationTurns.Count == 0)
+            {
+                return [];
+            }
+
+            var validTurns = conversationTurns
+                .Where(turn => turn is not null
+                               && !string.IsNullOrWhiteSpace(turn.Text)
+                               && !string.IsNullOrWhiteSpace(turn.Role)
+                               && AllowedConversationRoles.Contains(turn.Role))
+                .Select(turn => new AgentConversationTurnRequest(
+                    turn.Role,
+                    turn.Text.Trim()))
+                .ToList();
+
+            if (validTurns.Count > 0
+                && string.Equals(validTurns[^1].Role, "user", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(validTurns[^1].Text, trimmedQuestion, StringComparison.OrdinalIgnoreCase))
+            {
+                validTurns.RemoveAt(validTurns.Count - 1);
+            }
+
+            return validTurns;
         }
 
         private static AgentMeetingContextSnippetResponse MapSnippet(KnowledgeRetrievalResult result)
