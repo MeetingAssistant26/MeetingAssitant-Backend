@@ -9,5 +9,8 @@ namespace MeetingAssistant.Infrastructure.AI.DTOs
 
         [JsonPropertyName("input")]
         public required object Input { get; init; }
+
+        [JsonPropertyName("dimensions")]
+        public int Dimensions { get; init; }
     }
 }

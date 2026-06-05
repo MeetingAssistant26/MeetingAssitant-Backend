@@ -158,6 +158,7 @@ public sealed class EmbeddingServiceTests : IClassFixture<MeetingAssistantWebFac
 
         using var bodyJson = JsonDocument.Parse(capturedBody!);
         bodyJson.RootElement.GetProperty("model").GetString().Should().Be("prod-embedding-v1");
+        bodyJson.RootElement.GetProperty("dimensions").GetInt32().Should().Be(3);
         bodyJson.RootElement.GetProperty("input").EnumerateArray().Select(x => x.GetString())
             .Should().Equal("first", "second");
     }

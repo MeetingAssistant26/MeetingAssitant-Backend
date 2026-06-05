@@ -49,7 +49,8 @@ namespace MeetingAssistant.Infrastructure.AI
             var request = new EmbeddingRequest
             {
                 Model = Metadata.Model,
-                Input = input
+                Input = input,
+                Dimensions = Metadata.Dimension
             };
 
             var response = await _httpClient.PostAsJsonAsync(_endpoint, request, cancellationToken);
