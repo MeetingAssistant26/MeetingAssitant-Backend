@@ -16,6 +16,28 @@ namespace MeetingAssistant.Features.ActionItems.Services
             Guid organizationId, ExternalProvider provider,
             CancellationToken cancellationToken = default);
 
+        Task<Result> SaveCredentialsAsync(
+            SaveProviderCredentialsRequest request,
+            Guid organizationId, ExternalProvider provider,
+            CancellationToken cancellationToken = default);
+
+        Task<Result> SaveDestinationAsync(
+            SaveIntegrationDestinationRequest request,
+            Guid organizationId, ExternalProvider provider,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<List<ProviderWorkspaceResponse>>> GetWorkspacesAsync(
+            Guid organizationId, ExternalProvider provider,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<List<ProviderBoardResponse>>> GetBoardsAsync(
+            Guid organizationId, ExternalProvider provider, string workspaceId,
+            CancellationToken cancellationToken = default);
+
+        Task<Result<List<ProviderMemberResponse>>> GetBoardMembersAsync(
+            Guid organizationId, ExternalProvider provider, string boardId,
+            CancellationToken cancellationToken = default);
+
         Task<Result<List<ProviderProjectResponse>>> GetProjectsAsync(
             Guid organizationId, ExternalProvider provider,
             CancellationToken cancellationToken = default);

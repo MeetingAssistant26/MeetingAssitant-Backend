@@ -8,15 +8,23 @@ using Xunit;
 
 namespace MeetingAssistant.Tests.Integration.Infrastructure;
 
-public abstract class IntegrationTestBase : IClassFixture<MeetingAssistantWebFactory>, IAsyncLifetime
+public abstract class IntegrationTestBase : IntegrationTestBase<MeetingAssistantWebFactory>
 {
-    protected readonly MeetingAssistantWebFactory Factory;
+    protected IntegrationTestBase(MeetingAssistantWebFactory factory) : base(factory)
+    {
+    }
+}
+
+public abstract class IntegrationTestBase<TFactory> : IClassFixture<TFactory>, IAsyncLifetime
+    where TFactory : MeetingAssistantWebFactory
+{
+    protected readonly TFactory Factory;
     protected HttpClient Client = null!;
 
     protected Guid TestUserId { get; } = Guid.NewGuid();
     protected Guid TestOrganizationId { get; } = Guid.NewGuid();
 
-    protected IntegrationTestBase(MeetingAssistantWebFactory factory)
+    protected IntegrationTestBase(TFactory factory)
     {
         Factory = factory;
     }

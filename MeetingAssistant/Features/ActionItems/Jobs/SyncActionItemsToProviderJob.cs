@@ -134,20 +134,35 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                 try
                 {
                     string? assigneeExternalId = null;
+                    string? missingReason = null;
 
                     if (item.AssignedToUserId.HasValue)
                     {
-                        var accountLink = await _dbContext.ExternalAccountLinks
-                            .FirstOrDefaultAsync(l => l.UserId == item.AssignedToUserId.Value && l.OrganizationId == organizationId && l.Provider == integration.Type, cancellationToken);
+                        var mapping = await _dbContext.ExternalMemberMappings
+                            .FirstOrDefaultAsync(m => m.UserId == item.AssignedToUserId.Value && m.OrganizationId == organizationId && m.Provider == integration.Type, cancellationToken);
 
-                        assigneeExternalId = accountLink?.ExternalUserId;
-
-                        if (assigneeExternalId == null)
+                        if (mapping != null)
                         {
-                            var mapping = await _dbContext.ExternalMemberMappings
-                                .FirstOrDefaultAsync(m => m.UserId == item.AssignedToUserId.Value && m.OrganizationId == organizationId && m.Provider == integration.Type, cancellationToken);
+                            assigneeExternalId = mapping.ExternalMemberId;
+                        }
 
-                            assigneeExternalId = mapping?.ExternalMemberId;
+                        if (assigneeExternalId != null)
+                        {
+                            var isValidAssignee = await provider.ValidateAssigneeAsync(
+                                config,
+                                config.SelectedProjectId,
+                                assigneeExternalId,
+                                cancellationToken);
+
+                            if (!isValidAssignee)
+                            {
+                                assigneeExternalId = null;
+                                missingReason = "NotProjectMember";
+                            }
+                        }
+                        else
+                        {
+                            missingReason = "UserNotConnected";
                         }
                     }
 
@@ -163,6 +178,7 @@ namespace MeetingAssistant.Features.ActionItems.Jobs
                     item.ExternalTaskUrl = result.TaskUrl;
                     item.ExternalProvider = integration.Type;
                     item.Status = result.HasAssignee ? ActionItemStatus.Synced : ActionItemStatus.SyncedNoAssignee;
+                    item.SyncMissingAssigneeReason = missingReason;
                     item.SyncedAtUtc = DateTime.UtcNow;
                     syncedActionItemIds.Add(item.Id);
 

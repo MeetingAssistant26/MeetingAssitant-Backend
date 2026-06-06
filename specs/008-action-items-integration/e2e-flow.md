@@ -467,11 +467,9 @@ Client POST /api/action-items/{id}/sync
   3. Load OrganizationIntegrationConfig for orgId + active provider
   4. Decrypt payload
   5. Resolve external assignee:
-     a. Check ExternalAccountLink for (UserId=AssignedToUserId, Provider=activeProvider)
-        • If found → externalMemberId = link.ExternalUserId
-     b. Else check ExternalMemberMapping for (UserId=AssignedToUserId, Provider=activeProvider)
+     a. Check ExternalMemberMapping for (UserId=AssignedToUserId, Provider=activeProvider)
         • If found → externalMemberId = mapping.ExternalMemberId
-     c. Else → no assignee
+     b. Else → no assignee. Personal ExternalAccountLink records are connection status only and do not assign provider tasks without an explicit mapping.
   6. If externalMemberId exists, verify project membership:
      • provider.ListProjectMembersAsync(config, projectId) (cached for 5 min)
      • If member not in list → no assignee; reason = NotProjectMember
@@ -551,7 +549,7 @@ Client POST /api/meetings/{meetingId}/action-items/sync-all
 | Invalid provider credentials | 401 from provider during sync | Service | Item stays Approved; integration → NeedsReconnect; 207 with Failed result |
 | Project/list deleted | 404 from provider during sync | Service | Item stays Approved; integration → InvalidConfig; 207 with Failed result |
 | Provider rate limit | 429 from provider | ITaskProvider + Polly | Retried 3×; if still failing → result = PendingRetry in 207 |
-| Assignee not connected | No ExternalAccountLink or mapping | Service | Task created without assignee; status = SyncedNoAssignee; reason = UserNotConnected |
+| Assignee not mapped | No ExternalMemberMapping for assigned user | Service | Task created without assignee; status = SyncedNoAssignee; reason = UserNotConnected |
 | Assignee not project member | Member ID not in project members | Service | Task created without assignee; status = SyncedNoAssignee; reason = NotProjectMember |
 | Cross-tenant sync | Org B user, Org A action item | Global filter | 404 Not Found |
 

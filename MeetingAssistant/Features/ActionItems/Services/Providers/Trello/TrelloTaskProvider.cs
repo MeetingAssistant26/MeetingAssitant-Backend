@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Web;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Services.Abstractions;
@@ -36,7 +37,7 @@ namespace MeetingAssistant.Features.ActionItems.Services.Providers.Trello
             try
             {
                 var (key, token) = ExtractCredentials(config);
-                var url = $"https://api.trello.com/1/members/me?key={key}&token={token}";
+                var url = BuildUrl("members/me", key, token, "fields=id,username");
 
                 var response = await _httpClient.GetAsync(url, cancellationToken);
 
@@ -61,16 +62,81 @@ namespace MeetingAssistant.Features.ActionItems.Services.Providers.Trello
             }
         }
 
+        public async Task<IReadOnlyList<ProviderWorkspace>> ListWorkspacesAsync(
+            OrganizationIntegrationConfig config,
+            CancellationToken cancellationToken = default)
+        {
+            var (key, token) = ExtractCredentials(config);
+            var url = BuildUrl("members/me/organizations", key, token, "fields=id,name,displayName,url");
+
+            var response = await _httpClient.GetFromJsonAsync<List<TrelloOrganizationDto>>(url, cancellationToken);
+
+            return response?
+                .Select(o => new ProviderWorkspace
+                {
+                    Id = o.Id,
+                    Name = o.Name,
+                    DisplayName = o.DisplayName,
+                    Url = o.Url
+                })
+                .ToList()
+                ?? new List<ProviderWorkspace>();
+        }
+
+        public async Task<IReadOnlyList<ProviderBoard>> ListBoardsAsync(
+            OrganizationIntegrationConfig config,
+            string workspaceId,
+            bool openOnly,
+            CancellationToken cancellationToken = default)
+        {
+            var (key, token) = ExtractCredentials(config);
+            var url = BuildUrl($"organizations/{workspaceId}/boards", key, token, "fields=id,name,url,idOrganization,closed");
+
+            var response = await _httpClient.GetFromJsonAsync<List<TrelloBoardDto>>(url, cancellationToken);
+            var boards = response ?? new List<TrelloBoardDto>();
+
+            if (openOnly)
+                boards = boards.Where(b => !b.Closed).ToList();
+
+            return boards
+                .Select(b => new ProviderBoard
+                {
+                    Id = b.Id,
+                    Name = b.Name,
+                    Url = b.Url,
+                    WorkspaceId = b.IdOrganization,
+                    Closed = b.Closed
+                })
+                .ToList();
+        }
+
+        public async Task<IReadOnlyList<ProviderMember>> ListBoardMembersAsync(
+            OrganizationIntegrationConfig config,
+            string boardId,
+            CancellationToken cancellationToken = default)
+        {
+            var cacheKey = $"trello_board_members_{boardId}";
+
+            if (!_cache.TryGetValue(cacheKey, out List<TrelloMemberDto>? members) || members == null)
+            {
+                members = await FetchBoardMembersFromApiAsync(config, boardId, cancellationToken);
+                _cache.Set(cacheKey, members, TimeSpan.FromMinutes(5));
+            }
+
+            return MapMembers(members);
+        }
+
         public async Task<IReadOnlyList<ProviderProject>> ListProjectsAsync(
             OrganizationIntegrationConfig config,
             CancellationToken cancellationToken = default)
         {
             var (key, token) = ExtractCredentials(config);
-            var url = $"https://api.trello.com/1/members/me/boards?key={key}&token={token}&fields=id,name";
+            var url = BuildUrl("members/me/boards", key, token, "fields=id,name,url,idOrganization,closed");
 
             var response = await _httpClient.GetFromJsonAsync<List<TrelloBoardDto>>(url, cancellationToken);
 
             return response?
+                .Where(b => !b.Closed)
                 .Select(b => new ProviderProject { Id = b.Id, Name = b.Name })
                 .ToList()
                 ?? new List<ProviderProject>();
@@ -82,7 +148,7 @@ namespace MeetingAssistant.Features.ActionItems.Services.Providers.Trello
             CancellationToken cancellationToken = default)
         {
             var (key, token) = ExtractCredentials(config);
-            var url = $"https://api.trello.com/1/boards/{projectId}/lists?key={key}&token={token}&fields=id,name";
+            var url = BuildUrl($"boards/{projectId}/lists", key, token, "fields=id,name", "filter=open");
 
             var response = await _httpClient.GetFromJsonAsync<List<TrelloListDto>>(url, cancellationToken);
 
@@ -141,21 +207,32 @@ namespace MeetingAssistant.Features.ActionItems.Services.Providers.Trello
             string assigneeExternalId,
             CancellationToken cancellationToken = default)
         {
-            var cacheKey = $"trello_board_members_{projectId}";
-
-            if (!_cache.TryGetValue(cacheKey, out List<TrelloMemberDto>? members) || members == null)
-            {
-                var (key, token) = ExtractCredentials(config);
-                var url = $"https://api.trello.com/1/boards/{projectId}/members?key={key}&token={token}&fields=id,username,fullName";
-
-                members = await _httpClient.GetFromJsonAsync<List<TrelloMemberDto>>(url, cancellationToken)
-                    ?? new List<TrelloMemberDto>();
-
-                _cache.Set(cacheKey, members, TimeSpan.FromMinutes(5));
-            }
-
+            var members = await FetchBoardMembersFromApiAsync(config, projectId, cancellationToken);
             return members.Any(m => m.Id == assigneeExternalId);
         }
+
+        private async Task<List<TrelloMemberDto>> FetchBoardMembersFromApiAsync(
+            OrganizationIntegrationConfig config,
+            string boardId,
+            CancellationToken cancellationToken)
+        {
+            var (key, token) = ExtractCredentials(config);
+            var url = BuildUrl($"boards/{boardId}/members", key, token, "fields=id,username,fullName,avatarUrl");
+
+            return await _httpClient.GetFromJsonAsync<List<TrelloMemberDto>>(url, cancellationToken)
+                ?? new List<TrelloMemberDto>();
+        }
+
+        private static IReadOnlyList<ProviderMember> MapMembers(IEnumerable<TrelloMemberDto> members)
+            => members
+                .Select(m => new ProviderMember
+                {
+                    Id = m.Id,
+                    Username = m.Username,
+                    FullName = m.FullName,
+                    AvatarUrl = m.AvatarUrl
+                })
+                .ToList();
 
         private (string Key, string Token) ExtractCredentials(OrganizationIntegrationConfig config)
         {
@@ -165,12 +242,35 @@ namespace MeetingAssistant.Features.ActionItems.Services.Providers.Trello
             var token = doc.RootElement.GetProperty("apiToken").GetString()!;
             return (key, token);
         }
+
+        private static string BuildUrl(string path, string key, string token, string fields, string? extraQuery = null)
+        {
+            var query = $"key={HttpUtility.UrlEncode(key)}&token={HttpUtility.UrlEncode(token)}&{fields}";
+            if (!string.IsNullOrEmpty(extraQuery))
+                query += $"&{extraQuery}";
+
+            return $"https://api.trello.com/1/{path}?{query}";
+        }
+    }
+
+    public class TrelloOrganizationDto
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public string Url { get; set; } = string.Empty;
     }
 
     public class TrelloBoardDto
     {
         public string Id { get; set; } = string.Empty;
         public string Name { get; set; } = string.Empty;
+        public string Url { get; set; } = string.Empty;
+
+        [JsonPropertyName("idOrganization")]
+        public string? IdOrganization { get; set; }
+
+        public bool Closed { get; set; }
     }
 
     public class TrelloListDto
@@ -191,5 +291,6 @@ namespace MeetingAssistant.Features.ActionItems.Services.Providers.Trello
         public string Id { get; set; } = string.Empty;
         public string Username { get; set; } = string.Empty;
         public string FullName { get; set; } = string.Empty;
+        public string? AvatarUrl { get; set; }
     }
 }

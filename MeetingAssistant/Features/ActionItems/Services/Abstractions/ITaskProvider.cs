@@ -14,6 +14,21 @@ namespace MeetingAssistant.Features.ActionItems.Services.Abstractions
             OrganizationIntegrationConfig config,
             CancellationToken cancellationToken = default);
 
+        Task<IReadOnlyList<ProviderWorkspace>> ListWorkspacesAsync(
+            OrganizationIntegrationConfig config,
+            CancellationToken cancellationToken = default);
+
+        Task<IReadOnlyList<ProviderBoard>> ListBoardsAsync(
+            OrganizationIntegrationConfig config,
+            string workspaceId,
+            bool openOnly,
+            CancellationToken cancellationToken = default);
+
+        Task<IReadOnlyList<ProviderMember>> ListBoardMembersAsync(
+            OrganizationIntegrationConfig config,
+            string boardId,
+            CancellationToken cancellationToken = default);
+
         Task<IReadOnlyList<ProviderList>> ListListsAsync(
             OrganizationIntegrationConfig config,
             string projectId,

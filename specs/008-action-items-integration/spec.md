@@ -58,7 +58,7 @@ An Org Admin can connect the organization's external task provider account (e.g.
 
 ### User Story 4 - Sync Approved Action Items to External Provider (Priority: P2)
 
-Approved action items are manually synced to the configured external provider project and list as tasks by hosts or cohosts. If the assigned user has connected their personal provider account and is a member of the selected project, they are assigned to the task. Otherwise, the task is created without an assignee, and the reason is recorded.
+Approved action items are manually synced to the configured external provider project and list as tasks by hosts or cohosts. If the assigned user has an explicit organization member mapping to a provider board member and that provider member is still on the selected project, they are assigned to the task. Otherwise, the task is created without an assignee, and the reason is recorded. Personal provider account links indicate connection status, but task assignment is driven by explicit organization member mappings.
 
 **Why this priority**: This is the final delivery step that bridges the meeting platform with the organization's task management tool. It depends on the review and connection steps but delivers the core value proposition.
 

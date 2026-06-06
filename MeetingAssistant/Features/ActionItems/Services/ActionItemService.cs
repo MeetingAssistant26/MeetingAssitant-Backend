@@ -318,20 +318,12 @@ namespace MeetingAssistant.Features.ActionItems.Services
 
             if (item.AssignedToUserId.HasValue)
             {
-                var accountLink = await _dbContext.ExternalAccountLinks
-                    .FirstOrDefaultAsync(l => l.UserId == item.AssignedToUserId.Value && l.OrganizationId == organizationId && l.Provider == integration.Type, cancellationToken);
+                var mapping = await _dbContext.ExternalMemberMappings
+                    .FirstOrDefaultAsync(m => m.UserId == item.AssignedToUserId.Value && m.OrganizationId == organizationId && m.Provider == integration.Type, cancellationToken);
 
-                if (accountLink != null)
+                if (mapping != null)
                 {
-                    assigneeExternalId = accountLink.ExternalUserId;
-                }
-                else
-                {
-                    var mapping = await _dbContext.ExternalMemberMappings
-                        .FirstOrDefaultAsync(m => m.UserId == item.AssignedToUserId.Value && m.OrganizationId == organizationId && m.Provider == integration.Type, cancellationToken);
-
-                    if (mapping != null)
-                        assigneeExternalId = mapping.ExternalMemberId;
+                    assigneeExternalId = mapping.ExternalMemberId;
                 }
 
                 if (assigneeExternalId != null)
