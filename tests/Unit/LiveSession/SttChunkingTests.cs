@@ -128,6 +128,28 @@ namespace tests.Unit.LiveSession
             segments[0].EndMs.Should().Be(90_000);
         }
 
+        [Fact]
+        public void ParseSegments_ShouldDropSegmentsWithTimestampsBeyondChunkDuration()
+        {
+            var participantId = Guid.NewGuid();
+            var segments = ParseSegments(participantId, """
+                {
+                  "segments": [
+                    { "start": 1.0, "end": 2.0, "text": "valid", "avg_logprob": -0.2 },
+                    { "start": 43618.167, "end": 43619.000, "text": "impossible", "avg_logprob": -0.1 },
+                    { "start": 598.0, "end": 605.0, "text": "clamped", "avg_logprob": -0.3 }
+                  ]
+                }
+                """, 120_000, maxRelativeDurationMs: 600_000);
+
+            segments.Should().HaveCount(2);
+            segments.Select(x => x.Text).Should().Equal("valid", "clamped");
+            segments[0].StartMs.Should().Be(121_000);
+            segments[0].EndMs.Should().Be(122_000);
+            segments[1].StartMs.Should().Be(718_000);
+            segments[1].EndMs.Should().Be(720_000);
+        }
+
         [Theory]
         [InlineData("tracks/meeting/alice.wav", "audio/wav")]
         [InlineData("tracks/meeting/alice.mp3", "audio/mpeg")]
@@ -145,7 +167,8 @@ namespace tests.Unit.LiveSession
         private static IReadOnlyList<TranscriptSegment> ParseSegments(
             Guid participantUserId,
             string json,
-            long offsetMs)
+            long offsetMs,
+            long? maxRelativeDurationMs = null)
         {
             var method = typeof(SttService).GetMethod(
                 "ParseSegments",
@@ -154,7 +177,7 @@ namespace tests.Unit.LiveSession
             method.Should().NotBeNull();
 
             using var document = JsonDocument.Parse(json);
-            var result = method!.Invoke(null, [participantUserId, document.RootElement, offsetMs]);
+            var result = method!.Invoke(null, [participantUserId, document.RootElement, offsetMs, maxRelativeDurationMs]);
 
             result.Should().BeAssignableTo<IReadOnlyList<TranscriptSegment>>();
             return (IReadOnlyList<TranscriptSegment>)result!;

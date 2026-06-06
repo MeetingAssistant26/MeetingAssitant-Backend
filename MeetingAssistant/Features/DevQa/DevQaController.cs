@@ -38,6 +38,7 @@ public sealed class DevQaController(
     IBackgroundJobClient backgroundJobClient,
     IServiceProvider serviceProvider,
     IQaSttFailureInjectionService qaSttFailureInjectionService,
+    IMeetingTranscriptPreviewService meetingTranscriptPreviewService,
     IHostEnvironment environment,
     IConfiguration configuration,
     ILogger<DevQaController> logger) : ControllerBase
@@ -61,6 +62,7 @@ public sealed class DevQaController(
     private readonly IBackgroundJobClient _backgroundJobClient = backgroundJobClient;
     private readonly IServiceProvider _serviceProvider = serviceProvider;
     private readonly IQaSttFailureInjectionService _qaSttFailureInjectionService = qaSttFailureInjectionService;
+    private readonly IMeetingTranscriptPreviewService _meetingTranscriptPreviewService = meetingTranscriptPreviewService;
     private readonly IHostEnvironment _environment = environment;
     private readonly IConfiguration _configuration = configuration;
     private readonly ILogger<DevQaController> _logger = logger;
@@ -1591,6 +1593,51 @@ public sealed class DevQaController(
             cancellationToken);
     }
 
+    [HttpPost("meetings/{meetingId:guid}/transcript-preview")]
+    [ProducesResponseType(typeof(QaMeetingTranscriptPreviewResponse), StatusCodes.Status200OK)]
+    public async Task<IActionResult> PreviewMeetingTranscript(
+        [FromRoute] Guid meetingId,
+        CancellationToken cancellationToken)
+    {
+        if (!IsQaHarnessEnabled())
+            return NotFound();
+
+        if (meetingId == Guid.Empty)
+            return BadRequest(new { error = "MeetingId is required." });
+
+        var preview = await _meetingTranscriptPreviewService.PreviewAsync(meetingId, cancellationToken);
+        if (preview is null)
+        {
+            var meetingExists = await _dbContext.Meetings
+                .IgnoreQueryFilters()
+                .AnyAsync(x => x.Id == meetingId, cancellationToken);
+
+            return meetingExists
+                ? BadRequest(new { error = "No transcript preview was produced for this meeting." })
+                : NotFound(new { error = "Meeting not found." });
+        }
+
+        return Ok(new QaMeetingTranscriptPreviewResponse(
+            preview.OrganizationId,
+            preview.MeetingId,
+            preview.FullText,
+            preview.SegmentsJson,
+            preview.SttModel,
+            preview.CompletenessStatus.ToString(),
+            preview.Warnings,
+            preview.ExpectedAudioFragmentCount,
+            preview.TranscribedAudioFragmentCount,
+            preview.RetryableFailedAudioFragmentCount,
+            preview.TerminalFailedAudioFragmentCount,
+            preview.GeneratedAtUtc,
+            preview.ExistingTranscriptId,
+            preview.ExistingTranscriptHash,
+            preview.ExistingTranscriptRevision,
+            preview.PreviewTranscriptHash,
+            preview.PreviewTranscriptRevision,
+            preview.WouldChangeExistingTranscript));
+    }
+
     private bool IsQaHarnessEnabled()
     {
         if (_environment.IsDevelopment() || _environment.IsEnvironment("Testing"))
@@ -2879,3 +2926,23 @@ public sealed record QaRagDuplicateCurrentResponse(
     Guid ArtifactId,
     int ArtifactVersion,
     int DuplicateCurrentCount);
+
+public sealed record QaMeetingTranscriptPreviewResponse(
+    Guid OrganizationId,
+    Guid MeetingId,
+    string FullText,
+    string SegmentsJson,
+    string SttModel,
+    string CompletenessStatus,
+    IReadOnlyList<string> Warnings,
+    int ExpectedAudioFragmentCount,
+    int TranscribedAudioFragmentCount,
+    int RetryableFailedAudioFragmentCount,
+    int TerminalFailedAudioFragmentCount,
+    DateTime GeneratedAtUtc,
+    Guid? ExistingTranscriptId,
+    string? ExistingTranscriptHash,
+    int? ExistingTranscriptRevision,
+    string PreviewTranscriptHash,
+    int PreviewTranscriptRevision,
+    bool WouldChangeExistingTranscript);

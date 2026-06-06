@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -68,16 +67,49 @@ namespace MeetingAssistant.Features.LiveSession.Services
             string storageObjectKey,
             CancellationToken ct)
         {
-            using var multipart = new MultipartFormDataContent();
-            using var fileContent = new MinioObjectContent(minioClient, _storage.Bucket, storageObjectKey, ct);
-            fileContent.Headers.ContentType = new MediaTypeHeaderValue(ResolveAudioContentType(storageObjectKey));
+            var tempRoot = Path.Combine(Path.GetTempPath(), $"stt-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempRoot);
 
-            multipart.Add(fileContent, "file", Path.GetFileName(storageObjectKey));
-            multipart.Add(new StringContent(_stt.Model), "model");
-            multipart.Add(new StringContent("verbose_json"), "response_format");
-            multipart.Add(new StringContent("segment"), "timestamp_granularities[]");
+            try
+            {
+                var extension = Path.GetExtension(storageObjectKey);
+                if (string.IsNullOrWhiteSpace(extension))
+                {
+                    extension = ".ogg";
+                }
 
-            return await SendTranscriptionRequestAsync(participantUserId, multipart, 0, ct);
+                var sourceFile = Path.Combine(tempRoot, $"source{extension}");
+                await DownloadObjectToFileAsync(minioClient, storageObjectKey, sourceFile, ct);
+                var durationSeconds = await ReadDurationSecondsAsync(sourceFile, ct);
+
+                using var multipart = new MultipartFormDataContent();
+                await using var sourceStream = File.OpenRead(sourceFile);
+                using var fileContent = new StreamContent(sourceStream, CopyBufferSize);
+                fileContent.Headers.ContentType = new MediaTypeHeaderValue(ResolveAudioContentType(storageObjectKey));
+
+                multipart.Add(fileContent, "file", Path.GetFileName(storageObjectKey));
+                multipart.Add(new StringContent(_stt.Model), "model");
+                multipart.Add(new StringContent("verbose_json"), "response_format");
+                multipart.Add(new StringContent("segment"), "timestamp_granularities[]");
+
+                return await SendTranscriptionRequestAsync(
+                    participantUserId,
+                    multipart,
+                    offsetMs: 0,
+                    maxRelativeDurationMs: ToMilliseconds(durationSeconds),
+                    ct);
+            }
+            finally
+            {
+                try
+                {
+                    Directory.Delete(tempRoot, true);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to clean temporary STT directory {Directory}", tempRoot);
+                }
+            }
         }
 
         private async Task<IReadOnlyList<TranscriptSegment>> TranscribeChunkedAsync(
@@ -123,6 +155,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         participantUserId,
                         multipart,
                         (long)Math.Round(window.StartSeconds * 1000),
+                        ToMilliseconds(window.EndSeconds - window.StartSeconds),
                         ct);
 
                     results.AddRange(chunkSegments);
@@ -237,6 +270,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             Guid? participantUserId,
             MultipartFormDataContent multipartContent,
             long offsetMs,
+            long? maxRelativeDurationMs,
             CancellationToken ct)
         {
             var baseUrl = NormalizeBaseUrl(_stt.BaseUrl);
@@ -255,7 +289,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             try
             {
                 using var document = JsonDocument.Parse(body);
-                return ParseSegments(participantUserId, document.RootElement, offsetMs);
+                return ParseSegments(participantUserId, document.RootElement, offsetMs, maxRelativeDurationMs);
             }
             catch (JsonException ex)
             {
@@ -272,7 +306,8 @@ namespace MeetingAssistant.Features.LiveSession.Services
         private static IReadOnlyList<TranscriptSegment> ParseSegments(
             Guid? participantUserId,
             JsonElement responseRoot,
-            long offsetMs)
+            long offsetMs,
+            long? maxRelativeDurationMs = null)
         {
             var segments = new List<TranscriptSegment>();
 
@@ -301,8 +336,21 @@ namespace MeetingAssistant.Features.LiveSession.Services
                         ? parsedAvgLogProb
                         : null;
 
-                    var startMs = offsetMs + (long)Math.Round(startSeconds * 1000);
-                    var endMs = offsetMs + (long)Math.Round(endSeconds * 1000);
+                    var relativeStartMs = (long)Math.Round(startSeconds * 1000);
+                    var relativeEndMs = (long)Math.Round(endSeconds * 1000);
+
+                    if (!TryNormalizeRelativeTimestampWindow(
+                            relativeStartMs,
+                            relativeEndMs,
+                            maxRelativeDurationMs,
+                            out var normalizedStartMs,
+                            out var normalizedEndMs))
+                    {
+                        continue;
+                    }
+
+                    var startMs = offsetMs + normalizedStartMs;
+                    var endMs = offsetMs + normalizedEndMs;
 
                     segments.Add(new TranscriptSegment(
                         participantUserId,
@@ -338,6 +386,49 @@ namespace MeetingAssistant.Features.LiveSession.Services
 
             return segments;
         }
+
+        private static bool TryNormalizeRelativeTimestampWindow(
+            long relativeStartMs,
+            long relativeEndMs,
+            long? maxRelativeDurationMs,
+            out long normalizedStartMs,
+            out long normalizedEndMs)
+        {
+            normalizedStartMs = relativeStartMs;
+            normalizedEndMs = relativeEndMs;
+
+            if (relativeStartMs < 0)
+            {
+                relativeStartMs = 0;
+            }
+
+            if (relativeEndMs < relativeStartMs)
+            {
+                relativeEndMs = relativeStartMs;
+            }
+
+            if (!maxRelativeDurationMs.HasValue || maxRelativeDurationMs.Value <= 0)
+            {
+                normalizedStartMs = relativeStartMs;
+                normalizedEndMs = relativeEndMs;
+                return true;
+            }
+
+            var maxMs = maxRelativeDurationMs.Value;
+            const long toleranceMs = 2_000;
+
+            if (relativeStartMs > maxMs + toleranceMs)
+            {
+                return false;
+            }
+
+            normalizedStartMs = Math.Min(relativeStartMs, maxMs);
+            normalizedEndMs = Math.Min(Math.Max(relativeEndMs, normalizedStartMs), maxMs);
+            return true;
+        }
+
+        private static long ToMilliseconds(double seconds)
+            => Math.Max(0, (long)Math.Round(seconds * 1000));
 
         private static bool LooksLikeStructuredTranscriptJson(string text)
         {
@@ -593,34 +684,5 @@ namespace MeetingAssistant.Features.LiveSession.Services
         }
 
         private readonly record struct ChunkWindow(double StartSeconds, double EndSeconds);
-
-        private sealed class MinioObjectContent(
-            IMinioClient minioClient,
-            string bucketName,
-            string objectKey,
-            CancellationToken cancellationToken) : HttpContent
-        {
-            private readonly IMinioClient _minioClient = minioClient;
-            private readonly string _bucketName = bucketName;
-            private readonly string _objectKey = objectKey;
-            private readonly CancellationToken _cancellationToken = cancellationToken;
-
-            protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
-            {
-                var getObjectArgs = new GetObjectArgs()
-                    .WithBucket(_bucketName)
-                    .WithObject(_objectKey)
-                    .WithCallbackStream(async (source, callbackCt) =>
-                        await source.CopyToAsync(stream, CopyBufferSize, callbackCt));
-
-                await _minioClient.GetObjectAsync(getObjectArgs, _cancellationToken);
-            }
-
-            protected override bool TryComputeLength(out long length)
-            {
-                length = -1;
-                return false;
-            }
-        }
     }
 }

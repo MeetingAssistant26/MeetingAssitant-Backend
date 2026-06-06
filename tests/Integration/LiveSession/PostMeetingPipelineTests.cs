@@ -2,6 +2,7 @@ using FluentAssertions;
 using Livekit.Server.Sdk.Dotnet;
 using MeetingAssistant.Features.ActionItems.Models.Entities;
 using MeetingAssistant.Features.ActionItems.Models.Enums;
+using MeetingAssistant.Features.DevQa;
 using MeetingAssistant.Features.LiveSession.Infrastructure;
 using MeetingAssistant.Features.LiveSession.Handlers;
 using MeetingAssistant.Features.LiveSession.Jobs;
@@ -206,13 +207,28 @@ namespace tests.Integration.LiveSession
             const string assistantIdentity = "agent-AJ_test";
             const string assistantTrackSid = "TR_ASSISTANT";
             var assistantKey = $"tracks/mtg-{meetingId}/{assistantIdentity}/track-{assistantTrackSid}.ogg";
-            var assistantFragmentId = db.AddAvailableAssistantAudioFragment(
+            db.AddAvailableAssistantAudioFragment(
                 meetingId,
                 orgId,
                 assistantIdentity,
                 assistantKey,
                 assistantTrackSid,
                 trackPublishedAtUtc: roomStartedAtUtc.AddSeconds(8));
+
+            db.DbContext.AiAssistantTraceEvents.Add(new AiAssistantTraceEvent
+            {
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                SessionId = "trace-session-assistant",
+                TurnId = "trace-turn-assistant",
+                Sequence = 50,
+                EventType = AiAssistantTraceEventTypes.AssistantSpeechCompleted,
+                OccurredAtUtc = roomStartedAtUtc.AddSeconds(8),
+                StepType = "assistant_speech",
+                Text = "Hello Alice, I can help with that.",
+                AudioDurationMs = 1_500
+            });
+            await db.DbContext.SaveChangesAsync();
 
             var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
             {
@@ -221,11 +237,6 @@ namespace tests.Integration.LiveSession
                     [
                         new TranscriptSegment(aliceId, 2_000, 3_000, "Hello assistant", 0.95),
                         new TranscriptSegment(aliceId, 9_000, 10_000, "Thanks for helping", 0.93)
-                    ]),
-                [assistantKey] = new(
-                    "whisper-large-v3",
-                    [
-                        new TranscriptSegment(null, 0, 1_500, "Hello Alice, I can help with that.", 0.92)
                     ])
             });
 
@@ -238,6 +249,8 @@ namespace tests.Integration.LiveSession
 
             await transcriptJob.RunAsync(meetingId, orgId);
             await transcriptJob.RunAsync(meetingId, orgId);
+
+            stt.Calls.Should().NotContain(assistantKey, "assistant egress audio must not be sent to STT when trace text is available");
 
             var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
             transcript.FullText.Split(Environment.NewLine, StringSplitOptions.None).Should().Equal(
@@ -255,15 +268,15 @@ namespace tests.Integration.LiveSession
             var assistantSegment = segments.Single(x => x.SpeakerRole == "assistant");
             assistantSegment.ParticipantUserId.Should().BeNull();
             assistantSegment.SpeakerDisplayName.Should().Be("AI Assistant");
-            assistantSegment.Source.Should().Be("egress_audio");
-            assistantSegment.ParticipantAudioFragmentId.Should().Be(assistantFragmentId);
-            assistantSegment.TraceEventId.Should().BeNull();
-            assistantSegment.SessionId.Should().BeNull();
-            assistantSegment.TurnId.Should().BeNull();
+            assistantSegment.Source.Should().Be("ai_assistant_trace");
+            assistantSegment.ParticipantAudioFragmentId.Should().BeNull();
+            assistantSegment.TraceEventId.Should().NotBeNullOrWhiteSpace();
+            assistantSegment.SessionId.Should().Be("trace-session-assistant");
+            assistantSegment.TurnId.Should().Be("trace-turn-assistant");
             assistantSegment.StartMs.Should().Be(8_000);
             assistantSegment.RoomRelativeStartMs.Should().Be(8_000);
             assistantSegment.AbsoluteStartUtc.Should().Be(roomStartedAtUtc.AddSeconds(8));
-            assistantSegment.TimestampOffsetSource.Should().Be("fragment_track_published");
+            assistantSegment.TimestampOffsetSource.Should().Be("assistant_speech_completed");
 
             var summarizer = new StubSummarizerService(new SummaryResult(
                 "Summary includes assistant response.",
@@ -282,7 +295,7 @@ namespace tests.Integration.LiveSession
         }
 
         [Fact]
-        public async Task TranscriptGeneration_ShouldPersistAssistantOnlyTranscript_WhenNoParticipantFragmentsExist()
+        public async Task TranscriptGeneration_ShouldSkipAssistantAudioWithoutTrace_WhenNoParticipantFragmentsExist()
         {
             await using var db = await LiveSessionTestDb.CreateAsync();
             var orgId = db.SeedOrganization();
@@ -317,18 +330,58 @@ namespace tests.Integration.LiveSession
                 NullLogger<GenerateMeetingTranscriptJob>.Instance);
 
             await transcriptJob.RunAsync(meetingId, orgId);
+
+            stt.Calls.Should().BeEmpty("assistant egress audio without trace must not be STT-transcribed");
+            db.DbContext.MeetingTranscripts.Should().BeEmpty("no hallucinated assistant transcript should be persisted");
+            publisher.Notifications.Should().BeEmpty();
+        }
+
+        [Fact]
+        public async Task TranscriptGeneration_ShouldPersistAssistantOnlyTranscript_FromAssistantTrace_WhenNoParticipantFragmentsExist()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 02, 12, 45, 00, DateTimeKind.Utc);
+
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            db.DbContext.AiAssistantTraceEvents.Add(new AiAssistantTraceEvent
+            {
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                SessionId = "trace-session-only",
+                TurnId = "trace-turn-only",
+                Sequence = 10,
+                EventType = AiAssistantTraceEventTypes.AssistantSpeechCompleted,
+                OccurredAtUtc = roomStartedAtUtc.AddSeconds(6),
+                StepType = "assistant_speech",
+                Text = "I am ready to help when participants join.",
+                AudioDurationMs = 1_000
+            });
+            await db.DbContext.SaveChangesAsync();
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>());
+            var publisher = new CollectingPublisher();
+            var transcriptJob = new GenerateMeetingTranscriptJob(
+                db.DbContext,
+                stt,
+                publisher,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
             await transcriptJob.RunAsync(meetingId, orgId);
 
-            stt.Calls.Distinct().Should().ContainSingle().Which.Should().Be(assistantKey);
+            stt.Calls.Should().BeEmpty();
             var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
             transcript.FullText.Should().Be("[00:00:06 AI Assistant] I am ready to help when participants join.");
-            transcript.SttModel.Should().Be("whisper-large-v3");
+            transcript.SttModel.Should().Be("ai-debug-trace");
 
             var segment = DeserializePersistedSegments(transcript.SegmentsJson).Should().ContainSingle().Subject;
             segment.SpeakerRole.Should().Be("assistant");
             segment.ParticipantUserId.Should().BeNull();
-            segment.Source.Should().Be("egress_audio");
-            segment.ParticipantAudioFragmentId.Should().NotBeNull();
+            segment.Source.Should().Be("ai_assistant_trace");
+            segment.ParticipantAudioFragmentId.Should().BeNull();
             segment.RoomRelativeStartMs.Should().Be(6_000);
             segment.AbsoluteStartUtc.Should().Be(roomStartedAtUtc.AddSeconds(6));
 
@@ -434,16 +487,21 @@ namespace tests.Integration.LiveSession
             stt.Calls.Should().BeEmpty();
             var transcript = db.DbContext.MeetingTranscripts.Single(x => x.MeetingId == meetingId);
             transcript.FullText.Split(Environment.NewLine, StringSplitOptions.None).Should().Equal(
-                "[00:00:04 Alice] Please recover this transcript from traces.");
+                "[00:00:04 Alice] Please recover this transcript from traces.",
+                "[00:00:12 AI Assistant] Recovered from the LLM trace.");
             transcript.SttModel.Should().Be("ai-debug-trace");
 
             var segments = DeserializePersistedSegments(transcript.SegmentsJson);
-            segments.Should().ContainSingle();
+            segments.Should().HaveCount(2);
             var participantSegment = segments.Single(x => x.SpeakerRole == "participant");
             participantSegment.ParticipantUserId.Should().Be(aliceId);
             participantSegment.Source.Should().Be("ai_assistant_trace");
             participantSegment.TimestampOffsetSource.Should().Be("trace_turn_started");
-            segments.Should().NotContain(x => x.SpeakerRole == "assistant");
+            var assistantSegment = segments.Single(x => x.SpeakerRole == "assistant");
+            assistantSegment.Source.Should().Be("ai_assistant_trace");
+            assistantSegment.ParticipantAudioFragmentId.Should().BeNull();
+            assistantSegment.Text.Should().Be("Recovered from the LLM trace.");
+            assistantSegment.TimestampOffsetSource.Should().Be("llm_completed");
 
             publisher.Notifications
                 .OfType<MeetingTranscriptReadyEvent>()
@@ -1677,6 +1735,142 @@ namespace tests.Integration.LiveSession
                 json,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
 
+        [Fact]
+        public async Task WebhookService_ShouldPersistEgressDurationSeconds_FromPayloadAndFallbackSpan()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 05, 10, 00, 00, DateTimeKind.Utc);
+
+            var aliceId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, aliceId);
+
+            var jobs = new FakeBackgroundJobClient();
+            var webhookService = new WebhookService(
+                db.DbContext,
+                jobs,
+                Options.Create(new LiveKitOptions { EgressHost = "http://egress" }),
+                NullLogger<WebhookService>.Instance);
+
+            const string trackSid = "TR_DURATION";
+            var sourceUrl = BuildEgressSourceUrl(meetingId, aliceId, trackSid);
+            var startedAtUtc = roomStartedAtUtc.AddSeconds(10);
+            var endedAtUtc = roomStartedAtUtc.AddSeconds(18);
+
+            var payloadDurationSeconds = CreateEgressEndedWebhook(
+                meetingId,
+                "evt-egress-duration-payload",
+                trackSid,
+                sourceUrl,
+                startedAtUtc,
+                endedAtUtc,
+                durationNanoseconds: 7_500_000_000L);
+            (await webhookService.ProcessAsync(payloadDurationSeconds.Event, payloadDurationSeconds.RawPayload))
+                .IsSuccess.Should().BeTrue();
+
+            var payloadFragment = db.DbContext.ParticipantAudioFragments
+                .Single(x => x.MeetingId == meetingId && x.TrackSid == trackSid);
+            payloadFragment.DurationSeconds.Should().Be(7.5);
+
+            const string fallbackTrackSid = "TR_DURATION_FALLBACK";
+            var fallbackSourceUrl = BuildEgressSourceUrl(meetingId, aliceId, fallbackTrackSid);
+            var fallbackStartedAtUtc = roomStartedAtUtc.AddSeconds(20);
+            var fallbackEndedAtUtc = roomStartedAtUtc.AddSeconds(28);
+            var fallbackDuration = CreateEgressEndedWebhook(
+                meetingId,
+                "evt-egress-duration-fallback",
+                fallbackTrackSid,
+                fallbackSourceUrl,
+                fallbackStartedAtUtc,
+                fallbackEndedAtUtc);
+            (await webhookService.ProcessAsync(fallbackDuration.Event, fallbackDuration.RawPayload))
+                .IsSuccess.Should().BeTrue();
+
+            var fallbackFragment = db.DbContext.ParticipantAudioFragments
+                .Single(x => x.MeetingId == meetingId && x.TrackSid == fallbackTrackSid);
+            fallbackFragment.DurationSeconds.Should().Be(8);
+        }
+
+        [Fact]
+        public async Task MeetingTranscriptPreviewService_ShouldReturnCandidateWithoutPersistingExistingTranscript()
+        {
+            await using var db = await LiveSessionTestDb.CreateAsync();
+            var orgId = db.SeedOrganization();
+            var meetingId = db.SeedMeeting(orgId);
+            var roomStartedAtUtc = new DateTime(2026, 06, 05, 11, 00, 00, DateTimeKind.Utc);
+
+            var meeting = db.DbContext.Meetings.Single(x => x.Id == meetingId);
+            meeting.RoomActivatedAtUtc = roomStartedAtUtc;
+
+            var aliceId = db.SeedUser("Alice");
+            db.AddParticipant(meetingId, orgId, aliceId);
+
+            const string trackSid = "TR_PREVIEW";
+            var aliceKey = $"tracks/mtg-{meetingId}/user:{aliceId}/track-{trackSid}.ogg";
+            db.AddAvailableAudioFragment(
+                meetingId,
+                orgId,
+                aliceId,
+                aliceKey,
+                trackSid,
+                trackPublishedAtUtc: roomStartedAtUtc.AddSeconds(2));
+
+            const string existingText = "[00:00:00 Alice] stale transcript text";
+            var existingTranscript = new MeetingTranscript
+            {
+                OrganizationId = orgId,
+                MeetingId = meetingId,
+                FullText = existingText,
+                SegmentsJson = "[]",
+                SttModel = "stale-model",
+                GeneratedAtUtc = roomStartedAtUtc.AddMinutes(-5),
+                CompletenessStatus = MeetingTranscriptCompletenessStatus.Complete
+            };
+            InitializeNew(existingTranscript, existingText);
+            db.DbContext.MeetingTranscripts.Add(existingTranscript);
+            await db.DbContext.SaveChangesAsync();
+
+            var existingSnapshot = new
+            {
+                existingTranscript.Id,
+                existingTranscript.FullText,
+                existingTranscript.SegmentsJson,
+                existingTranscript.TranscriptHash,
+                existingTranscript.TranscriptRevision
+            };
+
+            var stt = new StubSttService(new Dictionary<string, TrackTranscriptionResult>
+            {
+                [aliceKey] = new(
+                    "whisper-large-v3",
+                    [new TranscriptSegment(aliceId, 0, 1_000, "fresh preview transcript", 0.95)])
+            });
+
+            var previewService = new MeetingTranscriptPreviewService(
+                db.DbContext,
+                stt,
+                NullLogger<GenerateMeetingTranscriptJob>.Instance);
+
+            var preview = await previewService.PreviewAsync(meetingId);
+            preview.Should().NotBeNull();
+            preview!.FullText.Should().Contain("fresh preview transcript");
+            preview.SttModel.Should().Be("whisper-large-v3");
+            preview.WouldChangeExistingTranscript.Should().BeTrue();
+            preview.ExistingTranscriptId.Should().Be(existingSnapshot.Id);
+            preview.ExistingTranscriptHash.Should().Be(existingSnapshot.TranscriptHash);
+            preview.ExistingTranscriptRevision.Should().Be(existingSnapshot.TranscriptRevision);
+
+            var persisted = await db.DbContext.MeetingTranscripts
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.MeetingId == meetingId);
+            persisted.Id.Should().Be(existingSnapshot.Id);
+            persisted.FullText.Should().Be(existingSnapshot.FullText);
+            persisted.SegmentsJson.Should().Be(existingSnapshot.SegmentsJson);
+            persisted.TranscriptHash.Should().Be(existingSnapshot.TranscriptHash);
+            persisted.TranscriptRevision.Should().Be(existingSnapshot.TranscriptRevision);
+        }
+
         private static WebhookEvent WithCreatedAt(WebhookEvent webhookEvent, DateTime occurredAtUtc)
         {
             webhookEvent.CreatedAt = new DateTimeOffset(occurredAtUtc).ToUnixTimeSeconds();
@@ -1701,7 +1895,8 @@ namespace tests.Integration.LiveSession
             string trackSid,
             string sourceUrl,
             DateTime startedAtUtc,
-            DateTime endedAtUtc)
+            DateTime endedAtUtc,
+            long? durationNanoseconds = null)
         {
             var evt = new WebhookEvent
             {
@@ -1731,6 +1926,7 @@ namespace tests.Integration.LiveSession
                     trackId = trackSid,
                     startedAt = new DateTimeOffset(startedAtUtc).ToUnixTimeSeconds(),
                     endedAt = new DateTimeOffset(endedAtUtc).ToUnixTimeSeconds(),
+                    duration = durationNanoseconds,
                     fileResults = new[]
                     {
                         new

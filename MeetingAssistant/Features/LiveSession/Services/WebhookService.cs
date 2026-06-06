@@ -255,6 +255,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                 hasRecoverableBackup ? occurredAtUtc : null,
                                 status,
                                 file?.Size,
+                                egressDetails.DurationSeconds,
                                 existingFragment,
                                 trackPublishedAtUtc: null,
                                 egressStartedAtUtc: egressDetails.StartedAtUtc,
@@ -317,6 +318,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                     backupStorageAvailableAtUtc: null,
                                     status: ParticipantAudioFragmentStatus.Pending,
                                     sizeBytes: null,
+                                    durationSeconds: null,
                                     existingFragment: null,
                                     trackPublishedAtUtc: occurredAtUtc,
                                     egressStartedAtUtc: null,
@@ -365,6 +367,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                                 backupStorageAvailableAtUtc: null,
                                 status: ParticipantAudioFragmentStatus.Pending,
                                 sizeBytes: null,
+                                durationSeconds: null,
                                 existingFragment: null,
                                 trackPublishedAtUtc: occurredAtUtc,
                                 egressStartedAtUtc: null,
@@ -559,6 +562,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             DateTime? backupStorageAvailableAtUtc,
             ParticipantAudioFragmentStatus status,
             long? sizeBytes,
+            double? durationSeconds,
             ParticipantAudioFragment? existingFragment,
             DateTime? trackPublishedAtUtc,
             DateTime? egressStartedAtUtc,
@@ -614,6 +618,10 @@ namespace MeetingAssistant.Features.LiveSession.Services
             fragment.BackupStoragePath = string.IsNullOrWhiteSpace(backupStoragePath) ? fragment.BackupStoragePath : backupStoragePath;
             fragment.BackupStorageAvailableAtUtc = backupStorageAvailableAtUtc ?? fragment.BackupStorageAvailableAtUtc;
             fragment.SizeBytes = sizeBytes ?? fragment.SizeBytes;
+            if (durationSeconds.HasValue && durationSeconds.Value > 0)
+            {
+                fragment.DurationSeconds = durationSeconds.Value;
+            }
             fragment.TrackPublishedAtUtc ??= trackPublishedAtUtc;
             fragment.EgressStartedAtUtc = egressStartedAtUtc ?? fragment.EgressStartedAtUtc;
             fragment.EgressEndedAtUtc = egressEndedAtUtc ?? fragment.EgressEndedAtUtc;
@@ -784,7 +792,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
         {
             if (string.IsNullOrWhiteSpace(rawPayload))
             {
-                return new EgressWebhookDetails(null, null, null, null, null, null, backupStorageUsedFromSdk);
+                return new EgressWebhookDetails(null, null, null, null, null, null, null, backupStorageUsedFromSdk);
             }
 
             try
@@ -793,7 +801,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 if (!document.RootElement.TryGetProperty("egressInfo", out var egressInfo)
                     || egressInfo.ValueKind != JsonValueKind.Object)
                 {
-                    return new EgressWebhookDetails(null, null, null, null, null, null, backupStorageUsedFromSdk);
+                    return new EgressWebhookDetails(null, null, null, null, null, null, null, backupStorageUsedFromSdk);
                 }
 
                 var egressId = GetString(egressInfo, "egressId") ?? GetString(egressInfo, "id");
@@ -810,6 +818,21 @@ namespace MeetingAssistant.Features.LiveSession.Services
                 var backupStorageUsed = backupStorageUsedFromSdk
                     || GetBool(egressInfo, "backupStorageUsed")
                     || GetBool(egressInfo, "backup_storage_used");
+                var durationSeconds = ResolveDurationSeconds(egressInfo, startedAtUtc, endedAtUtc);
+
+                if (!durationSeconds.HasValue
+                    && egressInfo.TryGetProperty("fileResults", out var fileResults)
+                    && fileResults.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var file in fileResults.EnumerateArray())
+                    {
+                        durationSeconds = ResolveDurationSeconds(file, startedAtUtc, endedAtUtc);
+                        if (durationSeconds.HasValue)
+                        {
+                            break;
+                        }
+                    }
+                }
 
                 return new EgressWebhookDetails(
                     egressId,
@@ -818,13 +841,103 @@ namespace MeetingAssistant.Features.LiveSession.Services
                     endedAtUtc,
                     failureCode,
                     failureMessage,
+                    durationSeconds,
                     backupStorageUsed);
             }
             catch (JsonException)
             {
-                return new EgressWebhookDetails(null, null, null, null, null, null, backupStorageUsedFromSdk);
+                return new EgressWebhookDetails(null, null, null, null, null, null, null, backupStorageUsedFromSdk);
             }
         }
+
+        private static double? ResolveDurationSeconds(
+            JsonElement element,
+            DateTime? startedAtUtc,
+            DateTime? endedAtUtc)
+        {
+            var fromPayload = TryGetDurationSeconds(element);
+            if (fromPayload.HasValue)
+            {
+                return fromPayload.Value;
+            }
+
+            if (startedAtUtc.HasValue && endedAtUtc.HasValue)
+            {
+                var spanSeconds = (endedAtUtc.Value - startedAtUtc.Value).TotalSeconds;
+                if (spanSeconds > 0)
+                {
+                    return spanSeconds;
+                }
+            }
+
+            return null;
+        }
+
+        private static double? TryGetDurationSeconds(JsonElement element)
+        {
+            foreach (var propertyName in DurationPropertyNames)
+            {
+                if (!element.TryGetProperty(propertyName, out var property))
+                {
+                    continue;
+                }
+
+                if (TryConvertDurationProperty(property, propertyName, out var seconds))
+                {
+                    return seconds;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool TryConvertDurationProperty(
+            JsonElement property,
+            string propertyName,
+            out double seconds)
+        {
+            seconds = 0;
+            double rawValue;
+
+            switch (property.ValueKind)
+            {
+                case JsonValueKind.Number:
+                    rawValue = property.GetDouble();
+                    break;
+                case JsonValueKind.String when double.TryParse(property.GetString(), out var parsed):
+                    rawValue = parsed;
+                    break;
+                default:
+                    return false;
+            }
+
+            if (rawValue <= 0)
+            {
+                return false;
+            }
+
+            seconds = propertyName.Contains("ns", StringComparison.OrdinalIgnoreCase)
+                ? rawValue / 1_000_000_000d
+                : propertyName.Contains("ms", StringComparison.OrdinalIgnoreCase)
+                    ? rawValue / 1_000d
+                    : string.Equals(propertyName, "duration", StringComparison.OrdinalIgnoreCase)
+                      && rawValue >= 1_000_000_000d
+                        ? rawValue / 1_000_000_000d
+                        : rawValue;
+
+            return seconds > 0;
+        }
+
+        private static readonly string[] DurationPropertyNames =
+        [
+            "durationSeconds",
+            "duration_seconds",
+            "duration",
+            "durationMs",
+            "duration_ms",
+            "durationNs",
+            "duration_ns"
+        ];
 
         private static string? GetString(JsonElement element, string propertyName)
         {
@@ -971,6 +1084,7 @@ namespace MeetingAssistant.Features.LiveSession.Services
             DateTime? EndedAtUtc,
             string? FailureCode,
             string? FailureMessage,
+            double? DurationSeconds,
             bool BackupStorageUsed);
 
         private static SessionEventType MapEventType(string? eventName)
