@@ -213,6 +213,11 @@ services:
       - AGENT_RAG_MAX_SNIPPETS=${AGENT_RAG_MAX_SNIPPETS:-5}
       - AGENT_RAG_MAX_SNIPPET_CHARS=${AGENT_RAG_MAX_SNIPPET_CHARS:-5000}
       - AGENT_RAG_MAX_TOTAL_CONTEXT_CHARS=${AGENT_RAG_MAX_TOTAL_CONTEXT_CHARS:-30000}
+      # Live web search for freshness-sensitive assistant questions; provider auto-selects Exa when a key is set.
+      - AGENT_WEB_SEARCH_ENABLED=${AGENT_WEB_SEARCH_ENABLED:-true}
+      - AGENT_WEB_SEARCH_PROVIDER=${AGENT_WEB_SEARCH_PROVIDER:-}
+      - AGENT_WEB_SEARCH_EXA_API_KEY=${AGENT_WEB_SEARCH_EXA_API_KEY:-}
+      - AGENT_WEB_SEARCH_TYPE=${AGENT_WEB_SEARCH_TYPE:-instant}
       # Disable preemptive generation by default because RAG context is injected at end-of-turn;
       # enabling it can start an ungrounded LLM request before backend context arrives.
       - AGENT_PREEMPTIVE_GENERATION_ENABLED=${AGENT_PREEMPTIVE_GENERATION_ENABLED:-false}
