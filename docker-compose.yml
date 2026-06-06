@@ -217,7 +217,6 @@ services:
       - AGENT_WEB_SEARCH_ENABLED=${AGENT_WEB_SEARCH_ENABLED:-true}
       - AGENT_WEB_SEARCH_PROVIDER=${AGENT_WEB_SEARCH_PROVIDER:-}
       - AGENT_WEB_SEARCH_EXA_API_KEY=${AGENT_WEB_SEARCH_EXA_API_KEY:-}
-      - AGENT_WEB_SEARCH_TYPE=${AGENT_WEB_SEARCH_TYPE:-instant}
       # Disable preemptive generation by default because RAG context is injected at end-of-turn;
       # enabling it can start an ungrounded LLM request before backend context arrives.
       - AGENT_PREEMPTIVE_GENERATION_ENABLED=${AGENT_PREEMPTIVE_GENERATION_ENABLED:-false}
